@@ -1,0 +1,136 @@
+HOMEWARD
+Game Design Document
+Version 1.0
+
+========================================
+1. OVERVIEW
+========================================
+
+Title: Homeward
+Genre: Cute exploration / light stealth adventure
+Platform: PC
+Tone: Lighthearted, charming, low-stakes. Getting “taken” is an annoying detour, never scary or punishing.
+
+Premise:
+You are a cute orange tabby cat whose collar shows your home address at the start of the game. You have wandered away and must navigate a city to find your way back. The only real “danger” is well-meaning people who will try to take you home with them if you get too close or linger too long.
+
+========================================
+2. CORE LOOP
+========================================
+
+1. At the start, the camera shows a close-up of the cat’s collar with the home address clearly displayed (example: “14 Maple Street, Apartment 3B”).
+2. The player is placed somewhere in the city and must navigate streets, alleys, parks, and rooftops to find that address.
+3. People on the streets may notice the cat and try to pick it up.
+4. If a person successfully takes the cat, the player is brought to that person’s home and must complete a short skill-based escape puzzle.
+5. After escaping, that specific person will actively look for the cat for exactly 60 seconds.
+6. Reach the correct address → win (heartwarming homecoming with the real owner).
+
+========================================
+3. PROTAGONIST
+========================================
+
+- Cute cartoon-style orange tabby cat
+- Big expressive green eyes
+- Fluffy striped fur, white muzzle, chest, and paws
+- Black collar with a small round metal address tag
+- Movement feels distinctly cat-like: low to the ground, climbing, squeezing under objects, short bursts of speed
+- Can re-check the collar address at any time (requires stopping for a moment)
+
+========================================
+4. PEOPLE (NPCS) & THE “TAKE HOME” SYSTEM
+========================================
+
+People are the only threat. They are all well-meaning and cute in presentation.
+
+Types of NPCs:
+- Cat-loving young woman
+- Excited kids
+- Friendly dog walkers (dog may bark and cause the cat to startle)
+- Cheerful shopkeepers
+- Ordinary pedestrians (less aggressive)
+
+How they take the cat:
+- Getting too close for too long
+- Lingering in their path
+- Being cornered
+- Optional risk/reward actions (e.g. meowing)
+
+When taken:
+- Short cute animation of the person carrying the cat to their home
+- Player arrives inside and must solve a short escape puzzle
+
+========================================
+5. ESCAPE PUZZLES
+========================================
+
+Short (15–45 seconds), tactile, skill-based mini-puzzles using the cat’s normal movement abilities. Always succeed eventually; failure just restarts the sequence.
+
+Example escape types:
+- Sliding bolt / lever latch (jump onto furniture and paw it open)
+- Window catch (climb and time a claw/flip)
+- Pet door / flap (push and slip through)
+- Carrier or temporary collar clip (wriggle free)
+- Light multi-step (knock something down to create a boost or reach)
+
+Homes are small, cozy, and varied (apartment, house porch, shop back room, etc.). Soft lighting, personal objects, gentle music.
+
+========================================
+6. 60-SECOND PURSUIT
+========================================
+
+After a successful escape:
+- The person who took the cat gets a clear but cute visual indicator (soft heart or “!”) and may call out in a friendly voice.
+- For exactly 60 seconds they will actively walk toward the cat if they have line of sight and try to pick it up again.
+- The player can hide, climb, sprint, or use normal movement to avoid them.
+- After 60 seconds the indicator disappears and the person returns to normal pedestrian behavior.
+- Soft limit of simultaneous pursuers (recommended max 2) so it never feels overwhelming.
+
+========================================
+7. NAVIGATION & WORLD
+========================================
+
+- City neighborhoods with readable landmarks (parks, shops, street signs, bus stops, etc.)
+- Shortcuts: fences, rooftops, alleys, under cars, through parks
+- Safe spots where people are less likely to notice the cat (under cars, on high ledges, empty lots)
+- Daytime or golden-hour lighting
+- Street signs and environmental clues help the player remember or rediscover the address
+
+========================================
+8. CONTROLS & ABILITIES
+========================================
+
+- Low, cat-eye camera
+- Walk / sprint
+- Jump / climb onto objects and ledges
+- Squeeze under low obstacles
+- Paw / claw interactions for puzzles
+- Check collar (stop and look down)
+- Optional meow (can attract or distract)
+
+========================================
+9. TONE & PRESENTATION
+========================================
+
+- Everything stays cute and light
+- People never look angry — just determined and a little disappointed when the cat escapes
+- Soft, playful music even during escapes and short pursuits
+- Character designs use big eyes, soft colors, and friendly proportions (matching the established cat and NPC concept art)
+
+========================================
+10. WIN CONDITION
+========================================
+
+Reach the correct address shown on the collar. Short, warm homecoming scene with the real owner.
+
+========================================
+11. FUTURE IDEAS (NOT YET LOCKED)
+========================================
+
+- Multiple cat variants with slight ability differences
+- Collectible lost tags or photos of the real owner
+- Soft checkpoints or “last safe spot” restarts
+- Different city districts with increasing pedestrian density
+
+========================================
+END OF DOCUMENT
+========================================
