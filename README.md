@@ -10,8 +10,13 @@ home with them. If someone scoops you up, you'll have to work the latch,
 distract your host, and slip out the door — then outrun a very determined
 60-second pursuit.
 
-**Status:** in active development. Android builds are shared as APKs, and a
-browser-playable web version is planned for this repo so anyone can try it
-from a link — no install needed.
+**Status:** in active development. Android builds are shared as APKs.
+
+**▶ Play in your browser:** https://halroben8.github.io/homeward/
+
+No install needed. Drag on the left side of the screen to move and on the
+right side to look around (on a desktop, the keyboard works too). Best in
+landscape on a phone. The first load downloads the full game (~50 MB), so
+give it a few moments to start.
 
 Built with Godot 4.
