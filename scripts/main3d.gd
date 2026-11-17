@@ -1,7 +1,7 @@
 extends Node3D
 ## HOMEWARD v0.7 — 3D main controller.
 ## Full loop in a real 3D town: random home address per run (shown
-## ONLY on the title collar close-up and the COLLAR check while stopped),
+## ONLY on the title screen at the start of the run),
 ## 3D animated cat + NPCs, notice->CHASE->grab capture, taken -> varied
 ## per-captor escape puzzles — since v1.1 a visible PANEL puzzle per
 ## mechanism (prompt -> panel -> down/up/down/up/PAW combo -> the cat
@@ -71,7 +71,6 @@ var latch_cooldown: float = 0.0
 var meow_cooldown: float = 0.0
 var bark_msg_cooldown: float = 0.0
 var wrong_house_cd: Dictionary = {}
-var collar_open: bool = false
 var book_node: Node3D = null
 var latch_node: Node3D = null
 var book_home_pos: Vector3 = Vector3.ZERO
@@ -123,7 +122,10 @@ var room_title_label: Label3D = null
 var theme_groups: Dictionary = {} # npc_type -> Node3D (only one visible)
 # --- v1.2 DISTRACTIONS (Michael's design, 2026-11-16) ------------------
 # The captor is IN the room with the cat, tidying and settling him in.
-# The cat can PAW over 3 props (plant / book / vase); the crash pulls
+# The cat can PAW over almost every loose object in the room (v1.5:
+# 17 props — plant / book / vase plus lamps, mug, cushion, fruit bowl,
+# shoes, picture, book stack, yarn, sill plant, wastebasket, coat
+# stand, stool, watering can); the crash pulls
 # the captor over to right it for ~5 s of walking + 5 s of righting —
 # that is the window to work the latch. No distraction: she notices
 # the cat at the door in NOTICE_GRACE seconds and kindly interrupts
@@ -164,25 +166,26 @@ var exit_open: bool = false
 var exit_open_kind: String = ""
 var window_blocker: StaticBody3D = null # covers the window gap while closed
 var petdoor_blocker: StaticBody3D = null # covers the pet-door gap while closed
-var petdoor_zone := Rect2(203, -11, 6, 3.5)
-var bolt_zone := Rect2(210, 1.2, 5.5, 4.6)
-var carrier_zone := Rect2(191, 5, 6, 5.5)
-var vase_zone := Rect2(206, 2, 6, 5)
+var petdoor_zone := Rect2(563, -11, 6, 3.5) # MAP DOUBLING: +360 with escape_origin
+var bolt_zone := Rect2(570, 1.2, 5.5, 4.6)
+var carrier_zone := Rect2(551, 5, 6, 5.5)
+var vase_zone := Rect2(566, 2, 6, 5)
 var cam: Camera3D = null
 var cam_target_pos: Vector3 = Vector3.ZERO
 # --- v0.4 dual look controls -------------------------------------------
 var look_yaw: float = 0.0 # radians, 0 = camera behind cat on +Z (v0.3 view)
-var look_pitch_deg: float = 18.0 # camera elevation angle; + = looking down
-const LOOK_PITCH_MIN := -10.0 # tilt up (read signs above eye level)
+var look_pitch_deg: float = CAM_TOWN_PITCH # camera elevation angle; + = looking down. v1.3 CAMERA FRAMING: default was 18 — at the old cat-scale orbit that steep tilt pushed people's faces/bars and the signs out of the top of the frame (see the camera constants block). 4 keeps a slight downward tilt so the cat sits in frame with ground at his feet, while the raised anchor + wider FOV (below) do the work of fitting people and signs; the verified escape-room shots were taken at pitch 6-10, so the room's regime is unchanged in kind.
+const CAM_TOWN_PITCH := 4.0 # the shipped town default pitch — restored on escape completion (v1.4, see _complete_escape)
+const LOOK_PITCH_MIN := -22.0 # tilt up (read signs above eye level). v1.3: was -10 — measured useless for the 3.75m sign boards (whole board still above the frame at max tilt from 3m); -22 frames the whole board from 2-3m.
 const LOOK_PITCH_MAX := 55.0 # tilt down
 const LOOK_YAW_SENS := 0.0052 # rad per drag pixel
 const LOOK_PITCH_SENS := 0.14 # deg per drag pixel
 var look_drags: Dictionary = {} # drag index / "mouse" -> last Vector2 pos
-var look_exclude_rects: Array = [] # Rect2s of A/B/SPRINT/COLLAR/MEOW buttons
+var look_exclude_rects: Array = [] # Rect2s of A/B/MEOW buttons
 var hint_label: Label = null
 var hint_timer: float = 0.0
 
-var escape_origin := Vector3(200, 0, 0)
+var escape_origin := Vector3(560, 0, 0) # MAP DOUBLING: moved +360 east with the town (was 200)
 # --- v0.6 wave 2: purr, street signs, mini-map, capture cutscene ------
 var purr_player: AudioStreamPlayer = null
 var purr_active: bool = false
@@ -193,6 +196,12 @@ var content_points: Array = [] # v0.9: Vector3 of every house/tree/bush/prop/fea
 var cutscene_t: float = 0.0
 var cutscene_from: Vector3 = Vector3.ZERO
 var cutscene_dir: Vector3 = Vector3(0, 0, 1)
+# v1.3 scoop state: the capture-beat anchors (see _process_cutscene)
+var cutscene_cat_yaw0: float = 0.0
+var cutscene_npc_yaw0: float = 0.0
+var cutscene_npc_from: Vector3 = Vector3.ZERO
+var cutscene_face_yaw: float = 0.0
+var cutscene_held_started: bool = false
 var fade_rect: ColorRect = null
 var fade_in_t: float = -1.0
 # --- v0.6 wave 3: scoreboard, stamina HUD, chase camera, pursuit-enders --
@@ -209,20 +218,66 @@ var ender_cooldown: float = 0.0
 var chase_cam_active: bool = false
 var current_cam_dist: float = 1.7
 var nearest_chaser: Node = null
-# --- v0.7 traffic + collar-zoom camera --------------------------------
+# --- v0.7 traffic -------------------------------------------------------
 var traffic_cars: Array = [] # {node, vel}
 var traffic_timer: float = 2.5
 var traffic_hit_cd: float = 0.0
 var traffic_group: Node3D = null
 const TRAFFIC_HIT_PENALTY := 5
-var collar_zoom_t: float = 0.0 # 0 = normal camera, 1 = full collar close-up
-var collar_timer: float = 0.0 # auto-close countdown while the zoom is open
-var collar_caption: Label3D = null # address caption living in the 3D zoom view
-var collar_btn: Button = null
+# --- POUND VAN (Michael, 2026-11-17) ----------------------------------
+# Exactly ONE white ANIMAL CONTROL van patrols the town's roads on a
+# continuous loop, forever. If the cat comes within POUND_SPOT_RADIUS
+# of it, the van pulls over to the kerb, the worker (white uniform,
+# net in hand — the same kind man from the story's opening) gets out
+# and comes after the cat. He is never a villain: he is trying to
+# get a lost cat home. A catch routes through the ORDINARY capture
+# flow (scoop cutscene -> the back-door bolt escape room — "back at
+# the pound, another little puzzle to get out" -> walk out -> his
+# pursuit). When he loses the cat, or the pursuit timer runs out,
+# he walks back to the van, gets in, and the patrol resumes — so
+# encounters recur naturally as the van keeps circulating.
+# player_collared is THE collar flag: story mode will set it true
+# when the cat has a collar again, and while it is true the worker
+# NEVER engages ("they're always after you — until you have a
+# collar on"). It defaults to false: in the current game the cat
+# reads as collarless to him. No collar gameplay hangs off it yet.
+var player_collared: bool = false
+const POUND_SPOT_RADIUS := 12.0 # m — how close the cat must come before the worker gets out
+const POUND_VAN_SPEED := 8.5 # patrol cruise, in line with traffic (7-10)
+const POUND_RETURN_SPEED := 5.0 # his jog back to the van (brisk, not chase-fast)
+const POUND_CHASE_SPEED := 6.4 # set on the worker in person.gd (inside the locked 6.0-7.0 chaser band)
+var pound_van: Node3D = null
+var pound_worker: CharacterBody3D = null
+var pound_state: String = "patrol" # patrol | pullover | exit | chase | away | return
+var pound_route: Array = [] # patrol waypoints (Vector3, on the right-hand lanes)
+var pound_route_idx: int = 0
+var pound_van_speed: float = 0.0
+var pound_van_yaw: float = 0.0 # heading in car space: forward = (cos yaw, 0, -sin yaw)
+var pound_stop_pos: Vector3 = Vector3.ZERO # the kerb spot the van pulls into
+var pound_stop_yaw: float = 0.0
+var pound_kerb_dir: Vector3 = Vector3(0, 0, 1) # unit XZ: which side the kerb (and his door) is on
+var pound_exit_t: float = 0.0
+var pound_engage_cd: float = 0.0 # grace seconds after he gets back in before he can engage again
+# POUND RETURN FIX (2026-11-17): stuck watch for the walk back to
+# the van — see _pound_return_target / the "return" branch. The
+# waypoints are the fix; this watch is belt and braces so a wedge
+# the waypoints don't know about can never kill the patrol again.
+var pound_return_best: float = INF # smallest distance to the current return target seen since it was picked
+var pound_return_still_t: float = 0.0 # seconds since that distance last improved
+var pound_return_stuck_total: float = 0.0 # total no-progress seconds this return (sidestep time excluded)
+var pound_return_sidesteps: int = 0 # sidesteps tried this return
+var pound_return_dodge: Vector3 = Vector3.ZERO # active sidestep target (valid while pound_return_dodge_t > 0)
+var pound_return_dodge_t: float = 0.0
+var pound_return_last_target: Vector3 = Vector3.ZERO # target last frame — a waypoint switch restarts the improvement watch
+var pound_return_has_target: bool = false
+# v1.0.8: the in-play COLLAR check (button + camera zoom + all its
+# state) is REMOVED entirely — under the new story the collar falls
+# off before the pound, so there is nothing to re-check mid-run.
+# The address print ON the 3D tag stays (cat.set_tag_address).
 var action_buttons: Array = [] # touch buttons (live rects block look drags)
-var shelf_zone := Rect2(186, -9, 6, 5) # XZ rect
-var sofa_zone := Rect2(196, 3, 7, 3)
-var window_zone := Rect2(197, -9.5, 6, 3)
+var shelf_zone := Rect2(546, -9, 6, 5) # XZ rect (MAP DOUBLING: +360 with escape_origin)
+var sofa_zone := Rect2(556, 3, 7, 3)
+var window_zone := Rect2(557, -9.5, 6, 3)
 
 var hud_layer: CanvasLayer
 var message_label: Label
@@ -231,8 +286,6 @@ var pursuit_label: Label
 var escape_label: Label
 var title_panel: Control
 var splash_panel: Control
-var collar_panel: Control
-var collar_address_label: Label
 var win_panel: Control
 var win_label: Label
 var touch_layer: CanvasLayer
@@ -474,7 +527,7 @@ func _ground_spot_blocked(p: Vector3) -> bool:
 	for rz in [-55.0, -11.0, 15.0, 55.0]:
 		if absf(p.z - rz) < 6.4:
 			return true
-	for rx in [-70.0, -20.0, 24.0, 72.0]:
+	for rx in [-70.0, -20.0, 24.0, 72.0, 128.0, 176.0, 224.0, 272.0, 320.0]:
 		if absf(p.x - rx) < 6.4:
 			return true
 	for hh in houses:
@@ -505,7 +558,7 @@ func _scatter_multimesh(world: Node3D, srng: RandomNumberGenerator, mesh: Mesh, 
 	var guard: int = 0
 	while placed < count and guard < count * 40:
 		guard += 1
-		var p := Vector3(srng.randf_range(-120, 120), y_base, srng.randf_range(-90, 90))
+		var p := Vector3(srng.randf_range(-120, 372), y_base, srng.randf_range(-90, 90))
 		if _ground_spot_blocked(p):
 			continue
 		var basis := Basis(Vector3.UP, srng.randf_range(0.0, TAU)).scaled(Vector3.ONE * srng.randf_range(scl_min, scl_max))
@@ -536,7 +589,7 @@ func _scatter_multimesh(world: Node3D, srng: RandomNumberGenerator, mesh: Mesh, 
 		mmi.multimesh = mm
 		mmi.material_override = mat
 		mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		mmi.position = centre
+		mmi.position = centre + Vector3(0.013, 0, 0.017) # MAP DOUBLING: a hair off the grid — a chunk origin landing exactly on a (whole-number) house position made the mailbox audit count the chunk as a house
 		mmi.custom_aabb = AABB(Vector3(-CELL * 0.5 - 3.0, -1.0, -CELL * 0.5 - 3.0), Vector3(CELL + 6.0, 4.0, CELL + 6.0))
 		if vis_end > 0.0:
 			mmi.visibility_range_end = vis_end
@@ -554,6 +607,7 @@ func _ready() -> void:
 	_build_escape_room()
 	_spawn_player()
 	_spawn_npcs()
+	_spawn_pound()
 	_build_camera()
 	_build_hud()
 	_build_touch_controls()
@@ -627,6 +681,119 @@ func _define_houses() -> void:
 		["17 Willow Crescent", Vector3(2, 0, 44), 1.0],
 		["23 Willow Crescent", Vector3(42, 0, 44), 1.0],
 		["29 Willow Crescent", Vector3(98, 0, 44), 1.0],
+		# MAP DOUBLING (Michael, 2026-11-16/17: "double the size of
+		# the map" + houses MORE DENSE — "there's still a lot of
+		# space"): the town grows EAST. Five new cross streets
+		# (Harbour 128, Summit 176, Quarry 224, Meadow 272, Sunset
+		# 320) carry the four avenues east to a new border at
+		# x=371.8, doubling the playable area. Every row below
+		# keeps the standing rules: centres >= 11 from every
+		# vertical centreline (footprints clear the corridors),
+		# numbers strictly UP west->east, odd north / even south,
+		# facing explicit. Spacing within each new block is ~13 —
+		# noticeably tighter than the old rows' 40-50 gaps.
+		# --- old-town INFILL: the widest empty gaps in the
+		# existing rows (skipping lots that would swallow the
+		# playground, the gazebo or the front-gap clusters) ---
+		["11 Maple Street", Vector3(-84, 0, -30), 1.0],
+		["41 Maple Street", Vector3(58, 0, -30), 1.0],
+		["11 Oak Avenue", Vector3(-56, 0, 2), 1.0],
+		["21 Oak Avenue", Vector3(38, 0, 2), 1.0],
+		["30 Oak Avenue", Vector3(10, 0, 33), -1.0],
+		["36 Oak Avenue", Vector3(58, 0, 33), -1.0],
+		["7 Elm Drive", Vector3(-84, 0, -66), 1.0],
+		["25 Elm Drive", Vector3(58, 0, -66), 1.0],
+		["8 Elm Drive", Vector3(-84, 0, -44), -1.0],
+		["26 Elm Drive", Vector3(60, 0, -44), -1.0],
+		["7 Willow Crescent", Vector3(-84, 0, 44), 1.0],
+		# --- EAST DISTRICT: the four avenues extended ---
+		# Maple Street north row (odd)
+		["43 Maple Street", Vector3(84, 0, -30), 1.0],
+		["47 Maple Street", Vector3(112, 0, -30), 1.0],
+		["53 Maple Street", Vector3(146, 0, -30), 1.0],
+		["59 Maple Street", Vector3(159, 0, -30), 1.0],
+		["65 Maple Street", Vector3(194, 0, -30), 1.0],
+		["71 Maple Street", Vector3(207, 0, -30), 1.0],
+		["77 Maple Street", Vector3(242, 0, -30), 1.0],
+		["83 Maple Street", Vector3(255, 0, -30), 1.0],
+		["89 Maple Street", Vector3(290, 0, -30), 1.0],
+		["95 Maple Street", Vector3(303, 0, -30), 1.0],
+		["101 Maple Street", Vector3(339, 0, -30), 1.0],
+		["107 Maple Street", Vector3(352, 0, -30), 1.0],
+		# Oak Avenue north row (odd)
+		["31 Oak Avenue", Vector3(90, 0, 2), 1.0],
+		["37 Oak Avenue", Vector3(104, 0, 2), 1.0],
+		["43 Oak Avenue", Vector3(146, 0, 2), 1.0],
+		["49 Oak Avenue", Vector3(159, 0, 2), 1.0],
+		["55 Oak Avenue", Vector3(194, 0, 2), 1.0],
+		["61 Oak Avenue", Vector3(207, 0, 2), 1.0],
+		["67 Oak Avenue", Vector3(242, 0, 2), 1.0],
+		["73 Oak Avenue", Vector3(255, 0, 2), 1.0],
+		["79 Oak Avenue", Vector3(290, 0, 2), 1.0],
+		["85 Oak Avenue", Vector3(303, 0, 2), 1.0],
+		["91 Oak Avenue", Vector3(339, 0, 2), 1.0],
+		["97 Oak Avenue", Vector3(352, 0, 2), 1.0],
+		# Oak Avenue south row (even) — no lots in the first block:
+		# the playground owns x 87..109 at this band.
+		["46 Oak Avenue", Vector3(146, 0, 33), -1.0],
+		["52 Oak Avenue", Vector3(159, 0, 33), -1.0],
+		["58 Oak Avenue", Vector3(194, 0, 33), -1.0],
+		["64 Oak Avenue", Vector3(207, 0, 33), -1.0],
+		["70 Oak Avenue", Vector3(242, 0, 33), -1.0],
+		["76 Oak Avenue", Vector3(255, 0, 33), -1.0],
+		["82 Oak Avenue", Vector3(290, 0, 33), -1.0],
+		["88 Oak Avenue", Vector3(303, 0, 33), -1.0],
+		["94 Oak Avenue", Vector3(339, 0, 33), -1.0],
+		["100 Oak Avenue", Vector3(352, 0, 33), -1.0],
+		# Elm Drive north row (odd)
+		["41 Elm Drive", Vector3(146, 0, -66), 1.0],
+		["47 Elm Drive", Vector3(159, 0, -66), 1.0],
+		["53 Elm Drive", Vector3(194, 0, -66), 1.0],
+		["59 Elm Drive", Vector3(207, 0, -66), 1.0],
+		["65 Elm Drive", Vector3(242, 0, -66), 1.0],
+		["71 Elm Drive", Vector3(255, 0, -66), 1.0],
+		["77 Elm Drive", Vector3(290, 0, -66), 1.0],
+		["83 Elm Drive", Vector3(303, 0, -66), 1.0],
+		["89 Elm Drive", Vector3(339, 0, -66), 1.0],
+		["95 Elm Drive", Vector3(352, 0, -66), 1.0],
+		# Elm Drive south row (even)
+		["28 Elm Drive", Vector3(84, 0, -44), -1.0],
+		["32 Elm Drive", Vector3(112, 0, -44), -1.0],
+		["38 Elm Drive", Vector3(146, 0, -44), -1.0],
+		["44 Elm Drive", Vector3(159, 0, -44), -1.0],
+		["50 Elm Drive", Vector3(194, 0, -44), -1.0],
+		["56 Elm Drive", Vector3(207, 0, -44), -1.0],
+		["62 Elm Drive", Vector3(242, 0, -44), -1.0],
+		["68 Elm Drive", Vector3(255, 0, -44), -1.0],
+		["74 Elm Drive", Vector3(290, 0, -44), -1.0],
+		["80 Elm Drive", Vector3(303, 0, -44), -1.0],
+		["86 Elm Drive", Vector3(339, 0, -44), -1.0],
+		["92 Elm Drive", Vector3(352, 0, -44), -1.0],
+		# Willow Crescent north row (odd)
+		["27 Willow Crescent", Vector3(84, 0, 44), 1.0],
+		["31 Willow Crescent", Vector3(112, 0, 44), 1.0],
+		["37 Willow Crescent", Vector3(146, 0, 44), 1.0],
+		["43 Willow Crescent", Vector3(159, 0, 44), 1.0],
+		["49 Willow Crescent", Vector3(194, 0, 44), 1.0],
+		["55 Willow Crescent", Vector3(207, 0, 44), 1.0],
+		["61 Willow Crescent", Vector3(242, 0, 44), 1.0],
+		["67 Willow Crescent", Vector3(255, 0, 44), 1.0],
+		["73 Willow Crescent", Vector3(290, 0, 44), 1.0],
+		["79 Willow Crescent", Vector3(303, 0, 44), 1.0],
+		["85 Willow Crescent", Vector3(339, 0, 44), 1.0],
+		["91 Willow Crescent", Vector3(352, 0, 44), 1.0],
+		# Willow Crescent south row (even)
+		["30 Willow Crescent", Vector3(112, 0, 66), -1.0],
+		["36 Willow Crescent", Vector3(146, 0, 66), -1.0],
+		["42 Willow Crescent", Vector3(159, 0, 66), -1.0],
+		["48 Willow Crescent", Vector3(194, 0, 66), -1.0],
+		["54 Willow Crescent", Vector3(207, 0, 66), -1.0],
+		["60 Willow Crescent", Vector3(242, 0, 66), -1.0],
+		["66 Willow Crescent", Vector3(255, 0, 66), -1.0],
+		["72 Willow Crescent", Vector3(290, 0, 66), -1.0],
+		["78 Willow Crescent", Vector3(303, 0, 66), -1.0],
+		["84 Willow Crescent", Vector3(339, 0, 66), -1.0],
+		["90 Willow Crescent", Vector3(352, 0, 66), -1.0],
 	]
 	for entry in data:
 		var p: Vector3 = entry[1]
@@ -645,40 +812,54 @@ func _build_environment() -> void:
 	var env := Environment.new()
 	var sky := Sky.new()
 	var psm := ProceduralSkyMaterial.new()
-	psm.sky_top_color = Color(0.25, 0.48, 0.88)
-	psm.sky_horizon_color = Color(0.98, 0.82, 0.58)
-	psm.ground_bottom_color = Color(0.4, 0.5, 0.35)
-	psm.ground_horizon_color = Color(0.98, 0.82, 0.58)
+	# DUSK (Michael, 2026-11-17): "give the city the shading of
+	# dusk — it just seems too bright and flat." The sky now grades
+	# from a deep evening blue overhead down to a warm amber band
+	# at the horizon, and the ground side falls off into dusk
+	# shadow colours instead of midday green-grey.
+	psm.sky_top_color = Color(0.15, 0.25, 0.52)
+	psm.sky_horizon_color = Color(1.0, 0.55, 0.27)
+	psm.ground_bottom_color = Color(0.13, 0.12, 0.16)
+	psm.ground_horizon_color = Color(0.72, 0.42, 0.26)
 	psm.sun_angle_max = 25.0
-	psm.sky_energy_multiplier = 1.15
-	psm.ground_energy_multiplier = 0.9
+	psm.sky_energy_multiplier = 1.0
+	psm.ground_energy_multiplier = 0.7
 	sky.sky_material = psm
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	env.ambient_light_energy = 0.5 # v1.0 step 2: less flat wash — form comes from the lights now, not ambient
+	env.ambient_light_energy = 0.45 # v1.0 step 2: less flat wash — form comes from the lights now, not ambient. DUSK: a touch lower again; the sky it samples is now blue-over-amber, so shadowed sides pick up evening colour instead of grey.
 	env.tonemap_mode = Environment.TONE_MAPPER_ACES # v0.8 (item 3): ACES keeps edges crisp; FILMIC softened the whole frame
 	env.glow_enabled = false # v0.8 (item 3): bloom REMOVED — it was the main "everything goes blurry when running" cause
 	env.adjustment_enabled = true
-	env.adjustment_saturation = 1.06 # v1.0 step 2: calmer, more natural colour (v0.9's 1.12 pushed neon)
-	env.adjustment_contrast = 1.04
-	env.adjustment_brightness = 1.02
+	env.adjustment_saturation = 1.10 # v1.0 step 2: calmer, more natural colour (v0.9's 1.12 pushed neon). DUSK: back up a notch — flat colours need the extra richness once the light goes warm and low.
+	env.adjustment_contrast = 1.06 # DUSK: a little more separation between lit and shadow sides (was 1.04)
+	env.adjustment_brightness = 1.0 # DUSK: the midday lift (1.02) comes off; exposure now comes from the lamps and the low sun
 	# v1.0 step 2: DEPTH FOG — a whisper of warm haze so distance
 	# falls off like real air. This is half of why flat games look
 	# flat: without aerial perspective every distance shouts at
 	# the same volume. Density is low: the far riverbank softens,
 	# gameplay range stays crisp.
 	env.fog_enabled = true
-	env.fog_light_color = Color(0.87, 0.81, 0.72)
-	env.fog_light_energy = 0.7
-	env.fog_density = 0.0016
-	env.fog_sky_affect = 0.3
+	env.fog_light_color = Color(0.90, 0.58, 0.38) # DUSK: the haze now matches the amber horizon, so distance melts into sunset instead of grey-cream
+	env.fog_light_energy = 0.75
+	env.fog_density = 0.0020 # DUSK: slightly denser (was 0.0016) — more aerial perspective at range, gameplay distances stay crisp
+	env.fog_sky_affect = 0.35
 	we.environment = env
 	add_child(we)
 	var sun := DirectionalLight3D.new()
-	sun.rotation_degrees = Vector3(-48, -35, 0)
-	sun.light_color = Color(1.0, 0.88, 0.72) # v0.9: warm late-afternoon gold
-	sun.light_energy = 1.45 # v0.9: stronger warm key light, defined shadows
+	# DUSK: the sun drops from -48 to -44 degrees and its colour
+	# goes from pale gold to deep amber. The angle is a measured
+	# perf compromise: the shadow pass already redraws ~8,400
+	# instances at -48, and lowering the sun sweeps its frustum
+	# flatter across the dense town — -24 measured +2,500 draw
+	# calls, -30 +2,000, -38 +1,100, all over the ~11k budget.
+	# -44 lands +518 (11,468 total) while still raking light
+	# noticeably lower than midday; the rest of the dusk mood is
+	# carried by colour — amber sun, blue fill, sunset sky, fog.
+	sun.rotation_degrees = Vector3(-44, -35, 0)
+	sun.light_color = Color(1.0, 0.60, 0.32) # DUSK: deep amber (v0.9 was pale late-afternoon gold 1.0/0.88/0.72)
+	sun.light_energy = 1.30 # DUSK: a touch softer than midday's 1.45 — the lamps and sky now share the work
 	sun.shadow_enabled = true
 	sun.shadow_blur = 0.4 # v0.8 (item 3): defined shadow edges (was 1.6 painterly smear)
 	# PERF (post-v1.0.1): shadow range 220 -> 80. Measured: the shadow
@@ -700,8 +881,8 @@ func _build_environment() -> void:
 	# blue-grey instead of going dead flat.
 	var fill := DirectionalLight3D.new()
 	fill.rotation_degrees = Vector3(-32, 145, 0)
-	fill.light_color = Color(0.72, 0.82, 1.0)
-	fill.light_energy = 0.34
+	fill.light_color = Color(0.42, 0.55, 0.85) # DUSK: deeper evening blue (was a pale daytime 0.72/0.82/1.0) — shadow sides read blue, not grey
+	fill.light_energy = 0.30
 	fill.shadow_enabled = false
 	add_child(fill)
 	# Soft billboard CLOUDS (v0.5): layered sprite puffs drifting high up,
@@ -715,7 +896,7 @@ func _build_environment() -> void:
 		sp.pixel_size = sc / 512.0
 		sp.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		sp.shaded = false
-		sp.modulate = Color(1, 1, 1, randf_range(0.9, 1.0))
+		sp.modulate = Color(1.0, 0.70, 0.52, randf_range(0.9, 1.0)) # DUSK: clouds catch the sunset — warm peach, not midday white (they are unshaded sprites, so the tint IS their lighting)
 		add_child(sp)
 		var sp2 := Sprite3D.new()
 		sp2.texture = TEX_CLOUD
@@ -723,7 +904,7 @@ func _build_environment() -> void:
 		sp2.pixel_size = (sc * 0.7) / 512.0
 		sp2.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		sp2.shaded = false
-		sp2.modulate = Color(1, 1, 1, 0.65)
+		sp2.modulate = Color(1.0, 0.66, 0.50, 0.65) # DUSK: ditto, the softer under-layer slightly deeper
 		add_child(sp2)
 
 func _build_audio() -> void:
@@ -776,15 +957,17 @@ func _build_world() -> void:
 	world.name = "World"
 	add_child(world)
 	# Grass base (v0.6 EXPANDED MAP: 252 x 192, was 130 x 96) + park lawn
-	var grass_base := _box(world, Vector3(0, -0.25, 0), Vector3(252, 0.5, 192), Color.WHITE)
-	grass_base.material_override = _mat_tex(TEX_GRASS, Color(0.72, 0.84, 0.64), Vector3(50, 38, 1))
+	# MAP DOUBLING: the lawn now runs 504 x 192 (x -126..378) — the
+	# town grew EAST by a full second district (see _define_houses).
+	var grass_base := _box(world, Vector3(126, -0.25, 0), Vector3(504, 0.5, 192), Color.WHITE)
+	grass_base.material_override = _mat_tex(TEX_GRASS, Color(0.72, 0.84, 0.64), Vector3(100, 38, 1))
 	# Invisible solid ground (town + escape room) so physics / jumping work
 	var ground_body := StaticBody3D.new()
 	var ground_cs := CollisionShape3D.new()
 	var ground_shape := BoxShape3D.new()
-	ground_shape.size = Vector3(430, 1.0, 214)
+	ground_shape.size = Vector3(760, 1.0, 214)
 	ground_cs.shape = ground_shape
-	ground_cs.position = Vector3(85, -0.5, 0)
+	ground_cs.position = Vector3(230, -0.5, 0)
 	ground_body.add_child(ground_cs)
 	world.add_child(ground_body)
 	var park_lawn := _box(world, Vector3(-38, 0.02, 24), Vector3(34, 0.06, 18), Color.WHITE)
@@ -794,10 +977,10 @@ func _build_world() -> void:
 	var srng := RandomNumberGenerator.new()
 	srng.seed = 777
 	var road_zs: Array = [-55.0, -11.0, 15.0, 55.0]
-	var road_xs: Array = [-70.0, -20.0, 24.0, 72.0]
+	var road_xs: Array = [-70.0, -20.0, 24.0, 72.0, 128.0, 176.0, 224.0, 272.0, 320.0] # MAP DOUBLING: + Harbour/Summit/Quarry/Meadow/Sunset
 	# Grass tufts: little crossed blade clusters scattered on the lawns
-	for i in range(170): # v0.9: nearly double the ground detail
-		var tp2 := Vector3(srng.randf_range(-118, 118), 0.22, srng.randf_range(-88, 88))
+	for i in range(340): # v0.9: nearly double the ground detail; MAP DOUBLING: doubled again for the east district
+		var tp2 := Vector3(srng.randf_range(-118, 366), 0.22, srng.randf_range(-88, 88))
 		var on_road_t := false
 		for rz2 in road_zs:
 			if abs(tp2.z - rz2) < 6.5: on_road_t = true
@@ -820,7 +1003,7 @@ func _build_world() -> void:
 	blade_mat.roughness = 1.0
 	blade_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	blade_mat.vertex_color_use_as_albedo = true
-	_scatter_multimesh(world, detail_rng, _blade_mesh(), 12000, blade_mat, [Color(0.34, 0.56, 0.22), Color(0.3, 0.5, 0.19), Color(0.39, 0.61, 0.25), Color(0.32, 0.53, 0.2)], 0.02, 0.6, 1.1, 60.0) # PERF: blades drawn only within 60m (chunked cells)
+	_scatter_multimesh(world, detail_rng, _blade_mesh(), 24000, blade_mat, [Color(0.34, 0.56, 0.22), Color(0.3, 0.5, 0.19), Color(0.39, 0.61, 0.25), Color(0.32, 0.53, 0.2)], 0.02, 0.6, 1.1, 60.0) # PERF: blades drawn only within 60m (chunked cells); MAP DOUBLING: count doubled with the area (cells keep the draw cost flat)
 	var flower_mesh := SphereMesh.new()
 	flower_mesh.radius = 0.06
 	flower_mesh.height = 0.12
@@ -830,14 +1013,15 @@ func _build_world() -> void:
 	flower_mat.albedo_color = Color.WHITE
 	flower_mat.roughness = 0.75
 	flower_mat.vertex_color_use_as_albedo = true
-	_scatter_multimesh(world, detail_rng, flower_mesh, 380, flower_mat, [Color(0.98, 0.55, 0.65), Color(0.99, 0.85, 0.35), Color(0.97, 0.96, 0.92), Color(0.78, 0.65, 0.95)], 0.1, 0.8, 1.3, 45.0) # PERF: flowers drawn only within 45m (chunked cells)
-	# Roads: FOUR horizontal + FOUR vertical (v0.6), with sidewalks + dashes
+	_scatter_multimesh(world, detail_rng, flower_mesh, 760, flower_mat, [Color(0.98, 0.55, 0.65), Color(0.99, 0.85, 0.35), Color(0.97, 0.96, 0.92), Color(0.78, 0.65, 0.95)], 0.1, 0.8, 1.3, 45.0) # PERF: flowers drawn only within 45m (chunked cells); MAP DOUBLING: count doubled with the area
+	# Roads: FOUR horizontal + NINE vertical (v0.6 had four vertical;
+	# MAP DOUBLING added five east), with sidewalks + dashes
 	for rz in road_zs:
-		var walk_h := _box(world, Vector3(0, 0.03, rz), Vector3(252, 0.06, 9.6), Color.WHITE)
-		walk_h.material_override = _mat_tex(TEX_SIDEWALK, Color.WHITE, Vector3(62, 2, 1))
-		var road_h := _box(world, Vector3(0, 0.06, rz), Vector3(252, 0.06, 7.2), Color.WHITE)
-		road_h.material_override = _mat_tex(TEX_ASPHALT, Color.WHITE, Vector3(50, 2, 1), 0.97)
-		for dx in range(-120, 121, 6):
+		var walk_h := _box(world, Vector3(126, 0.03, rz), Vector3(504, 0.06, 9.6), Color.WHITE)
+		walk_h.material_override = _mat_tex(TEX_SIDEWALK, Color.WHITE, Vector3(124, 2, 1))
+		var road_h := _box(world, Vector3(126, 0.06, rz), Vector3(504, 0.06, 7.2), Color.WHITE)
+		road_h.material_override = _mat_tex(TEX_ASPHALT, Color.WHITE, Vector3(100, 2, 1), 0.97)
+		for dx in range(-120, 373, 6):
 			_box(world, Vector3(dx, 0.1, rz), Vector3(2.6, 0.03, 0.35), Color(0.95, 0.85, 0.4))
 	for rx in road_xs:
 		var walk_v := _box(world, Vector3(rx, 0.04, 0), Vector3(9.6, 0.06, 192), Color.WHITE)
@@ -864,6 +1048,17 @@ func _build_world() -> void:
 	_sign(world, "BIRCH LANE", Vector3(18, 0, 44), "Birch Lane", 90.0)
 	_sign(world, "RIVERSIDE DRIVE", Vector3(66, 0, -40), "Riverside Drive", 90.0)
 	_sign(world, "RIVERSIDE DRIVE", Vector3(78, 0, 30), "Riverside Drive", 90.0)
+	# MAP DOUBLING: the five new east cross streets, two signs each
+	_sign(world, "HARBOUR STREET", Vector3(122, 0, -16), "Harbour Street", 90.0)
+	_sign(world, "HARBOUR STREET", Vector3(134, 0, 44), "Harbour Street", 90.0)
+	_sign(world, "SUMMIT AVENUE", Vector3(170, 0, -16), "Summit Avenue", 90.0)
+	_sign(world, "SUMMIT AVENUE", Vector3(182, 0, 44), "Summit Avenue", 90.0)
+	_sign(world, "QUARRY LANE", Vector3(218, 0, -16), "Quarry Lane", 90.0)
+	_sign(world, "QUARRY LANE", Vector3(230, 0, 44), "Quarry Lane", 90.0)
+	_sign(world, "MEADOW DRIVE", Vector3(266, 0, -16), "Meadow Drive", 90.0)
+	_sign(world, "MEADOW DRIVE", Vector3(278, 0, 44), "Meadow Drive", 90.0)
+	_sign(world, "SUNSET DRIVE", Vector3(314, 0, -16), "Sunset Drive", 90.0)
+	_sign(world, "SUNSET DRIVE", Vector3(326, 0, 44), "Sunset Drive", 90.0)
 	_sign(world, "PARK", Vector3(-52, 0, 20.8))
 	_sign(world, "THE RIVER", Vector3(58, 0, -86))
 	# Houses
@@ -894,7 +1089,7 @@ func _build_world() -> void:
 					spots = [xa + 12.0, xb - 12.0] # wide gap: a tree watching each end
 				for midx0 in spots:
 					var midx: float = midx0
-					for rxg in [-70.0, -20.0, 24.0, 72.0]:
+					for rxg in [-70.0, -20.0, 24.0, 72.0, 128.0, 176.0, 224.0, 272.0, 320.0]:
 						if absf(midx - rxg) < 9.0:
 							midx += 10.0 if midx >= rxg else -10.0
 					_build_tree(world, Vector3(midx, 0, hz2 - hf2 * 8.0))
@@ -907,7 +1102,7 @@ func _build_world() -> void:
 	# west-to-east until its cap ran out, which is exactly why the
 	# east and south felt empty. Caps nearly doubled, too.
 	var tree_cands: Array = []
-	for gx in range(-112, 113, 13):
+	for gx in range(-112, 361, 13):
 		for gz in range(-84, 85, 13):
 			var cand := Vector3(float(gx) + srng.randf_range(-4, 4), 0, float(gz) + srng.randf_range(-4, 4))
 			var bad := false
@@ -921,6 +1116,9 @@ func _build_world() -> void:
 			if cand.x > -104 and cand.x < -64 and cand.z > 62 and cand.z < 86: bad = true # park 2
 			if cand.x > 84 and cand.x < 114 and cand.z > 18 and cand.z < 48: bad = true # v0.9 playground
 			if cand.x > -116 and cand.x < -84 and cand.z > 74: bad = true # v0.9 community garden
+			if cand.distance_to(Vector3(248, 0, -76)) < 10.5: bad = true # MAP DOUBLING: Meadow Court block
+			if cand.distance_to(Vector3(296, 0, 79)) < 6.5: bad = true # MAP DOUBLING: Sunset Green fountain
+			if cand.distance_to(Vector3(197, 0, -21)) < 6.5: bad = true # MAP DOUBLING: Harbour Market stalls
 			if cand.distance_to(Vector3(0, 0, -80)) < 8.0: bad = true # clock tower
 			if cand.distance_to(Vector3(2, 0, -2)) < 7.0: bad = true # spawn
 			if bad:
@@ -931,16 +1129,16 @@ func _build_world() -> void:
 		var stmp = tree_cands[si]; tree_cands[si] = tree_cands[sj]; tree_cands[sj] = stmp
 	var scattered_trees: int = 0
 	for cand2 in tree_cands:
-		if scattered_trees >= 46:
+		if scattered_trees >= 92: # MAP DOUBLING: cap doubled with the area
 			break
 		_build_tree(world, cand2)
 		scattered_trees += 1
-	var bush_positions: Array = [Vector3(-12, 0, -20), Vector3(30, 0, -22), Vector3(-30, 0, 8), Vector3(44, 0, 24), Vector3(-52, 0, -14), Vector3(6, 0, 38)]
+	var bush_positions: Array = [Vector3(-12, 0, -20), Vector3(30, 0, -22), Vector3(-30, 0, 8), Vector3(44, 0, 24), Vector3(-52, 0, -18.5), Vector3(6, 0, 38)] # CLUTTER: the -52 bush stood at z=-14, inside the Maple asphalt; now north of its sidewalk
 	for bp in bush_positions:
 		_build_bush(world, bp)
 		hide_points.append(bp)
 	var bush_cands: Array = []
-	for gx2 in range(-105, 106, 17):
+	for gx2 in range(-105, 358, 17):
 		for gz2 in range(-77, 78, 17):
 			var bcand := Vector3(float(gx2) + srng.randf_range(-5, 5), 0, float(gz2) + srng.randf_range(-5, 5))
 			var bbad := false
@@ -950,6 +1148,9 @@ func _build_world() -> void:
 				if abs(bcand.x - rx4) < 7.0: bbad = true
 			for hh2 in houses:
 				if bcand.distance_to(hh2["pos"]) < 9.0: bbad = true
+			if bcand.distance_to(Vector3(248, 0, -76)) < 10.5: bbad = true # MAP DOUBLING: Meadow Court
+			if bcand.distance_to(Vector3(296, 0, 79)) < 6.5: bbad = true # MAP DOUBLING: Sunset Green
+			if bcand.distance_to(Vector3(197, 0, -21)) < 6.5: bbad = true # MAP DOUBLING: Harbour Market
 			if bbad:
 				continue
 			bush_cands.append(bcand)
@@ -958,24 +1159,50 @@ func _build_world() -> void:
 		var stmp2 = bush_cands[si2]; bush_cands[si2] = bush_cands[sj2]; bush_cands[sj2] = stmp2
 	var scattered_bushes: int = 0
 	for bcand2 in bush_cands:
-		if scattered_bushes >= 26:
+		if scattered_bushes >= 52: # MAP DOUBLING: cap doubled with the area
 			break
 		_build_bush(world, bcand2)
 		hide_points.append(bcand2)
 		scattered_bushes += 1
-	# Cars: FIVE types (v0.6), several colours, all hiding spots
-	var car_data: Array = [
-		[Vector3(-8, 0, -11), Color(0.8, 0.25, 0.22), "sedan"], [Vector3(36, 0, 15), Color(0.25, 0.45, 0.85), "sedan"],
-		[Vector3(-38, 0, 15), Color(0.3, 0.6, 0.5), "hatchback"], [Vector3(12, 0, -11), Color(0.9, 0.88, 0.85), "van"],
-		[Vector3(30, 0, -24), Color(0.5, 0.5, 0.55), "pickup"], [Vector3(44, 0, 15), Color(0.2, 0.55, 0.6), "hatchback"],
-		[Vector3(52, 0, 15), Color(0.6, 0.35, 0.75), "convertible"], [Vector3(60, 0, 15), Color(0.82, 0.85, 0.9), "van"],
-		[Vector3(-52, 0, -55), Color(0.35, 0.55, 0.3), "pickup"], [Vector3(80, 0, 55), Color(0.75, 0.76, 0.8), "sedan"],
-		[Vector3(-88, 0, -11), Color(0.9, 0.55, 0.2), "hatchback"], [Vector3(100, 0, -11), Color(0.2, 0.3, 0.55), "van"],
-		[Vector3(-100, 0, 55), Color(0.55, 0.25, 0.3), "pickup"],
+	# Cars: FIVE types (v0.6), several colours, all hiding spots.
+	# STREETS (Michael, 2026-11-16): "there shouldn't be anything
+	# but cars on streets... there should be cars in people's
+	# driveways and moving cars on the streets, not just cars
+	# sitting still on the street." The v0.6 set parked TWELVE of
+	# its thirteen cars ON the roadways (centred on the Maple /
+	# Oak / Elm / Willow centrelines) and the thirteenth on a
+	# lawn. Every one now sits in a house DRIVEWAY (see
+	# _park_in_driveway) — same cars, colours and types, still
+	# hiding spots — so the only vehicles on a roadway are the
+	# moving traffic. Audit: tests/StreetsProbe.tscn (0 on asphalt,
+	# also asserted in the test suite).
+	var house_by_addr: Dictionary = {}
+	for hh in houses:
+		house_by_addr[str(hh["address"])] = hh
+	var driveway_data: Array = [
+		# [address, side of the front path (+1/-1), road z, colour, type] — the v0.6 cars, relocated
+		["27 Maple Street", 1.0, -11.0, Color(0.8, 0.25, 0.22), "sedan"],
+		["39 Maple Street", -1.0, -11.0, Color(0.25, 0.45, 0.85), "sedan"],
+		["21 Maple Street", 1.0, -11.0, Color(0.3, 0.6, 0.5), "hatchback"],
+		["33 Maple Street", 1.0, -11.0, Color(0.9, 0.88, 0.85), "van"],
+		["45 Maple Street", -1.0, -11.0, Color(0.5, 0.5, 0.55), "pickup"],
+		["15 Maple Street", 1.0, -11.0, Color(0.2, 0.55, 0.6), "hatchback"],
+		["9 Maple Street", -1.0, -11.0, Color(0.6, 0.35, 0.75), "convertible"],
+		["3 Maple Street", 1.0, -11.0, Color(0.2, 0.3, 0.55), "van"],
+		["28 Oak Avenue", 1.0, 15.0, Color(0.82, 0.85, 0.9), "van"],
+		["16 Oak Avenue", -1.0, 15.0, Color(0.35, 0.55, 0.3), "pickup"],
+		["34 Oak Avenue, Apartment 4A", 1.0, 15.0, Color(0.75, 0.76, 0.8), "sedan"],
+		["40 Oak Avenue", -1.0, 15.0, Color(0.9, 0.55, 0.2), "hatchback"],
+		["10 Oak Avenue", 1.0, 15.0, Color(0.55, 0.25, 0.3), "pickup"],
+		# MAP DOUBLING: three of the new east houses get driveway cars too
+		["53 Maple Street", -1.0, -11.0, Color(0.35, 0.5, 0.8), "sedan"],
+		["89 Maple Street", 1.0, -11.0, Color(0.85, 0.6, 0.25), "hatchback"],
+		["82 Oak Avenue", 1.0, 15.0, Color(0.3, 0.6, 0.5), "sedan"],
 	]
-	for cd in car_data:
-		_build_car(world, cd[0], cd[1], true, cd[2])
-		hide_points.append(cd[0])
+	for dd in driveway_data:
+		var dh: Dictionary = house_by_addr[dd[0]]
+		var dpos: Vector3 = _park_in_driveway(world, dh["pos"], float(dh["facing"]), float(dd[2]), float(dd[1]), dd[3], dd[4])
+		hide_points.append(dpos)
 	# Park fence with a gap, benches, pond, flowers. v0.7: this fence
 	# used to stand at z=15.5 — right IN the Oak Avenue roadway (the
 	# bare posts in Michael's photo). It now runs along the park's
@@ -1017,23 +1244,23 @@ func _build_world() -> void:
 	pond.material_override = _mat_tex(TEX_WATER, Color.WHITE, Vector3(3, 3, 1), 0.35) # pond
 	content_points.append(Vector3(-44, 0, 26)) # v0.9 audit: park 1
 	content_points.append(Vector3(-38, 0, 24))
-	for bpos in [Vector3(-30, 0, 22), Vector3(-24, 0, 28)]:
+	for bpos in [Vector3(-30, 0, 22), Vector3(-27, 0, 28)]: # CLUTTER: the -24 bench's east end crossed the Cedar corridor
 		_box(world, bpos + Vector3(0, 0.45, 0), Vector3(2.2, 0.12, 0.55), Color(0.55, 0.4, 0.25), true)
 		_box(world, bpos + Vector3(-0.8, 0.22, 0), Vector3(0.15, 0.45, 0.5), Color(0.4, 0.3, 0.2))
 		_box(world, bpos + Vector3(0.8, 0.22, 0), Vector3(0.15, 0.45, 0.5), Color(0.4, 0.3, 0.2))
 	for i in range(26):
-		var fp := Vector3(randf_range(-54, -22), 0.16, randf_range(17, 32))
+		var fp := Vector3(randf_range(-54, -24.5), 0.16, randf_range(19.2, 32)) # CLUTTER: z<19.2 put flowers on the Oak asphalt (edge 18.6); x>-24.5 put them on Cedar (edge -23.6)
 		_sphere(world, fp, Vector3(0.22, 0.22, 0.22), [Color(0.95, 0.5, 0.6), Color(0.98, 0.85, 0.35), Color(0.9, 0.9, 0.95)][i % 3])
 	# Crosswalks at the main intersections
-	for cx in [-70.0, -20.0, 24.0, 72.0]:
+	for cx in [-70.0, -20.0, 24.0, 72.0, 128.0, 176.0, 224.0, 272.0, 320.0]:
 		for cz in [-55.0, -11.0, 15.0, 55.0]:
 			if not ((cx == -20.0 or cx == 24.0) or (cz == -11.0 or cz == 15.0)):
 				continue
 			for s in range(-3, 4):
 				_box(world, Vector3(cx + float(s) * 1.05, 0.12, cz - 5.6), Vector3(0.62, 0.03, 2.6), Color(0.94, 0.94, 0.92))
 				_box(world, Vector3(cx - 5.6, 0.12, cz + float(s) * 1.05), Vector3(2.6, 0.03, 0.62), Color(0.94, 0.94, 0.92))
-	for i in range(36):
-		var gp := Vector3(srng.randf_range(-118, 118), 0.045, srng.randf_range(-88, 88))
+	for i in range(72): # MAP DOUBLING: count doubled with the area
+		var gp := Vector3(srng.randf_range(-118, 366), 0.045, srng.randf_range(-88, 88))
 		var gon := false
 		for rz5 in road_zs:
 			if abs(gp.z - rz5) < 6.0: gon = true
@@ -1048,8 +1275,17 @@ func _build_world() -> void:
 	_sphere(world, Vector3(-43, 0.32, 26.5), Vector3(0.42, 0.3, 0.55), Color(0.98, 0.97, 0.94)) # duck body
 	_sphere(world, Vector3(-42.7, 0.55, 26.9), Vector3(0.24, 0.24, 0.24), Color(0.98, 0.97, 0.94)) # duck head
 	_box(world, Vector3(-42.55, 0.52, 27.12), Vector3(0.2, 0.07, 0.1), Color(0.95, 0.65, 0.2)) # beak
-	for i in range(22):
-		var fp2 := Vector3(srng.randf_range(-114, 114), 0.16, srng.randf_range(-86, 86))
+	for i in range(44): # MAP DOUBLING: count doubled with the area
+		var fp2 := Vector3(srng.randf_range(-114, 366), 0.16, srng.randf_range(-86, 86))
+		# CLUTTER: this scatter had NO road check — flowers landed
+		# on asphalt. Same exclusion as the grass tufts/patches.
+		var fon := false
+		for rz6 in road_zs:
+			if abs(fp2.z - rz6) < 5.0: fon = true
+		for rx6 in road_xs:
+			if abs(fp2.x - rx6) < 5.0: fon = true
+		if fon:
+			continue
 		_sphere(world, fp2, Vector3(0.2, 0.2, 0.2), [Color(0.95, 0.5, 0.6), Color(0.98, 0.85, 0.35), Color(0.75, 0.6, 0.95)][i % 3])
 	# Lamp posts
 	for lp in [Vector3(-26, 0, -6), Vector3(18, 0, -16), Vector3(-26, 0, 20), Vector3(30, 0, 10), Vector3(-2, 0, -16), Vector3(2, 0, 20), Vector3(-64, 0, -49), Vector3(66, 0, 60), Vector3(-76, 0, 20), Vector3(30, 0, -60), Vector3(84, 0, -6), Vector3(-96, 0, 44)]:
@@ -1061,13 +1297,15 @@ func _build_world() -> void:
 	var pond2 := _cyl(world, Vector3(-90, 0.08, 76), 3.0, 3.0, 0.16, Color.WHITE)
 	pond2.material_override = _mat_tex(TEX_WATER, Color.WHITE, Vector3(3, 3, 1), 0.35)
 	content_points.append(Vector3(-90, 0, 76)) # v0.9 audit: park 2
-	content_points.append(Vector3(-76, 0, 66)) # gazebo
-	for bpos2 in [Vector3(-78, 0, 71), Vector3(-72, 0, 79)]:
+	content_points.append(Vector3(-78, 0, 66)) # gazebo
+	for bpos2 in [Vector3(-78, 0, 71), Vector3(-76, 0, 79)]: # CLUTTER: the -72 bench stood in the Pine corridor
 		_box(world, bpos2 + Vector3(0, 0.45, 0), Vector3(2.2, 0.12, 0.55), Color(0.55, 0.4, 0.25), true)
 		_box(world, bpos2 + Vector3(-0.8, 0.22, 0), Vector3(0.15, 0.45, 0.5), Color(0.4, 0.3, 0.2))
 		_box(world, bpos2 + Vector3(0.8, 0.22, 0), Vector3(0.15, 0.45, 0.5), Color(0.4, 0.3, 0.2))
-	# Gazebo
-	var gz_pos := Vector3(-76, 0, 66)
+	# Gazebo — CLUTTER: at x=-76 its platform edge (r 3.2) and
+	# roof (r 3.5) overhung the Pine Street asphalt; at x=-78
+	# both clear the road and its sidewalk.
+	var gz_pos := Vector3(-78, 0, 66)
 	_cyl(world, gz_pos + Vector3(0, 0.12, 0), 3.0, 3.2, 0.24, Color(0.8, 0.75, 0.68), true)
 	for ga in [Vector2(1.7, 1.7), Vector2(-1.7, 1.7), Vector2(1.7, -1.7), Vector2(-1.7, -1.7)]:
 		_cyl(world, gz_pos + Vector3(ga.x, 1.5, ga.y), 0.09, 0.09, 2.8, Color(0.92, 0.9, 0.86), true)
@@ -1075,7 +1313,7 @@ func _build_world() -> void:
 	gz_roof.material_override = _mat_tex(TEX_ROOF, Color(0.55, 0.35, 0.3), Vector3(3, 1, 1))
 	_sphere(world, gz_pos + Vector3(0, 4.5, 0), Vector3(0.28, 0.28, 0.28), Color(0.9, 0.75, 0.3))
 	for i in range(14):
-		var fp3 := Vector3(srng.randf_range(-100, -68), 0.16, srng.randf_range(66, 82))
+		var fp3 := Vector3(srng.randf_range(-100, -75), 0.16, srng.randf_range(66, 82)) # CLUTTER: x>-75 put flowers on the Pine asphalt (road edge -73.6)
 		_sphere(world, fp3, Vector3(0.2, 0.2, 0.2), [Color(0.95, 0.5, 0.6), Color(0.98, 0.85, 0.35), Color(0.9, 0.9, 0.95)][i % 3])
 	# ============ CLOCK TOWER landmark (north centre, by the river road)
 	var tower := _box(world, Vector3(0, 5, -80), Vector3(4.4, 10, 4.4), Color.WHITE, true)
@@ -1096,8 +1334,8 @@ func _build_world() -> void:
 	# One invisible collision body with 4 shapes at the obstructions.
 	var border_body := StaticBody3D.new()
 	var b_shapes: Array = [
-		[Vector3(252, 2, 1), Vector3(0, 1, -92)], [Vector3(252, 2, 1), Vector3(0, 1, 92)],
-		[Vector3(1, 2, 192), Vector3(-119.8, 1, 0)], [Vector3(1, 2, 192), Vector3(119.8, 1, 0)],
+		[Vector3(504, 2, 1), Vector3(126, 1, -92)], [Vector3(504, 2, 1), Vector3(126, 1, 92)],
+		[Vector3(1, 2, 192), Vector3(-119.8, 1, 0)], [Vector3(1, 2, 192), Vector3(371.8, 1, 0)], # MAP DOUBLING: east wall moved 119.8 -> 371.8
 	]
 	for bs in b_shapes:
 		var bcs := CollisionShape3D.new()
@@ -1108,11 +1346,11 @@ func _build_world() -> void:
 		border_body.add_child(bcs)
 	world.add_child(border_body)
 	# NORTH: a RIVER — water, far bank, houses across the water, fence here
-	var river := _box(world, Vector3(0, 0.0, -99.5), Vector3(252, 0.25, 13), Color.WHITE)
-	river.material_override = _mat_tex(TEX_WATER, Color(0.85, 0.95, 1.05), Vector3(40, 2, 1), 0.3)
-	var far_bank := _box(world, Vector3(0, -0.05, -115), Vector3(252, 0.6, 18), Color.WHITE)
-	far_bank.material_override = _mat_tex(TEX_GRASS, Color(0.66, 0.78, 0.6), Vector3(40, 3, 1))
-	for hx in [-100, -60, -20, 20, 60, 100]:
+	var river := _box(world, Vector3(126, 0.0, -99.5), Vector3(504, 0.25, 13), Color.WHITE)
+	river.material_override = _mat_tex(TEX_WATER, Color(0.85, 0.95, 1.05), Vector3(80, 2, 1), 0.3)
+	var far_bank := _box(world, Vector3(126, -0.05, -115), Vector3(504, 0.6, 18), Color.WHITE)
+	far_bank.material_override = _mat_tex(TEX_GRASS, Color(0.66, 0.78, 0.6), Vector3(80, 3, 1))
+	for hx in [-100, -60, -20, 20, 60, 100, 140, 180, 220, 260, 300, 340]:
 		_box(world, Vector3(hx, 2.5, -124), Vector3(10, 5, 8), Color(0.82, 0.78, 0.72))
 		var sr1 := _box(world, Vector3(hx - 2.4, 5.6, -124), Vector3(6.4, 0.25, 9), Color(0.5, 0.42, 0.4))
 		sr1.rotation_degrees = Vector3(0, 0, 34)
@@ -1120,22 +1358,22 @@ func _build_world() -> void:
 		sr2.rotation_degrees = Vector3(0, 0, -34)
 		_build_pine(world, Vector3(hx + 9, 0, -120), 1.1)
 	var fxi: int = 0
-	for fx2 in range(-124, 125, 4):
+	for fx2 in range(-124, 377, 4):
 		_box(world, Vector3(fx2, 0.55, -92), Vector3(0.16, 1.1, 0.16), Color(0.55, 0.45, 0.35))
 		if fxi % 6 == 0:
 			content_points.append(Vector3(fx2, 0, -92)) # v0.9 audit: the river fence is content
 		fxi += 1
-	_box(world, Vector3(0, 0.95, -92), Vector3(252, 0.12, 0.1), Color(0.55, 0.45, 0.35))
-	_box(world, Vector3(0, 0.5, -92), Vector3(252, 0.1, 0.1), Color(0.55, 0.45, 0.35))
+	_box(world, Vector3(126, 0.95, -92), Vector3(504, 0.12, 0.1), Color(0.55, 0.45, 0.35))
+	_box(world, Vector3(126, 0.5, -92), Vector3(504, 0.1, 0.1), Color(0.55, 0.45, 0.35))
 	# SOUTH: a tall HEDGE + a pine FOREST behind it
-	var hedge := _box(world, Vector3(0, 0.85, 92), Vector3(252, 1.7, 1.4), Color.WHITE, true)
-	hedge.material_override = _mat_tex(TEX_FOLIAGE, Color(0.75, 0.9, 0.72), Vector3(40, 1, 1))
-	for hx2 in range(-120, 121, 8):
+	var hedge := _box(world, Vector3(126, 0.85, 92), Vector3(504, 1.7, 1.4), Color.WHITE, true)
+	hedge.material_override = _mat_tex(TEX_FOLIAGE, Color(0.75, 0.9, 0.72), Vector3(80, 1, 1))
+	for hx2 in range(-120, 373, 8):
 		_sphere(world, Vector3(hx2, 1.85, 92), Vector3(1.6, 0.8, 1.2), Color(0.42, 0.62, 0.36))
 		content_points.append(Vector3(hx2, 0, 92)) # v0.9 audit: the south hedge is content
-	for px in range(-120, 121, 11):
+	for px in range(-120, 373, 11):
 		_build_pine(world, Vector3(px + srng.randf_range(-2, 2), 0, 99 + srng.randf_range(-1.5, 1.5)), srng.randf_range(0.95, 1.3))
-	for px2 in range(-116, 117, 14):
+	for px2 in range(-116, 373, 14):
 		_build_pine(world, Vector3(px2 + srng.randf_range(-3, 3), 0, 108 + srng.randf_range(-2, 2)), srng.randf_range(1.15, 1.55))
 	# WEST: tall CITY BUILDINGS backing onto the edge + a fence
 	var b_heights: Array = [14.0, 11.0, 17.0, 12.0, 15.0]
@@ -1156,24 +1394,25 @@ func _build_world() -> void:
 	_box(world, Vector3(-119.8, 0.95, 0), Vector3(0.1, 0.12, 192), Color(0.5, 0.5, 0.55))
 	_box(world, Vector3(-119.8, 0.5, 0), Vector3(0.1, 0.1, 192), Color(0.5, 0.5, 0.55))
 	# EAST: CONSTRUCTION — striped barriers, cones, a half-built house + crane
+	# MAP DOUBLING: the whole site moved +252 east with the border.
 	for bz3 in range(-60, 61, 15):
-		_box(world, Vector3(119.8, 0.5, bz3), Vector3(0.5, 1.0, 3.4), Color(0.95, 0.5, 0.15), true)
-		_box(world, Vector3(119.8, 0.72, bz3), Vector3(0.54, 0.22, 3.4), Color(0.96, 0.95, 0.92))
-		content_points.append(Vector3(119.8, 0, bz3)) # v0.9 audit: construction barriers are content
+		_box(world, Vector3(371.8, 0.5, bz3), Vector3(0.5, 1.0, 3.4), Color(0.95, 0.5, 0.15), true)
+		_box(world, Vector3(371.8, 0.72, bz3), Vector3(0.54, 0.22, 3.4), Color(0.96, 0.95, 0.92))
+		content_points.append(Vector3(371.8, 0, bz3)) # v0.9 audit: construction barriers are content
 	for cz3 in range(-52, 53, 13):
-		var cone := _cyl(world, Vector3(118.4, 0.4, cz3), 0.06, 0.3, 0.8, Color(0.95, 0.45, 0.12))
+		var cone := _cyl(world, Vector3(370.4, 0.4, cz3), 0.06, 0.3, 0.8, Color(0.95, 0.45, 0.12))
 		cone.material_override = _mat(Color(0.95, 0.45, 0.12), 0.6)
-	for cpx in [126.0, 136.0]:
+	for cpx in [378.0, 388.0]:
 		for cpz in [2.0, 18.0]:
 			_box(world, Vector3(cpx, 3.5, cpz), Vector3(0.45, 7, 0.45), Color(0.75, 0.6, 0.4), true)
-	_box(world, Vector3(131, 3.6, 10), Vector3(11, 0.3, 18), Color(0.8, 0.68, 0.5))
-	_box(world, Vector3(131, 7.1, 10), Vector3(11, 0.3, 18), Color(0.8, 0.68, 0.5))
-	_cyl(world, Vector3(140, 8.5, -16), 0.35, 0.45, 17, Color(0.9, 0.6, 0.15))
-	var jib := _box(world, Vector3(132, 16.8, -16), Vector3(17, 0.5, 0.5), Color(0.9, 0.6, 0.15))
+	_box(world, Vector3(383, 3.6, 10), Vector3(11, 0.3, 18), Color(0.8, 0.68, 0.5))
+	_box(world, Vector3(383, 7.1, 10), Vector3(11, 0.3, 18), Color(0.8, 0.68, 0.5))
+	_cyl(world, Vector3(392, 8.5, -16), 0.35, 0.45, 17, Color(0.9, 0.6, 0.15))
+	var jib := _box(world, Vector3(384, 16.8, -16), Vector3(17, 0.5, 0.5), Color(0.9, 0.6, 0.15))
 	jib.rotation_degrees = Vector3(0, 0, 2)
-	_cyl(world, Vector3(125, 14.2, -16), 0.03, 0.03, 5.2, Color(0.3, 0.3, 0.32))
-	_box(world, Vector3(125, 11.4, -16), Vector3(0.7, 0.5, 0.7), Color(0.55, 0.4, 0.25))
-	_label3d(world, "🚧 NEW HOMES — COMING SOON!", Vector3(124, 9.5, 10), 64, Color(1.0, 0.8, 0.4))
+	_cyl(world, Vector3(377, 14.2, -16), 0.03, 0.03, 5.2, Color(0.3, 0.3, 0.32))
+	_box(world, Vector3(377, 11.4, -16), Vector3(0.7, 0.5, 0.7), Color(0.55, 0.4, 0.25))
+	_label3d(world, "🚧 NEW HOMES — COMING SOON!", Vector3(376, 9.5, 10), 64, Color(1.0, 0.8, 0.4))
 	# v0.9 FILL FEATURES (item 1): the named places that end the
 	# "big chunks of nothing" — playground, community garden, bus
 	# stop, little library, extra benches and lamps.
@@ -1185,6 +1424,10 @@ func _build_world() -> void:
 	# as a neighbourhood. No houses array entries (count stays 41),
 	# no hide/ender points, gameplay untouched.
 	_build_town_fill(world, srng)
+	# MAP DOUBLING: the east district's own places and per-block
+	# dressing (market row, apartment court, pocket park, clusters,
+	# lamp grid, promenade extension).
+	_build_east_district(world, srng)
 	# v0.7 TRAFFIC: moving cars live under their own group (spawned
 	# and despawned at runtime — see _process_traffic).
 	traffic_group = Node3D.new()
@@ -1366,7 +1609,26 @@ func _build_fill_features(world: Node3D, srng: RandomNumberGenerator) -> void:
 # ================================================================ v1.0 town fill
 func _fill_lamp(world: Node3D, pos: Vector3) -> void:
 	_cyl(world, pos + Vector3(0, 2.2, 0), 0.07, 0.09, 4.4, Color(0.25, 0.27, 0.3), true)
-	_sphere(world, pos + Vector3(0, 4.5, 0), Vector3(0.5, 0.5, 0.5), Color(1.0, 0.9, 0.6))
+	# DUSK: the lamps are ON. The head gets a warm emissive
+	# material (energy 2.4 — bright enough to read as a lit bulb
+	# through the ACES tonemap) and a faint unshaded halo shell
+	# so it glows from down the street. NO dynamic light per
+	# lamp (the perf budget forbids it): the emissive + halo do
+	# the whole job for the price of one extra culled sphere.
+	# The halo casts no shadow, writes no depth (no sorting
+	# artefacts against windows/fences) and range-culls at 65 m
+	# like the rest of the small clutter.
+	var head := _sphere(world, pos + Vector3(0, 4.5, 0), Vector3(0.5, 0.5, 0.5), Color(1.0, 0.82, 0.48))
+	head.material_override = _mat(Color(1.0, 0.80, 0.44), 0.35, 2.4)
+	var halo := _sphere(world, pos + Vector3(0, 4.5, 0), Vector3(0.95, 0.95, 0.95), Color(1.0, 0.75, 0.42))
+	var hm := StandardMaterial3D.new()
+	hm.albedo_color = Color(1.0, 0.74, 0.40, 0.10)
+	hm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	hm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	hm.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_DISABLED
+	halo.material_override = hm
+	halo.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	halo.visibility_range_end = 65.0
 	content_points.append(pos)
 
 func _fill_bench(world: Node3D, pos: Vector3, rot_deg: float = 0.0) -> void:
@@ -1393,10 +1655,19 @@ func _fill_flowerbed(world: Node3D, pos: Vector3, w: float = 4.2) -> void:
 	content_points.append(pos)
 
 func _fill_mailbox(world: Node3D, pos: Vector3) -> void:
-	for i in range(3):
-		var mx: float = pos.x - 0.55 + float(i) * 0.55
-		_cyl(world, Vector3(mx, 0.45, pos.z), 0.045, 0.045, 0.9, Color(0.5, 0.42, 0.32), true)
-		_box(world, Vector3(mx, 1.0, pos.z), Vector3(0.42, 0.3, 0.3), [Color(0.3, 0.45, 0.75), Color(0.75, 0.35, 0.3), Color(0.35, 0.6, 0.4)][i], true)
+	# CLUTTER (Michael, 2026-11-17): ONE mailbox. The old version
+	# built a row of THREE boxes on posts — the "houses with
+	# three mailboxes" he spotted. A mailbox is a single box on
+	# a single post, built in a group named "Mailbox" so the
+	# clutter audit can count mailboxes (tests/ClutterProbe.tscn).
+	# NOTE: the town fill no longer calls this — every house now
+	# carries exactly its own one mailbox (see _build_house).
+	var g := Node3D.new()
+	g.name = "Mailbox"
+	g.position = pos
+	world.add_child(g)
+	_cyl(g, Vector3(0, 0.45, 0), 0.045, 0.045, 0.9, Color(0.5, 0.42, 0.32), true)
+	_box(g, Vector3(0, 1.0, 0), Vector3(0.42, 0.3, 0.3), Color(0.3, 0.45, 0.75), true)
 	content_points.append(pos)
 
 func _fill_shed(world: Node3D, pos: Vector3, col: Color) -> void:
@@ -1408,12 +1679,43 @@ func _fill_shed(world: Node3D, pos: Vector3, col: Color) -> void:
 	content_points.append(pos)
 
 func _fill_fence_x(world: Node3D, x0: float, x1: float, z: float) -> void:
-	var n: int = int((x1 - x0) / 2.0)
-	for i in range(n + 1):
-		_box(world, Vector3(x0 + float(i) * 2.0, 0.5, z), Vector3(0.16, 1.0, 0.16), Color(0.6, 0.48, 0.34), true)
-	_box(world, Vector3((x0 + x1) * 0.5, 0.82, z), Vector3(x1 - x0, 0.1, 0.1), Color(0.6, 0.48, 0.34), true)
-	_box(world, Vector3((x0 + x1) * 0.5, 0.42, z), Vector3(x1 - x0, 0.09, 0.09), Color(0.6, 0.48, 0.34), true)
-	content_points.append(Vector3((x0 + x1) * 0.5, 0, z))
+	# CLUTTER (Michael, 2026-11-17): a fence run must NEVER cross
+	# a roadway. The old runs were drawn straight through the
+	# vertical road corridors — the Willow back fences at z=73
+	# crossed Pine, Cedar, Birch AND Riverside, and the Elm
+	# front-gap fences crossed Cedar and Birch. Runs are now
+	# CLIPPED against every vertical asphalt corridor (+0.5
+	# margin) and only the surviving segments are built, so a
+	# fence always stops at the road's edge like a real one.
+	var segs: Array = [[x0, x1]]
+	for rx in [-70.0, -20.0, 24.0, 72.0, 128.0, 176.0, 224.0, 272.0, 320.0]:
+		var lo: float = rx - 3.6 - 0.5
+		var hi: float = rx + 3.6 + 0.5
+		var next: Array = []
+		for sg in segs:
+			var a: float = float(sg[0])
+			var b: float = float(sg[1])
+			if b <= lo or a >= hi:
+				next.append([a, b])
+			else:
+				if a < lo:
+					next.append([a, lo])
+				if b > hi:
+					next.append([hi, b])
+		segs = next
+	for sg in segs:
+		var a: float = float(sg[0])
+		var b: float = float(sg[1])
+		if b - a < 1.5:
+			continue # a stub shorter than one panel isn't a fence
+		var n: int = int((b - a) / 2.0)
+		for i in range(n + 1):
+			_box(world, Vector3(a + float(i) * 2.0, 0.5, z), Vector3(0.16, 1.0, 0.16), Color(0.6, 0.48, 0.34), true)
+		if b - (a + float(n) * 2.0) > 0.4:
+			_box(world, Vector3(b, 0.5, z), Vector3(0.16, 1.0, 0.16), Color(0.6, 0.48, 0.34), true) # end post
+		_box(world, Vector3((a + b) * 0.5, 0.82, z), Vector3(b - a, 0.1, 0.1), Color(0.6, 0.48, 0.34), true)
+		_box(world, Vector3((a + b) * 0.5, 0.42, z), Vector3(b - a, 0.09, 0.09), Color(0.6, 0.48, 0.34), true)
+		content_points.append(Vector3((a + b) * 0.5, 0, z))
 
 # A small non-residential building (shop / hall / apartment block).
 # Front face is local +Z; rot_deg turns it. NOT a houses-array entry:
@@ -1474,9 +1776,16 @@ func _fill_parking(world: Node3D, pos: Vector3, w: float, d: float, car_cols: Ar
 
 func _build_town_fill(world: Node3D, srng: RandomNumberGenerator) -> void:
 	# ============ RIVERSIDE PROMENADE (north band, behind the bench line)
-	var path := _box(world, Vector3(0, 0.04, -85), Vector3(236, 0.08, 3.4), Color.WHITE)
-	path.material_override = _mat_tex(TEX_SIDEWALK, Color.WHITE, Vector3(58, 1, 1))
-	for lx in [-100.0, -60.0, -20.0, 20.0, 60.0, 100.0]:
+	var path := _box(world, Vector3(126, 0.04, -85), Vector3(488, 0.08, 3.4), Color.WHITE) # MAP DOUBLING: path extended east with the town
+	path.material_override = _mat_tex(TEX_SIDEWALK, Color.WHITE, Vector3(120, 1, 1))
+	# CLUTTER: the Cedar lamp stood at x=-20 — the Cedar Street
+	# centreline, in the roadway where Cedar meets the promenade.
+	# It now stands on the east verge at x=-14.5. The x=20 lamp
+	# sits at 19.4: its pole and head always cleared the Cedar
+	# asphalt (edge x=20.4), but the 0.95m glow-halo shell
+	# overhung the edge by ~7cm and tripped the clutter catch-all
+	# — 19.4 puts the whole lamp honestly clear of the roadway.
+	for lx in [-100.0, -60.0, -14.5, 19.4, 60.0, 100.0]:
 		_fill_lamp(world, Vector3(lx, 0, -85))
 	for fb in [Vector3(-80, 0, -88.5), Vector3(36, 0, -88.5), Vector3(80, 0, -88.5)]:
 		_fill_flowerbed(world, fb, 5.0)
@@ -1492,19 +1801,31 @@ func _build_town_fill(world: Node3D, srng: RandomNumberGenerator) -> void:
 	_fill_shed(world, Vector3(-112, 0, -77), Color(0.45, 0.6, 0.45))
 	_fill_shed(world, Vector3(-80, 0, -77), Color(0.6, 0.48, 0.36))
 	_fill_shed(world, Vector3(-58, 0, -75), Color(0.5, 0.58, 0.68))
-	_fill_shed(world, Vector3(20, 0, -76), Color(0.62, 0.5, 0.4))
-	_fill_bench(world, Vector3(-26, 0, -74), 0.0)
-	_fill_flowerbed(world, Vector3(-21, 0, -73), 3.6)
+	# CLUTTER: the shed at x=20 jutted into the Birch Lane
+	# corridor (its east wall crossed the asphalt edge); it now
+	# sits at x=16, clear of both Cedar and Birch. The bench at
+	# (26,-73) also stood in the Birch corridor, and the
+	# flowerbed at (-21,-73) crossed Cedar — both shifted west/
+	# east onto grass, and the west bench moved so the bed and
+	# bench don't overlap.
+	_fill_shed(world, Vector3(16, 0, -76), Color(0.62, 0.5, 0.4))
+	_fill_bench(world, Vector3(-33, 0, -74), 0.0)
+	_fill_flowerbed(world, Vector3(-26.5, 0, -73), 3.6)
 	_build_tree(world, Vector3(-31, 0, -77))
-	_fill_bench(world, Vector3(26, 0, -73), 0.0)
-	for fc in [Vector3(-26, 0, -60), Vector3(20, 0, -60)]:
+	_fill_bench(world, Vector3(31, 0, -73), 0.0)
+	# CLUTTER: these "front gap" clusters were centred beside the
+	# cross-streets, so their benches and flowerbeds spilled into
+	# the Cedar/Birch roadways (and each carried a THREE-mailbox
+	# cluster). Centres shifted onto grass; the mailbox clusters
+	# are GONE — every house has exactly its own one mailbox.
+	for fc in [Vector3(-30, 0, -60), Vector3(14, 0, -60)]:
 		_fill_flowerbed(world, fc, 4.0)
 		_fill_bench(world, fc + Vector3(3.6, 0, 0.6), 0.0)
-		_fill_mailbox(world, fc + Vector3(-3.4, 0, 0.4))
 		_fill_fence_x(world, fc.x - 5.0, fc.x + 5.0, fc.z - 2.6)
 	# ============ MAPLE west shops + front gardens
 	_fill_building(world, Vector3(-95, 0, -20), Vector3(6.5, 3.6, 5), Color(0.85, 0.9, 0.96), Color(0.4, 0.5, 0.65), "MAPLE MART", 0.0)
-	_fill_mailbox(world, Vector3(-108, 0, -18))
+	# CLUTTER: a stray three-mailbox cluster stood here — removed
+	# (mailboxes live at houses now, exactly one each).
 	_fill_lamp(world, Vector3(-89, 0, -17))
 	for fc2 in [Vector3(-60, 0, -20), Vector3(38, 0, -20)]:
 		_fill_flowerbed(world, fc2, 4.0)
@@ -1514,7 +1835,7 @@ func _build_town_fill(world: Node3D, srng: RandomNumberGenerator) -> void:
 	_fill_shed(world, Vector3(-27, 0, -4), Color(0.55, 0.62, 0.5))
 	_fill_shed(world, Vector3(-60, 0, -4), Color(0.62, 0.52, 0.42))
 	_fill_fence_x(world, -66.0, -54.0, -6.5)
-	_fill_flowerbed(world, Vector3(-24, 0, -1), 3.4)
+	_fill_flowerbed(world, Vector3(-27, 0, -1), 3.4) # CLUTTER: was at -24, its east edge crossed the Cedar corridor
 	# ============ WEST END shop + park-west entrance (Oak/Willow band, west)
 	_fill_building(world, Vector3(-104, 0, 23), Vector3(7, 3.8, 5.5), Color(0.96, 0.9, 0.8), Color(0.6, 0.35, 0.3), "WEST END FOODS", 180.0)
 	_fill_flowerbed(world, Vector3(-61, 0, 21), 3.4)
@@ -1543,17 +1864,26 @@ func _build_town_fill(world: Node3D, srng: RandomNumberGenerator) -> void:
 	_fill_lamp(world, Vector3(97, 0, -17.5))
 	_fill_bench(world, Vector3(92, 0, -17.8), 180.0)
 	# ============ WILLOW south band: hall, sheds, back fences, front clusters
-	_fill_building(world, Vector3(30, 0, 79), Vector3(11, 5.5, 7), Color(0.88, 0.84, 0.78), Color(0.5, 0.42, 0.38), "WILLOW HALL", 180.0, true)
-	_fill_parking(world, Vector3(17, 0, 79), 8.0, 6.0, [Color(0.4, 0.55, 0.45)], "van")
+	# CLUTTER: Willow Hall stood at x=30 with its west wall AND
+	# its hanging sign inside the Birch Lane corridor (footprint
+	# x 24.5..35.5 vs asphalt from 20.4) — a building in the
+	# street. It now sits at x=36, fully inside its block, and
+	# its lot shifted 1 west so the lot's east edge also clears
+	# the asphalt.
+	_fill_building(world, Vector3(36, 0, 79), Vector3(11, 5.5, 7), Color(0.88, 0.84, 0.78), Color(0.5, 0.42, 0.38), "WILLOW HALL", 180.0, true)
+	_fill_parking(world, Vector3(16, 0, 79), 8.0, 6.0, [Color(0.4, 0.55, 0.45)], "van")
 	_fill_shed(world, Vector3(-52, 0, 76), Color(0.5, 0.6, 0.48))
 	_fill_shed(world, Vector3(-38, 0, 77), Color(0.6, 0.5, 0.38))
 	_fill_shed(world, Vector3(48, 0, 76), Color(0.52, 0.58, 0.66))
 	for seg in [[-84.0, -70.0], [-30.0, -16.0], [13.0, 27.0], [71.0, 85.0]]:
 		_fill_fence_x(world, seg[0], seg[1], 73.0)
-	for fc3 in [Vector3(-77, 0, 60.5), Vector3(-23, 0, 60.5), Vector3(20, 0, 60.5), Vector3(78, 0, 60.5)]:
+	# CLUTTER: same front-gap fix as Elm — the Pine/Cedar/Birch
+	# clusters' benches and flowerbeds stood in those roadways
+	# and one cluster's mailboxes stood IN Riverside Drive.
+	# Centres shifted onto grass; mailbox clusters removed.
+	for fc3 in [Vector3(-82, 0, 60.5), Vector3(-29, 0, 60.5), Vector3(14, 0, 60.5), Vector3(78, 0, 60.5)]:
 		_fill_flowerbed(world, fc3, 4.0)
 		_fill_bench(world, fc3 + Vector3(3.6, 0, 0.8), 180.0)
-		_fill_mailbox(world, fc3 + Vector3(-3.4, 0, 0.6))
 	_fill_bench(world, Vector3(84, 0, 74), 0.0)
 	_fill_flowerbed(world, Vector3(88, 0, 73), 3.6)
 	# ============ WILLOW GREEN pocket park (SE block): fountain + paths
@@ -1589,10 +1919,13 @@ func _build_town_fill(world: Node3D, srng: RandomNumberGenerator) -> void:
 	_fill_flowerbed(world, Vector3(-108, 0, 26.5), 3.6) # Oak-south west front gardens
 	_fill_bench(world, Vector3(-93, 0, 26.5), 180.0)
 	_fill_flowerbed(world, Vector3(-113, 0, -71), 3.4) # NW corner side garden
-	_fill_bench(world, Vector3(-20, 0, -47), 0.0) # Elm-south back-garden gaps
-	_fill_bench(world, Vector3(24, 0, -47), 0.0)
-	_fill_mailbox(world, Vector3(8, 0, -61)) # Elm-north front gap
-	_fill_mailbox(world, Vector3(20, 0, 49)) # Willow-north front gap
+	# CLUTTER: these two benches stood CENTRED on the Cedar
+	# Street and Birch Lane centrelines — the "random benches on
+	# the street" Michael photographed. They now rest on the
+	# grass verges west/east of those roads. The two stray
+	# three-mailbox clusters that stood here are removed.
+	_fill_bench(world, Vector3(-27, 0, -47), 0.0) # Elm-south front-garden gap, west of Cedar
+	_fill_bench(world, Vector3(31, 0, -47), 0.0) # Elm-south front-garden gap, east of Birch
 	# ============ STREET LAMP GRID: every street gets lamps along it
 	for lp in [Vector3(-45, 0, -16.6), Vector3(5, 0, -16.6), Vector3(50, 0, -16.6), Vector3(95, 0, -16.6),
 			Vector3(-8, 0, 20.6), Vector3(44, 0, 20.6), Vector3(96, 0, 20.6),
@@ -1601,6 +1934,104 @@ func _build_town_fill(world: Node3D, srng: RandomNumberGenerator) -> void:
 			Vector3(-64.6, 0, -30), Vector3(-64.6, 0, 30), Vector3(-14.6, 0, -30), Vector3(-14.6, 0, 32),
 			Vector3(29.6, 0, -32), Vector3(29.6, 0, 28), Vector3(66.6, 0, -30), Vector3(66.6, 0, 30)]:
 		_fill_lamp(world, lp)
+
+func _build_east_district(world: Node3D, srng: RandomNumberGenerator) -> void:
+	# MAP DOUBLING — the east district's own content. The houses,
+	# roads, signs and scatter are built elsewhere; this is the
+	# named places + per-block dressing that keeps the new half
+	# from reading as a copy-paste suburb, in the same style and
+	# with the same helpers as the v1.0 town fill. Block centres
+	# sit midway between the new cross streets.
+	var centres: Array = [152.0, 200.0, 248.0, 296.0, 352.0]
+	# ============ HARBOUR MARKET ROW (Maple band, Summit block)
+	_fill_stall(world, Vector3(188, 0, -21), Color(0.85, 0.35, 0.3))
+	_fill_stall(world, Vector3(197, 0, -21), Color(0.3, 0.6, 0.62))
+	_fill_stall(world, Vector3(206, 0, -21), Color(0.9, 0.7, 0.25))
+	_fill_lamp(world, Vector3(197, 0, -17.5))
+	_fill_bench(world, Vector3(183, 0, -17.8), 180.0)
+	# ============ MEADOW COURT apartments (Elm north band, Quarry block)
+	_fill_building(world, Vector3(248, 0, -76), Vector3(13, 10.5, 10), Color(0.88, 0.8, 0.74), Color(0.42, 0.48, 0.55), "MEADOW COURT", 0.0, true)
+	_fill_parking(world, Vector3(234, 0, -75), 10.0, 7.0, [Color(0.35, 0.5, 0.8), Color(0.85, 0.6, 0.25)], "hatchback")
+	_fill_lamp(world, Vector3(233, 0, -69))
+	_build_tree(world, Vector3(262, 0, -88))
+	# ============ SUNSET GREEN pocket park (Willow south band, Meadow block)
+	var spath1 := _box(world, Vector3(296, 0.03, 79), Vector3(17, 0.06, 2.2), Color.WHITE)
+	spath1.material_override = _mat_tex(TEX_SIDEWALK, Color.WHITE, Vector3(5, 1, 1))
+	var spath2 := _box(world, Vector3(296, 0.03, 79), Vector3(2.2, 0.06, 17), Color.WHITE)
+	spath2.material_override = _mat_tex(TEX_SIDEWALK, Color.WHITE, Vector3(1, 5, 1))
+	_cyl(world, Vector3(296, 0.35, 79), 2.3, 2.5, 0.7, Color(0.75, 0.72, 0.68), true)
+	var swater := _cyl(world, Vector3(296, 0.62, 79), 2.0, 2.0, 0.18, Color.WHITE)
+	swater.material_override = _mat_tex(TEX_WATER, Color.WHITE, Vector3(2, 2, 1), 0.3)
+	_cyl(world, Vector3(296, 0.9, 79), 0.16, 0.22, 1.1, Color(0.7, 0.68, 0.64), true)
+	_sphere(world, Vector3(296, 1.6, 79), Vector3(0.34, 0.34, 0.34), Color(0.8, 0.78, 0.74))
+	content_points.append(Vector3(296, 0, 79))
+	_fill_bench(world, Vector3(289, 0, 72), 0.0)
+	_fill_bench(world, Vector3(303, 0, 86), 180.0)
+	_fill_lamp(world, Vector3(297, 0, 70.5))
+	_fill_flowerbed(world, Vector3(288, 0, 86), 4.0)
+	_fill_flowerbed(world, Vector3(304, 0, 72), 4.0)
+	_build_tree(world, Vector3(286, 0, 89))
+	_build_tree(world, Vector3(306, 0, 89))
+	# ============ PER-BLOCK DRESSING (all five new blocks)
+	var shed_cols: Array = [Color(0.45, 0.6, 0.45), Color(0.6, 0.48, 0.36), Color(0.5, 0.58, 0.68), Color(0.62, 0.5, 0.4), Color(0.55, 0.62, 0.5)]
+	for ci in range(centres.size()):
+		var c: float = centres[ci]
+		# Elm back gardens: a shed + a tree behind the north row
+		# (the Quarry block's shed spot is Meadow Court itself).
+		if ci != 2:
+			_fill_shed(world, Vector3(c, 0, -77), shed_cols[ci])
+		_build_tree(world, Vector3(c + 10.0, 0, -78))
+		# Maple front-gap clusters (flowerbed + bench + fence) —
+		# the Summit block's spot is the Harbour Market instead.
+		if ci != 1:
+			_fill_flowerbed(world, Vector3(c, 0, -20), 4.0)
+			_fill_bench(world, Vector3(c + 3.6, 0, -19.4), 0.0)
+			_fill_fence_x(world, c - 5.0, c + 5.0, -22.6)
+		# Oak front-gap clusters, facing the south row's fronts
+		_fill_flowerbed(world, Vector3(c, 0, 24.5), 4.0)
+		_fill_bench(world, Vector3(c + 3.6, 0, 25.3), 180.0)
+		if ci == 1:
+			_fill_flowerbed(world, Vector3(216, 0, 24.5), 4.0) # the Summit block's mid-gap sat empty between two clusters
+		# Willow back fences + sheds (the Meadow block's is
+		# Sunset Green, dressed above).
+		if ci != 3:
+			_fill_fence_x(world, c - 7.0, c + 7.0, 73.0)
+			_fill_shed(world, Vector3(c, 0, 77), shed_cols[(ci + 2) % shed_cols.size()])
+	# ============ PROMENADE EAST: lamps, flowerbeds, river benches, trees
+	for lx2 in [140.0, 188.0, 236.0, 284.0, 332.0]:
+		_fill_lamp(world, Vector3(lx2, 0, -85))
+	for fb2 in [Vector3(164, 0, -88.5), Vector3(212, 0, -88.5), Vector3(260, 0, -88.5), Vector3(308, 0, -88.5), Vector3(356, 0, -88.5)]:
+		_fill_flowerbed(world, fb2, 5.0)
+	for bx2 in [136.0, 160.0, 184.0, 208.0, 232.0, 256.0, 280.0, 304.0, 328.0, 352.0]:
+		var rb2 := Vector3(bx2, 0, -81)
+		_box(world, rb2 + Vector3(0, 0.45, 0), Vector3(2.2, 0.12, 0.55), Color(0.55, 0.4, 0.25), true)
+		_box(world, rb2 + Vector3(0, 0.85, 0.24), Vector3(2.2, 0.5, 0.09), Color(0.55, 0.4, 0.25))
+		_box(world, rb2 + Vector3(-0.8, 0.22, 0), Vector3(0.15, 0.45, 0.5), Color(0.4, 0.3, 0.2))
+		_box(world, rb2 + Vector3(0.8, 0.22, 0), Vector3(0.15, 0.45, 0.5), Color(0.4, 0.3, 0.2))
+		content_points.append(rb2)
+	for tx2 in [148.0, 168.0, 196.0, 216.0, 244.0, 264.0, 292.0, 312.0, 340.0, 360.0]: # x kept >= 8 from every cross-street centreline: a canopy blob overhangs ~1m and the clutter audit counts overhang as on-road
+		_build_tree(world, Vector3(tx2, 0, -79))
+	# ============ STREET LAMP GRID EAST: every street lit, as west
+	for lp2 in [Vector3(140, 0, -16.6), Vector3(188, 0, -16.6), Vector3(236, 0, -16.6), Vector3(284, 0, -16.6), Vector3(332, 0, -16.6),
+			Vector3(140, 0, 20.6), Vector3(188, 0, 20.6), Vector3(236, 0, 20.6), Vector3(284, 0, 20.6), Vector3(332, 0, 20.6),
+			Vector3(140, 0, -49.6), Vector3(188, 0, -49.6), Vector3(236, 0, -49.6), Vector3(284, 0, -49.6), Vector3(332, 0, -49.6),
+			Vector3(140, 0, 60.6), Vector3(188, 0, 60.6), Vector3(236, 0, 60.6), Vector3(284, 0, 60.6), Vector3(332, 0, 60.6),
+			Vector3(133.4, 0, -30), Vector3(133.4, 0, 30), Vector3(181.4, 0, -30), Vector3(181.4, 0, 30),
+			Vector3(229.4, 0, -30), Vector3(229.4, 0, 30), Vector3(277.4, 0, -30), Vector3(277.4, 0, 30),
+			Vector3(325.4, 0, -30), Vector3(325.4, 0, 30)]:
+		_fill_lamp(world, lp2)
+	# ============ EAST VERGE TREES: green against the construction
+	# border, and content for the far-east audit cells.
+	for tv in [Vector3(363, 0, -62), Vector3(363, 0, -40), Vector3(363, 0, -28), Vector3(363, 0, 4), Vector3(363, 0, 36), Vector3(363, 0, 48), Vector3(363, 0, 62), Vector3(363, 0, 80)]:
+		_build_tree(world, tv)
+	# ============ BACK-GARDEN TREES: midway shade trees in the
+	# Elm and Willow back bands, so no land cell sits empty (the
+	# v0.9 empty-area audit walks the whole doubled map).
+	for bt in [Vector3(170, 0, -74), Vector3(218, 0, -74), Vector3(266, 0, -74), Vector3(314, 0, -74),
+			Vector3(234, 0, -80), Vector3(335, 0, -80),
+			Vector3(170, 0, 74), Vector3(230, 0, 74), Vector3(266, 0, 74), Vector3(314, 0, 74),
+			Vector3(136, 0, 80), Vector3(332, 0, 80)]:
+		_build_tree(world, bt)
 
 func _sign(parent: Node, text: String, pos: Vector3, street: String = "", rot_deg: float = 0.0) -> void:
 	if street != "":
@@ -1767,13 +2198,22 @@ func _build_house(parent: Node, h: Dictionary, wall_col: Color, roof_col: Color)
 	else:
 		for stp in [4.9, 5.9, 6.9]:
 			_box(g, Vector3(0, 0.05, facing * stp), Vector3(0.95, 0.08, 0.7), Color(0.82, 0.8, 0.74))
-	# Mailbox: 0 = red post box, 1 = black wall box by the door, 2 = none
-	var mb_style: int = hr.randi_range(0, 2)
+	# Mailbox: EXACTLY ONE per house (CLUTTER, Michael 2026-11-17:
+	# he found houses with three mailboxes and houses with none).
+	# Style 0 = red post box out by the path, 1 = black wall box
+	# by the door — never none, never two. Built in a group named
+	# "Mailbox" so the clutter audit can count one per house.
+	var mb_style: int = hr.randi_range(0, 1)
+	var mb := Node3D.new()
+	mb.name = "Mailbox"
+	g.add_child(mb)
 	if mb_style == 0:
-		_cyl(g, Vector3(2.8, 0.5, facing * 6.4), 0.05, 0.05, 1.0, Color(0.4, 0.35, 0.3), true)
-		_box(g, Vector3(2.8, 1.1, facing * 6.4), Vector3(0.7, 0.45, 0.5), Color(0.6, 0.25, 0.22))
-	elif mb_style == 1:
-		_box(g, Vector3(-1.25, 1.5, facing * 3.74), Vector3(0.6, 0.42, 0.22), Color(0.16, 0.16, 0.18))
+		mb.position = Vector3(2.8, 0, facing * 6.4)
+		_cyl(mb, Vector3(0, 0.5, 0), 0.05, 0.05, 1.0, Color(0.4, 0.35, 0.3), true)
+		_box(mb, Vector3(0, 1.1, 0), Vector3(0.7, 0.45, 0.5), Color(0.6, 0.25, 0.22))
+	else:
+		mb.position = Vector3(-1.25, 0, facing * 3.74)
+		_box(mb, Vector3(0, 1.5, 0), Vector3(0.6, 0.42, 0.22), Color(0.16, 0.16, 0.18))
 	# Front hedge (45%)
 	if hr.randf() < 0.45:
 		for hx3 in [-2.9, 2.9]:
@@ -1899,6 +2339,26 @@ func _build_bush(parent: Node, pos: Vector3) -> void:
 		for fi in range(4):
 			_sphere(g, Vector3(br.randf_range(-0.7, 0.7), br.randf_range(0.5, 0.95), br.randf_range(-0.7, 0.7)), Vector3(0.09, 0.09, 0.09), Color(0.95, 0.45, 0.55) if fi % 2 == 0 else Color(0.98, 0.85, 0.4))
 
+func _park_in_driveway(world: Node3D, house_pos: Vector3, facing: float, road_z: float, side: float, col: Color, car_type: String) -> Vector3:
+	# STREETS (Michael, 2026-11-16): a parked car belongs in a
+	# DRIVEWAY. Lays a concrete pad from the house's front wall to
+	# the sidewalk edge, offset to one side of the front path (the
+	# path, door, mailbox, hedges and yard props all sit within
+	# +/-3.5 of the house centre or behind the car's nose line, so
+	# a pad centred 4.6 to the side clears them), and parks the car
+	# on it perpendicular to the street like a real driveway car.
+	# Returns the car's position (it stays a hiding spot).
+	var pad_near: float = house_pos.z + facing * 3.7 # just at the front wall / foundation edge
+	var pad_far: float = road_z - facing * 5.1 # sidewalk inner edge (band half 4.8) + a small verge
+	var pad_cz: float = (pad_near + pad_far) * 0.5
+	var pad_len: float = absf(pad_far - pad_near)
+	var cx: float = house_pos.x + side * 4.6
+	var pad := _box(world, Vector3(cx, 0.03, pad_cz), Vector3(2.8, 0.06, pad_len), Color.WHITE)
+	pad.material_override = _mat_tex(TEX_SIDEWALK, Color(0.94, 0.94, 0.96), Vector3(1, 3, 1))
+	var car_pos := Vector3(cx, 0.06, pad_cz) # wheels rest ON the pad, not sunk in it
+	_build_car(world, car_pos, col, false, car_type)
+	return car_pos
+
 func _build_car(parent: Node, pos: Vector3, col: Color, along_x: bool, car_type: String = "sedan", for_traffic: bool = false) -> Node3D:
 	if not for_traffic:
 		content_points.append(pos) # v0.9 empty-area audit
@@ -1934,14 +2394,40 @@ func _build_car(parent: Node, pos: Vector3, col: Color, along_x: bool, car_type:
 			_box(g, Vector3(-2.05, 1.05, 0), Vector3(0.1, 0.42, 1.8), col.darkened(0.12))
 			_car_wheels(g, 3.1)
 		"van":
-			var vb := _box(g, Vector3(0, 1.05, 0), Vector3(4.3, 1.85, 1.9), col, true)
+			# STREETS rebuild (Michael, 2026-11-16: the old van was
+			# the "random box" — ONE tall slab whose front/rear
+			# lights, grille and bumpers were all BURIED inside the
+			# slab (body spanned +/-2.15, the shared detail sits at
+			# +/-2.0), a blank rear and a flat window band). Now a
+			# step-van in the same footprint: cargo box set back, a
+			# cab with a raked windshield and side glass, a low hood
+			# nose the shared lights/grille/bumper actually clear,
+			# framed cargo windows, a roof lip, and rear doors with
+			# windows — it reads as a van from EVERY side.
+			var vb := _box(g, Vector3(-0.45, 1.05, 0), Vector3(3.0, 1.85, 1.9), col, true)
 			vb.material_override = _paint(col)
-			var vw := _box(g, Vector3(1.95, 1.45, 0), Vector3(0.5, 0.7, 1.7), glass)
-			vw.rotation_degrees = Vector3(0, 0, -14)
-			vw.material_override = _car_glass()
-			_box(g, Vector3(0.2, 1.15, 0.97), Vector3(2.2, 0.9, 0.04), glass.darkened(0.1)) # side windows band
-			_box(g, Vector3(0.2, 1.15, -0.97), Vector3(2.2, 0.9, 0.04), glass.darkened(0.1))
-			_box(g, Vector3(-0.9, 0.75, 0.97), Vector3(0.06, 0.5, 0.5), Color(0.3, 0.3, 0.33)) # sliding door rail detail
+			var vcap := _box(g, Vector3(-0.45, 2.0, 0), Vector3(3.06, 0.07, 1.94), col.darkened(0.1))
+			vcap.material_override = _paint(col.darkened(0.1))
+			var vcab := _box(g, Vector3(1.08, 1.24, 0), Vector3(0.8, 1.46, 1.86), col, true)
+			vcab.material_override = _paint(col)
+			var vhood := _box(g, Vector3(1.58, 0.6, 0), Vector3(0.76, 0.68, 1.76), col, true)
+			vhood.material_override = _paint(col)
+			var vws := _box(g, Vector3(1.62, 1.35, 0), Vector3(0.55, 0.8, 1.64), glass)
+			vws.rotation_degrees = Vector3(0, 0, 22)
+			vws.material_override = _car_glass()
+			for vsz in [0.94, -0.94]:
+				_box(g, Vector3(1.08, 1.5, vsz), Vector3(0.62, 0.52, 0.04), glass.darkened(0.05)) # cab side window
+				var vside: float = vsz + (0.02 if vsz > 0.0 else -0.02)
+				for pane_x in [-1.3, -0.35]:
+					_box(g, Vector3(pane_x, 1.35, vside), Vector3(0.8, 0.7, 0.04), glass.darkened(0.05)) # framed cargo windows
+				_box(g, Vector3(-0.82, 0.78, vside), Vector3(0.55, 0.05, 0.04), Color(0.3, 0.3, 0.33)) # sliding door rail
+			# Rear doors: centre seam, two windows, two handles — the
+			# back reads as doors, not a slab.
+			_box(g, Vector3(-1.96, 1.05, 0), Vector3(0.04, 1.7, 0.05), col.darkened(0.25))
+			_box(g, Vector3(-1.96, 1.45, 0.45), Vector3(0.04, 0.55, 0.6), glass.darkened(0.05))
+			_box(g, Vector3(-1.96, 1.45, -0.45), Vector3(0.04, 0.55, 0.6), glass.darkened(0.05))
+			_box(g, Vector3(-1.97, 1.0, 0.14), Vector3(0.04, 0.06, 0.2), Color(0.25, 0.25, 0.28))
+			_box(g, Vector3(-1.97, 1.0, -0.14), Vector3(0.04, 0.06, 0.2), Color(0.25, 0.25, 0.28))
 			_car_wheels(g, 3.2)
 		"convertible":
 			var cb := _box(g, Vector3(0, 0.48, 0), Vector3(3.8, 0.58, 1.75), col, true)
@@ -2093,6 +2579,7 @@ func _build_escape_room() -> void:
 	var top_board := _box(room, shelf_pos + Vector3(0, 3.18, 0.15), Vector3(5.5, 0.24, 1.0), Color.WHITE)
 	top_board.material_override = _mat_tex(TEX_WOOD, Color(0.6, 0.43, 0.27), Vector3(3, 1, 1))
 	var book_cols: Array = [Color(0.8, 0.25, 0.25), Color(0.25, 0.45, 0.8), Color(0.3, 0.65, 0.35), Color(0.85, 0.65, 0.2), Color(0.6, 0.35, 0.75), Color(0.9, 0.55, 0.3), Color(0.3, 0.6, 0.65), Color(0.75, 0.4, 0.5)]
+	var stack_pivot: Node3D = null # v1.5: the bottom shelf's horizontal stack is a knock-over prop (built into this pivot, registered later)
 	for shelf_i in range(3):
 		var sy: float = 0.55 + float(shelf_i) * 0.95
 		var board := _box(room, shelf_pos + Vector3(0, sy - 0.28, 0.15), Vector3(5.2, 0.12, 0.9), Color.WHITE)
@@ -2111,10 +2598,19 @@ func _build_escape_room() -> void:
 			_box(room, shelf_pos + Vector3(bx2 + bw * 0.5, sy + bh - 0.3, 0.57), Vector3(bw * 0.9, 0.07, 0.03), Color(0.95, 0.9, 0.75)) # page block line
 			bx2 += bw + 0.035
 			bi += 1
-		# a horizontal stack at the end of two shelves
+		# a horizontal stack at the end of two shelves — the bottom
+		# shelf's stack sits in its own pivot so the cat can knock
+		# it over (v1.5 distraction prop, registered below).
 		if shelf_i < 2:
-			for st in range(3):
-				_box(room, shelf_pos + Vector3(2.0, sy + 0.02 + float(st) * 0.15, 0.3), Vector3(0.62, 0.13, 0.48), book_cols[(shelf_i + st + 2) % book_cols.size()])
+			if shelf_i == 0:
+				stack_pivot = Node3D.new()
+				stack_pivot.position = shelf_pos + Vector3(2.0, sy - 0.045, 0.3)
+				room.add_child(stack_pivot)
+				for st in range(3):
+					_box(stack_pivot, Vector3(0, 0.065 + float(st) * 0.15, 0), Vector3(0.62, 0.13, 0.48), book_cols[(shelf_i + st + 2) % book_cols.size()])
+			else:
+				for st in range(3):
+					_box(room, shelf_pos + Vector3(2.0, sy + 0.02 + float(st) * 0.15, 0.3), Vector3(0.62, 0.13, 0.48), book_cols[(shelf_i + st + 2) % book_cols.size()])
 	# The puzzle book: BIG, red, gold-banded — must read clearly
 	book_node = _box(room, shelf_pos + Vector3(0.6, 2.2, 0.6), Vector3(0.6, 1.0, 0.4), Color(0.88, 0.16, 0.16))
 	book_home_pos = book_node.position
@@ -2137,7 +2633,10 @@ func _build_escape_room() -> void:
 		back_c.material_override = _mat_tex(TEX_SOFA, Color(1.05, 1.05, 1.1), Vector3(1, 1, 1))
 	_box(room, sofa_pos + Vector3(-3.1, 1.0, 0), Vector3(0.5, 1.6, 2.2), Color(0.4, 0.5, 0.8))
 	_box(room, sofa_pos + Vector3(3.1, 1.0, 0), Vector3(0.5, 1.6, 2.2), Color(0.4, 0.5, 0.8))
-	var pillow1 := _box(room, sofa_pos + Vector3(-2.3, 1.45, -0.45), Vector3(0.85, 0.85, 0.3), Color(0.92, 0.62, 0.25))
+	var pillow_pivot := Node3D.new() # v1.5: this cushion is a knock-over prop (registered below)
+	pillow_pivot.position = sofa_pos + Vector3(-2.3, 1.45, -0.45)
+	room.add_child(pillow_pivot)
+	var pillow1 := _box(pillow_pivot, Vector3(0, 0, 0), Vector3(0.85, 0.85, 0.3), Color(0.92, 0.62, 0.25))
 	pillow1.rotation_degrees = Vector3(-12, 0, 10)
 	var pillow2 := _box(room, sofa_pos + Vector3(2.4, 1.45, -0.45), Vector3(0.85, 0.85, 0.3), Color(0.85, 0.4, 0.45))
 	pillow2.rotation_degrees = Vector3(-12, 0, -8)
@@ -2150,15 +2649,21 @@ func _build_escape_room() -> void:
 			_cyl(room, o + Vector3(cx2, 0.2, 1.2 + cz2), 0.07, 0.07, 0.4, Color(0.5, 0.36, 0.22))
 	_box(room, o + Vector3(-0.9, 0.58, 1.1), Vector3(0.7, 0.14, 0.5), Color(0.3, 0.5, 0.75))
 	_box(room, o + Vector3(-0.88, 0.71, 1.12), Vector3(0.6, 0.12, 0.44), Color(0.8, 0.35, 0.3))
-	_cyl(room, o + Vector3(0.7, 0.62, 1.4), 0.11, 0.09, 0.24, Color(0.92, 0.55, 0.3)) # mug
+	var mug_pivot := Node3D.new() # v1.5: the mug is a knock-over prop (registered below)
+	mug_pivot.position = o + Vector3(0.7, 0.5, 1.4)
+	room.add_child(mug_pivot)
+	_cyl(mug_pivot, Vector3(0, 0.12, 0), 0.11, 0.09, 0.24, Color(0.92, 0.55, 0.3)) # mug
 	_box(room, o + Vector3(1.2, 0.53, 1.0), Vector3(0.42, 0.05, 0.14), Color(0.15, 0.15, 0.17)) # remote
 	# Armchair + side table + reading lamp (corner)
 	var chair := _box(room, o + Vector3(9.5, 0.55, 7.5), Vector3(2.4, 1.1, 2.2), Color.WHITE)
 	chair.material_override = _mat_tex(TEX_SOFA, Color(1.25, 0.95, 0.85), Vector3(2, 1, 1))
 	chair.rotation_degrees = Vector3(0, -35, 0)
 	_box(room, o + Vector3(12.3, 0.5, 4.6), Vector3(1.1, 1.0, 1.1), Color(0.6, 0.44, 0.29))
-	_cyl(room, o + Vector3(12.3, 1.35, 4.6), 0.05, 0.07, 0.7, Color(0.35, 0.33, 0.3))
-	_sphere(room, o + Vector3(12.3, 1.85, 4.6), Vector3(0.5, 0.42, 0.5), Color(1.0, 0.88, 0.6))
+	var tlamp_pivot := Node3D.new() # v1.5: the reading lamp is a knock-over prop (registered below)
+	tlamp_pivot.position = o + Vector3(12.3, 1.0, 4.6)
+	room.add_child(tlamp_pivot)
+	_cyl(tlamp_pivot, Vector3(0, 0.35, 0), 0.05, 0.07, 0.7, Color(0.35, 0.33, 0.3))
+	_sphere(tlamp_pivot, Vector3(0, 0.85, 0), Vector3(0.5, 0.42, 0.5), Color(1.0, 0.88, 0.6))
 	# ============ WINDOW — REAL window (v0.6 rework) ============
 	# Proper frame + sill, two sashes with muntin grids, believable
 	# glass (transparent, slight blue, reflective sheen) over a bright
@@ -2239,8 +2744,11 @@ func _build_escape_room() -> void:
 			_box(room, win_pos + Vector3(cx3 + (float(pleat) - 1.5) * 0.24, -0.1, 0.32), Vector3(0.2, 3.0, 0.16), Color(0.82, 0.5, 0.42) if pleat % 2 == 0 else Color(0.74, 0.44, 0.38))
 	var rod := _cyl(room, win_pos + Vector3(0, 1.68, 0.32), 0.045, 0.045, 7.2, Color(0.55, 0.42, 0.25))
 	rod.rotation_degrees = Vector3(0, 0, 90)
-	_cyl(room, win_pos + Vector3(-1.7, -1.5, 0.3), 0.16, 0.12, 0.26, Color(0.75, 0.4, 0.3)) # sill plant pot
-	var sill_plant := _sphere(room, win_pos + Vector3(-1.7, -1.22, 0.3), Vector3(0.4, 0.36, 0.4), Color.WHITE)
+	var sill_pivot := Node3D.new() # v1.5: the sill plant is a knock-over prop (registered below)
+	sill_pivot.position = win_pos + Vector3(-1.7, -1.63, 0.3)
+	room.add_child(sill_pivot)
+	_cyl(sill_pivot, Vector3(0, 0.13, 0), 0.16, 0.12, 0.26, Color(0.75, 0.4, 0.3)) # sill plant pot
+	var sill_plant := _sphere(sill_pivot, Vector3(0, 0.41, 0), Vector3(0.4, 0.36, 0.4), Color.WHITE)
 	sill_plant.material_override = _mat_tex(TEX_FOLIAGE, Color.WHITE, Vector3(1, 1, 1))
 	_label3d(room, "Window", win_pos + Vector3(0, 1.95, 0), 56, Color(0.2, 0.3, 0.4))
 	# Pet door with frame + a REAL swinging FLAP (flap_node pivots at
@@ -2282,9 +2790,12 @@ func _build_escape_room() -> void:
 	_box(room, o + Vector3(13.2, 1.75, 0.5), Vector3(1.5, 3.5, 2.2), Color(0.88, 0.9, 0.93), true) # fridge
 	_box(room, o + Vector3(12.4, 2.2, 0.5), Vector3(0.06, 0.8, 0.1), Color(0.5, 0.52, 0.56)) # fridge handle
 	_box(room, o + Vector3(12.44, 2.85, 0.5), Vector3(0.04, 0.5, 0.7), Color(0.95, 0.75, 0.3)) # fridge note
-	_cyl(room, o + Vector3(12.8, 1.1, -2.2), 0.5, 0.4, 0.18, Color(0.8, 0.5, 0.3)) # fruit bowl
-	for fr in [Vector3(12.6, 1.28, -2.4), Vector3(13.0, 1.28, -2.1), Vector3(12.8, 1.3, -2.25)]:
-		_sphere(room, o + fr, Vector3(0.17, 0.17, 0.17), Color(0.95, 0.6, 0.2))
+	var fruit_pivot := Node3D.new() # v1.5: the fruit bowl is a knock-over prop (registered below)
+	fruit_pivot.position = o + Vector3(12.8, 1.02, -2.2)
+	room.add_child(fruit_pivot)
+	_cyl(fruit_pivot, Vector3(0, 0.08, 0), 0.5, 0.4, 0.18, Color(0.8, 0.5, 0.3)) # fruit bowl
+	for fr in [Vector3(-0.2, 0.26, -0.2), Vector3(0.2, 0.26, 0.1), Vector3(0, 0.28, -0.05)]:
+		_sphere(fruit_pivot, fr, Vector3(0.17, 0.17, 0.17), Color(0.95, 0.6, 0.2))
 	# Wall cabinets + hanging pans
 	var wallcab := _box(room, o + Vector3(13.3, 2.9, -5.5), Vector3(1.1, 1.3, 5.5), Color.WHITE)
 	wallcab.material_override = _mat_tex(TEX_WOOD, Color(0.82, 0.68, 0.5), Vector3(3, 1, 1))
@@ -2307,9 +2818,17 @@ func _build_escape_room() -> void:
 		_box(room, o + Vector3(-13.45, 2.95, 1.5 + sx4), Vector3(0.06, 0.3, 0.16), Color(0.94, 0.55, 0.16))
 	_sphere(room, o + Vector3(-13.42, 2.32, 1.32), Vector3(0.05, 0.11, 0.11), Color(0.2, 0.6, 0.25))
 	_sphere(room, o + Vector3(-13.42, 2.32, 1.68), Vector3(0.05, 0.11, 0.11), Color(0.2, 0.6, 0.25))
+	var frame_pivot: Node3D = null # v1.5: the south landscape frame can be knocked crooked (registered below)
 	for pz in [-3.5, 5.5]:
-		_box(room, o + Vector3(-13.65, 2.4, pz), Vector3(0.14, 1.0, 1.4), Color(0.45, 0.32, 0.2))
-		_box(room, o + Vector3(-13.55, 2.4, pz), Vector3(0.1, 0.8, 1.2), Color(0.65, 0.78, 0.9) if pz < 0 else Color(0.6, 0.8, 0.55))
+		if pz > 0.0:
+			frame_pivot = Node3D.new()
+			frame_pivot.position = o + Vector3(-13.65, 2.4, pz)
+			room.add_child(frame_pivot)
+			_box(frame_pivot, Vector3(0, 0, 0), Vector3(0.14, 1.0, 1.4), Color(0.45, 0.32, 0.2))
+			_box(frame_pivot, Vector3(0.1, 0, 0), Vector3(0.1, 0.8, 1.2), Color(0.6, 0.8, 0.55))
+		else:
+			_box(room, o + Vector3(-13.65, 2.4, pz), Vector3(0.14, 1.0, 1.4), Color(0.45, 0.32, 0.2))
+			_box(room, o + Vector3(-13.55, 2.4, pz), Vector3(0.1, 0.8, 1.2), Color(0.65, 0.78, 0.9))
 	# Wall clock (north wall, east side)
 	var clock_face := _cyl(room, o + Vector3(9, 3.0, -9.65), 0.55, 0.55, 0.1, Color(0.97, 0.95, 0.9))
 	clock_face.rotation_degrees = Vector3(90, 0, 0)
@@ -2323,8 +2842,11 @@ func _build_escape_room() -> void:
 	_sphere(room, o + Vector3(-10.5, 0.3, 8.3), Vector3(0.78, 0.24, 0.78), Color(0.95, 0.85, 0.7))
 	_cyl(room, o + Vector3(-8.6, 0.12, 8.6), 0.32, 0.24, 0.22, Color(0.35, 0.6, 0.8)) # water bowl
 	_cyl(room, o + Vector3(-7.8, 0.12, 8.6), 0.32, 0.24, 0.22, Color(0.9, 0.55, 0.3)) # food bowl
-	_sphere(room, o + Vector3(5.5, 0.28, 7.8), Vector3(0.3, 0.3, 0.3), Color(0.85, 0.3, 0.35)) # yarn ball
-	var yarn_wrap := _box(room, o + Vector3(5.5, 0.28, 7.8), Vector3(0.64, 0.1, 0.64), Color(0.7, 0.22, 0.28))
+	var yarn_pivot := Node3D.new() # v1.5: the yarn ball is a knock-over prop (registered below)
+	yarn_pivot.position = o + Vector3(5.5, 0, 7.8)
+	room.add_child(yarn_pivot)
+	_sphere(yarn_pivot, Vector3(0, 0.28, 0), Vector3(0.3, 0.3, 0.3), Color(0.85, 0.3, 0.35)) # yarn ball
+	var yarn_wrap := _box(yarn_pivot, Vector3(0, 0.28, 0), Vector3(0.64, 0.1, 0.64), Color(0.7, 0.22, 0.28))
 	yarn_wrap.rotation_degrees = Vector3(20, 30, 10)
 	# Dining table (kept from v0.4, warmer wood) + chairs + plant centrepiece
 	var dtable := _box(room, o + Vector3(9, 0.8, 4), Vector3(4.5, 0.25, 2.6), Color.WHITE, true)
@@ -2339,8 +2861,11 @@ func _build_escape_room() -> void:
 	var table_plant := _sphere(room, o + Vector3(9, 1.6, 4), Vector3(0.5, 0.5, 0.5), Color.WHITE)
 	table_plant.material_override = _mat_tex(TEX_FOLIAGE, Color.WHITE, Vector3(1, 1, 1))
 	# Floor lamp by the sofa + big plant in the corner (kept positions, richer)
-	_cyl(room, o + Vector3(12, 1.4, -7), 0.06, 0.09, 2.8, Color(0.3, 0.3, 0.33))
-	_sphere(room, o + Vector3(12, 3.0, -7), Vector3(0.65, 0.5, 0.65), Color(1.0, 0.88, 0.6))
+	var flamp_pivot := Node3D.new() # v1.5: the floor lamp is a knock-over prop (registered below)
+	flamp_pivot.position = o + Vector3(12, 0, -7)
+	room.add_child(flamp_pivot)
+	_cyl(flamp_pivot, Vector3(0, 1.4, 0), 0.06, 0.09, 2.8, Color(0.3, 0.3, 0.33))
+	_sphere(flamp_pivot, Vector3(0, 3.0, 0), Vector3(0.65, 0.5, 0.65), Color(1.0, 0.88, 0.6))
 	_cyl(room, o + Vector3(-11, 0.5, -5.5), 0.42, 0.32, 1.0, Color(0.75, 0.4, 0.3))
 	var corner_plant := _sphere(room, o + Vector3(-11, 1.7, -5.5), Vector3(1.15, 1.25, 1.15), Color.WHITE)
 	corner_plant.material_override = _mat_tex(TEX_FOLIAGE, Color.WHITE, Vector3(2, 2, 2))
@@ -2348,8 +2873,11 @@ func _build_escape_room() -> void:
 	for hx2 in range(3):
 		_sphere(room, o + Vector3(3.6 + float(hx2) * 0.7, 2.2, -9.6), Vector3(0.09, 0.09, 0.12), Color(0.5, 0.38, 0.24))
 	_box(room, o + Vector3(3.8, 1.55, -9.55), Vector3(0.55, 1.15, 0.14), Color(0.4, 0.5, 0.7)) # hanging coat
-	for shx in [4.6, 5.3]:
-		_box(room, o + Vector3(shx, 0.12, -9.2), Vector3(0.32, 0.22, 0.7), Color(0.55, 0.35, 0.25))
+	var shoes_pivot := Node3D.new() # v1.5: the shoes by the door are a knock-over prop (registered below)
+	shoes_pivot.position = o + Vector3(4.95, 0, -9.2)
+	room.add_child(shoes_pivot)
+	for shx in [-0.35, 0.35]:
+		_box(shoes_pivot, Vector3(shx, 0.12, 0), Vector3(0.32, 0.22, 0.7), Color(0.55, 0.35, 0.25))
 
 
 	# ============ BACK DOOR with SLIDING BOLT (shopkeeper exit) ====
@@ -2467,6 +2995,40 @@ func _build_escape_room() -> void:
 	shop_sign.rotation_degrees = Vector3(0, 90, 0)
 	for tg in theme_groups.values():
 		(tg as Node3D).visible = false
+	# ============ v1.5 NEW LOOSE PROPS (knock-over additions) ========
+	# Michael (2026-11-17): "I want to be able to knock over almost
+	# everything in the house." Four modest additions where the room
+	# was sparse — a wastebasket by the kitchen, a coat stand in the
+	# south-east corner, a stool by the counter, a watering can by
+	# the corner plant. All registered as distraction props below.
+	var basket_pivot := Node3D.new()
+	basket_pivot.position = o + Vector3(11.6, 0, -8.7)
+	room.add_child(basket_pivot)
+	_cyl(basket_pivot, Vector3(0, 0.35, 0), 0.34, 0.27, 0.7, Color(0.55, 0.58, 0.62)) # wastebasket
+	_cyl(basket_pivot, Vector3(0, 0.71, 0), 0.36, 0.36, 0.07, Color(0.45, 0.48, 0.52)) # rim
+	_sphere(basket_pivot, Vector3(0.08, 0.6, 0.04), Vector3(0.17, 0.17, 0.17), Color(0.95, 0.94, 0.9)) # crumpled paper
+	var coatstand_pivot := Node3D.new()
+	coatstand_pivot.position = o + Vector3(12.7, 0, 8.7)
+	room.add_child(coatstand_pivot)
+	_cyl(coatstand_pivot, Vector3(0, 0.07, 0), 0.42, 0.46, 0.14, Color(0.4, 0.3, 0.2)) # base
+	_cyl(coatstand_pivot, Vector3(0, 1.05, 0), 0.06, 0.06, 2.0, Color(0.5, 0.38, 0.24)) # pole
+	for hk in [Vector3(0.3, 1.92, 0), Vector3(-0.3, 1.92, 0), Vector3(0, 1.92, 0.3)]:
+		_sphere(coatstand_pivot, hk, Vector3(0.1, 0.1, 0.1), Color(0.6, 0.45, 0.28)) # hooks
+	_box(coatstand_pivot, Vector3(0.3, 1.32, 0), Vector3(0.52, 1.05, 0.18), Color(0.45, 0.35, 0.55)) # a hanging coat
+	var stool_pivot := Node3D.new()
+	stool_pivot.position = o + Vector3(10.7, 0, -5.8)
+	room.add_child(stool_pivot)
+	_cyl(stool_pivot, Vector3(0, 0.62, 0), 0.44, 0.44, 0.1, Color(0.62, 0.45, 0.3)) # seat
+	for lg in [Vector3(0.3, 0.3, 0), Vector3(-0.3, 0.3, 0.18), Vector3(-0.05, 0.3, -0.32)]:
+		_cyl(stool_pivot, lg, 0.05, 0.05, 0.6, Color(0.5, 0.36, 0.22)) # legs
+	var can_pivot := Node3D.new()
+	can_pivot.position = o + Vector3(-9.7, 0, -4.9)
+	room.add_child(can_pivot)
+	_cyl(can_pivot, Vector3(0, 0.28, 0), 0.27, 0.3, 0.55, Color(0.35, 0.55, 0.35)) # watering can body
+	_cyl(can_pivot, Vector3(0, 0.6, 0), 0.12, 0.12, 0.1, Color(0.3, 0.48, 0.3)) # filler cap
+	var spout := _cyl(can_pivot, Vector3(0.36, 0.34, 0), 0.05, 0.1, 0.55, Color(0.3, 0.48, 0.3)) # spout
+	spout.rotation_degrees = Vector3(0, 0, -55)
+	_box(can_pivot, Vector3(-0.32, 0.36, 0), Vector3(0.08, 0.42, 0.08), Color(0.3, 0.48, 0.3)) # handle
 	# ============ v1.2 DISTRACTION PROPS =============================
 	# Three knock-over props (plant / book / vase), each a pivot the
 	# cat can topple with PAW. Registered in distract_props with the
@@ -2491,6 +3053,31 @@ func _build_escape_room() -> void:
 	_box(book_pivot, Vector3(0, 0.34, 0.105), Vector3(0.58, 0.1, 0.02), Color(0.9, 0.75, 0.3)) # gold band
 	distract_props.append({"id": "book", "name": "the book", "pivot": book_pivot, "base": o + Vector3(1.15, 0, 1.35), "stand": o + Vector3(1.15, 0, 2.75), "toppled": false, "anim_t": 1.0, "home_rot": book_pivot.rotation, "topple_rot": Vector3(-1.5, 0, 0), "bubble": "My book! 📖"})
 	distract_props.append({"id": "vase", "name": "the vase", "pivot": vase_pivot, "base": o + Vector3(10.6, 0, 4.0), "stand": o + Vector3(12.1, 0, 4.0), "toppled": false, "anim_t": 1.0, "home_rot": vase_pivot.rotation, "topple_rot": Vector3(0, 0, 1.65), "bubble": "Oh! The vase! 🌷"})
+	# ============ v1.5: ALMOST EVERYTHING KNOCKS OVER ================
+	# Michael (2026-11-17): more than "just a couple things" — every
+	# plausible loose object in the room joins the SAME distraction
+	# system (paw range, topple, cue, she rights it, queueing).
+	# "base" is the floor XZ the paw reach is measured from (for
+	# objects on furniture it is the furniture's XZ; for the cushion
+	# it is the floor in front of the sofa, where the cat stands).
+	# "cue" scales the crash: crash (hard), clatter (small/hard),
+	# thud (soft). Furniture and fixtures stay put by design: sofa,
+	# tables, bookcase, counters, fridge, fireplace, cat tree, the
+	# door and the carrier are never props.
+	distract_props.append({"id": "floorlamp", "name": "the floor lamp", "pivot": flamp_pivot, "base": o + Vector3(12, 0, -7), "stand": o + Vector3(10.7, 0, -8.2), "toppled": false, "anim_t": 1.0, "home_rot": flamp_pivot.rotation, "topple_rot": Vector3(0, 0, 1.3), "bubble": "The lamp! 💡", "cue": "crash"})
+	distract_props.append({"id": "tablelamp", "name": "the table lamp", "pivot": tlamp_pivot, "base": o + Vector3(12.3, 0, 4.6), "stand": o + Vector3(11.2, 0, 5.6), "toppled": false, "anim_t": 1.0, "home_rot": tlamp_pivot.rotation, "topple_rot": Vector3(-1.25, 0, 0), "bubble": "Careful — the lamp! 💡", "cue": "clatter"})
+	distract_props.append({"id": "mug", "name": "the mug", "pivot": mug_pivot, "base": o + Vector3(0.7, 0, 1.4), "stand": o + Vector3(0.2, 0, 2.9), "toppled": false, "anim_t": 1.0, "home_rot": mug_pivot.rotation, "topple_rot": Vector3(0, 0, 1.45), "bubble": "My tea! ☕", "cue": "clatter"})
+	distract_props.append({"id": "cushion", "name": "the cushion", "pivot": pillow_pivot, "base": o + Vector3(-2.3, 0, 5.2), "stand": o + Vector3(-2.3, 0, 6.0), "toppled": false, "anim_t": 1.0, "home_rot": pillow_pivot.rotation, "topple_rot": Vector3(0.35, 0.25, 0.95), "bubble": "The cushions! 🛋️", "cue": "thud"})
+	distract_props.append({"id": "fruitbowl", "name": "the fruit bowl", "pivot": fruit_pivot, "base": o + Vector3(12.8, 0, -2.2), "stand": o + Vector3(11.4, 0, -2.2), "toppled": false, "anim_t": 1.0, "home_rot": fruit_pivot.rotation, "topple_rot": Vector3(0, 0, 1.5), "bubble": "The fruit! 🍊", "cue": "clatter"})
+	distract_props.append({"id": "shoes", "name": "the shoes", "pivot": shoes_pivot, "base": o + Vector3(4.95, 0, -9.2), "stand": o + Vector3(4.95, 0, -8.1), "toppled": false, "anim_t": 1.0, "home_rot": shoes_pivot.rotation, "topple_rot": Vector3(-0.5, 0, 0.7), "bubble": "My shoes! 👟", "cue": "thud"})
+	distract_props.append({"id": "picture", "name": "the picture", "pivot": frame_pivot, "base": o + Vector3(-13.65, 0, 5.5), "stand": o + Vector3(-12.2, 0, 4.6), "toppled": false, "anim_t": 1.0, "home_rot": frame_pivot.rotation, "topple_rot": Vector3(0.45, 0, 0), "bubble": "The picture's crooked! 🖼️", "cue": "clatter"})
+	distract_props.append({"id": "bookstack", "name": "the book stack", "pivot": stack_pivot, "base": o + Vector3(-9, 0, -7.7), "stand": o + Vector3(-9, 0, -6.5), "toppled": false, "anim_t": 1.0, "home_rot": stack_pivot.rotation, "topple_rot": Vector3(1.15, 0, 0), "bubble": "The books! 📚", "cue": "clatter"})
+	distract_props.append({"id": "yarn", "name": "the ball of yarn", "pivot": yarn_pivot, "base": o + Vector3(5.5, 0, 7.8), "stand": o + Vector3(5.5, 0, 6.6), "toppled": false, "anim_t": 1.0, "home_rot": yarn_pivot.rotation, "topple_rot": Vector3(0, 0, 2.4), "bubble": "The yarn! 🧶", "cue": "thud"})
+	distract_props.append({"id": "sillplant", "name": "the little plant", "pivot": sill_pivot, "base": o + Vector3(-1.7, 0, -9.3), "stand": o + Vector3(-1.7, 0, -8.2), "toppled": false, "anim_t": 1.0, "home_rot": sill_pivot.rotation, "topple_rot": Vector3(0, 0, -1.3), "bubble": "Not the windowsill plant! 🌿", "cue": "clatter"})
+	distract_props.append({"id": "wastebasket", "name": "the wastebasket", "pivot": basket_pivot, "base": o + Vector3(11.6, 0, -8.7), "stand": o + Vector3(10.4, 0, -8.1), "toppled": false, "anim_t": 1.0, "home_rot": basket_pivot.rotation, "topple_rot": Vector3(0, 0, 1.6), "bubble": "The bin! 🗑️", "cue": "crash"})
+	distract_props.append({"id": "coatstand", "name": "the coat stand", "pivot": coatstand_pivot, "base": o + Vector3(12.7, 0, 8.7), "stand": o + Vector3(11.5, 0, 7.7), "toppled": false, "anim_t": 1.0, "home_rot": coatstand_pivot.rotation, "topple_rot": Vector3(-1.25, 0, 0), "bubble": "The coat stand! 🧥", "cue": "crash"})
+	distract_props.append({"id": "stool", "name": "the stool", "pivot": stool_pivot, "base": o + Vector3(10.7, 0, -5.8), "stand": o + Vector3(9.7, 0, -4.9), "toppled": false, "anim_t": 1.0, "home_rot": stool_pivot.rotation, "topple_rot": Vector3(0, 0, -1.5), "bubble": "The stool! 🪑", "cue": "crash"})
+	distract_props.append({"id": "wateringcan", "name": "the watering can", "pivot": can_pivot, "base": o + Vector3(-9.7, 0, -4.9), "stand": o + Vector3(-8.6, 0, -4.1), "toppled": false, "anim_t": 1.0, "home_rot": can_pivot.rotation, "topple_rot": Vector3(0, 0, -1.5), "bubble": "The watering can! 🌻", "cue": "clatter"})
 
 
 # ---------------------------------------------------------------- actors/camera
@@ -2500,21 +3087,43 @@ func _spawn_player() -> void:
 	player.position = Vector3(2, 0.2, -2)
 	add_child(player)
 	player.set("main_ref", self)
+	player.call("set_tag_address", home_address) # v1.5: print this run's address on his tag
 
 func _spawn_npcs() -> void:
 	# v0.9 (item 2): MORE neighbours — 22 out walking (was 14),
 	# spread over the whole map including the filled east/south
 	# districts. The first of each type is the sheet character
 	# (outfit 0); repeats get outfit/hair variants from person.gd.
+	# POPULATION STEP (post-v1.0.5, Michael's direction 2026-11-16):
+	# 34 out walking (was 22) — he asked for a busier town while
+	# keeping ~25% as the ones to avoid. The 12 newcomers (defs
+	# 23-34 below) are seeded in the newer areas that had nobody:
+	# riverside promenade + cafe, market row, the playground,
+	# Willow Green, the Riverside Court block, the bakery corner,
+	# the community garden, Willow Hall and Maple Mart.
 	var defs: Array = [
 		["woman", Vector3(-30, 0.2, -6)], ["kid", Vector3(36, 0.2, -14)], ["dogwalker", Vector3(-36, 0.2, 20)],
 		["shopkeeper", Vector3(46, 0.2, 6)], ["pedestrian", Vector3(-44, 0.2, -22)], ["pedestrian", Vector3(50, 0.2, 34)],
 		["woman", Vector3(8, 0.2, 26)], ["kid", Vector3(-52, 0.2, 28)],
-		["woman", Vector3(84, 0.2, -44)], ["kid", Vector3(-86, 0.2, 38)], ["dogwalker", Vector3(60, 0.2, 66)],
+		["woman", Vector3(84, 0.2, -37)], ["kid", Vector3(-86, 0.2, 38)], ["dogwalker", Vector3(60, 0.2, 66)], # MAP DOUBLING: this neighbour moved z -44 -> -37 — a new Elm S house now stands at (84,-44)
 		["shopkeeper", Vector3(-60, 0.2, -70)], ["pedestrian", Vector3(100, 0.2, 20)], ["pedestrian", Vector3(-100, 0.2, -80)],
 		["woman", Vector3(-112, 0.2, -48)], ["kid", Vector3(108, 0.2, 38)], ["dogwalker", Vector3(-58, 0.2, 84)],
 		["shopkeeper", Vector3(80, 0.2, -72)], ["pedestrian", Vector3(14, 0.2, -84)], ["pedestrian", Vector3(-14, 0.2, 48)],
 		["woman", Vector3(110, 0.2, -6)], ["pedestrian", Vector3(34, 0.2, 84)],
+		["woman", Vector3(-38, 0.2, -83)], ["pedestrian", Vector3(58, 0.2, -85)], ["shopkeeper", Vector3(97, 0.2, -17)],
+		["kid", Vector3(93, 0.2, 25)], ["woman", Vector3(88, 0.2, 19)], ["dogwalker", Vector3(106, 0.2, 73)],
+		["pedestrian", Vector3(103, 0.2, 80)], ["woman", Vector3(102, 0.2, -60)], ["pedestrian", Vector3(56, 0.2, -8)],
+		["dogwalker", Vector3(-95, 0.2, 76)], ["pedestrian", Vector3(24, 0.2, 74)], ["woman", Vector3(-84, 0.2, -14)],
+		# MAP DOUBLING: 14 more neighbours (defs 35-48) — most in
+		# the new east district (Harbour Market, Meadow Court,
+		# Sunset Green, the new streets and promenade), plus one
+		# old-town infill walker. Roles below keep the split at
+		# exactly 25% to avoid: 12 / 19 / 17 of 48.
+		["shopkeeper", Vector3(193, 0.2, -19)], ["pedestrian", Vector3(198, 0.2, -24)], ["woman", Vector3(252, 0.2, -59)],
+		["dogwalker", Vector3(300, 0.2, 74)], ["pedestrian", Vector3(340, 0.2, 22)], ["woman", Vector3(160, 0.2, 58)],
+		["pedestrian", Vector3(214, 0.2, -72)], ["kid", Vector3(255, 0.2, 24)], ["woman", Vector3(305, 0.2, -38)],
+		["pedestrian", Vector3(348, 0.2, -18)], ["kid", Vector3(182, 0.2, 8)], ["woman", Vector3(150, 0.2, -83)],
+		["pedestrian", Vector3(58, 0.2, -18)], ["woman", Vector3(326, 0.2, -61)],
 	]
 	# Interaction roles: v1.0 — grabbers are 25% of EVERYONE, as
 	# Michael set on 2026-11-15 (he first said 20%, then settled on
@@ -2524,7 +3133,14 @@ func _spawn_npcs() -> void:
 	# the extra five came out of the friendly pool. The rest:
 	# 8 FRIENDLY (pets +1 / treats +5 on paw/meow) and 8 who simply
 	# never notice the cat ("ignore").
-	var roles: Array = ["friendly", "grabber", "friendly", "friendly", "ignore", "grabber", "friendly", "friendly", "grabber", "ignore", "friendly", "ignore", "ignore", "ignore", "grabber", "friendly", "ignore", "grabber", "ignore", "friendly", "grabber", "ignore"]
+	# POPULATION STEP: 34 total. 25% of 34 is 8.5 — rounded UP to
+	# NINE grabbers, same call as 5.5 -> 6 (Michael's intent is
+	# more action, not less). The 12 newcomers carry 3 grabber /
+	# 5 friendly / 4 ignore, giving totals of 9 / 13 / 12 —
+	# friendly stays >= ignore so scoring chances grow fastest.
+	var roles: Array = ["friendly", "grabber", "friendly", "friendly", "ignore", "grabber", "friendly", "friendly", "grabber", "ignore", "friendly", "ignore", "ignore", "ignore", "grabber", "friendly", "ignore", "grabber", "ignore", "friendly", "grabber", "ignore", "friendly", "ignore", "friendly", "friendly", "grabber", "friendly", "ignore", "grabber", "ignore", "friendly", "ignore", "grabber",
+		# MAP DOUBLING: roles for defs 35-48 (3 grabber / 6 friendly / 5 ignore)
+		"friendly", "ignore", "friendly", "friendly", "ignore", "grabber", "ignore", "friendly", "friendly", "ignore", "grabber", "friendly", "ignore", "grabber"]
 	var type_counts: Dictionary = {}
 	for i in range(defs.size()):
 		var d: Array = defs[i]
@@ -2562,13 +3178,55 @@ func _spawn_npcs() -> void:
 # scale step left 0.31 (0.52m at 1.7m). With the model drawn at 1.25x
 # (0.64m) and the orbit at 1.45m the ratio is ~0.44 — slightly BETTER
 # than the framing he liked. Look height follows the drawn back.
-const CAM_TOWN_DIST := 1.45
+# v1.3 CAMERA FRAMING (Michael's v1.0.5 playtest: "when you go up to a
+# person you can't see the progress bar... I can't look up and see the
+# street signs... it's too close in" — and, same call, "I don't want
+# the cat looking tiny either"). Measured with tests/CamProbe.tscn
+# (real camera, viewport fractions, y 0=top 1=bottom) at the OLD
+# values (dist 1.45, look height 0.38, FOV 62, pitch 18): a person
+# 1.2m from the cat had her FACE at y=-0.13 and the notice bar (label
+# centre 3.02m up) at y=-0.85 — off the top of the screen; the bar
+# stayed off-screen even 5m away (y=-0.13), and even at max look-up
+# (-10) it only entered at 3m+, at the very edge. The 3.75m sign
+# boards were off-screen at default pitch even 6m away, and at max
+# look-up the whole board only fit from 6m. Causes: the orbit was
+# cat-scale short, the 18-degree default tilt aimed the frustum at
+# the ground (top edge only 13 degrees above horizontal), the -10
+# look-up floor barely tilted the view axis up, and FOV 62 is narrow.
+# Fix, framing-first (Michael: not at the cost of a tiny cat): orbit
+# out a little (1.45 -> 2.0), the town look anchor UP to 1.15 (the
+# camera flies higher and flatter, so a person's head + bar fit at
+# conversational distance), town FOV out to 70, default pitch down
+# to 4, look-up range extended to -22. AFTER measurements (same
+# probe + tests/ShotRunnerCamera.tscn): at the default pitch a
+# person 1.2m away has face y=0.35, head top ~0.17 and the notice
+# bar centre y=0.05 — the whole figure in frame; at 2m the bar
+# sits at y=0.11+, at 5m 0.26. At max look-up the whole sign board
+# is comfortably framed from 2-3m (top y=0.29 at 3m), and
+# even at the default pitch its centre is in frame from 3m. The
+# cat's measured screen share goes 0.36 -> 0.21 of frame height —
+# above the 0.17 of the v0.3 framing he played happily, and he sits
+# lower-centre with the people and signs in the frame above him,
+# which is the point. (An intermediate tuning at dist 2.2 / FOV 72
+# measured the cat at only 0.18 — pulled back in: distance is the
+# one lever that shrinks him, so it moved least.) The ESCAPE room
+# keeps its exact old framing (CAM_LOOK_HEIGHT 0.38, FOV 62, dist
+# 5.0); the capture cutscene keeps FOV 62 too.
+const CAM_TOWN_DIST := 2.0
 const CAM_ESCAPE_DIST := 5.0
-const CAM_LOOK_HEIGHT := 0.38
-const CAM_FOV := 62.0
+const CAM_LOOK_HEIGHT := 0.38 # escape-room look anchor (unchanged)
+const CAM_TOWN_LOOK_HEIGHT := 1.15 # town/chase look anchor (v1.3)
+const CAM_FOV := 62.0 # escape / cutscene FOV (unchanged)
+const CAM_TOWN_FOV := 70.0 # town play FOV (v1.3)
 
 func _camera_dist() -> float:
 	return CAM_ESCAPE_DIST if state == "escape" else CAM_TOWN_DIST
+
+# The look anchor for the CURRENT state: the escape room keeps the
+# framing it was verified with; everywhere else uses the raised
+# town anchor so people fit in frame (v1.3).
+func _look_height() -> float:
+	return CAM_LOOK_HEIGHT if state == "escape" else CAM_TOWN_LOOK_HEIGHT
 
 # One entry point for ALL look input (touch drag, mouse drag, keys, tests).
 func apply_look_drag(drag_delta: Vector2) -> void:
@@ -2596,17 +3254,6 @@ func _input(event: InputEvent) -> void:
 		if (event is InputEventScreenTouch and event.pressed) or (event is InputEventMouseButton and event.pressed):
 			dismiss_splash()
 		return
-	if collar_open and (state == "play" or state == "escape"):
-		# A tap anywhere except the COLLAR button itself closes the
-		# collar zoom (the button toggles via its own callback).
-		var press_pos := Vector2(-9999, -9999)
-		if event is InputEventScreenTouch and event.pressed:
-			press_pos = (event as InputEventScreenTouch).position
-		elif event is InputEventMouseButton and event.pressed and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
-			press_pos = (event as InputEventMouseButton).position
-		if press_pos.x > -9000.0 and (collar_btn == null or not collar_btn.get_global_rect().has_point(press_pos)):
-			_close_collar()
-			return
 	if escape_panel != null and escape_panel.visible:
 		return # v1.1: the escape panel owns ALL input while open — the cat stays put, swipes go to the panel
 	if state == "escape" and ((escape_prompt_btn != null and escape_prompt_btn.visible) or (prop_prompt_btn != null and prop_prompt_btn.visible)):
@@ -2671,17 +3318,17 @@ func _build_camera() -> void:
 	cam = Camera3D.new()
 	cam.fov = CAM_FOV
 	cam.near = 0.08
-	cam.far = 400.0 # v0.7: far plane set EXPLICITLY — distant streets, signs and houses stay drawn (v0.6 left the default and things clipped early). PERF (post-v1.0.1): 800 -> 400 — the town diagonal is ~317m and the escape-room shell is ~330m from the far map edge, so EVERYTHING in the world still fits inside 400 from any viewpoint: nothing visible is clipped, the depth range halves, and the standing ">= 400" test still passes.
+	cam.far = 720.0 # v0.7: far plane set EXPLICITLY — distant streets, signs and houses stay drawn (v0.6 left the default and things clipped early). PERF (post-v1.0.1): 800 -> 400 when the town diagonal was ~317m. MAP DOUBLING: 720 — the doubled town's diagonal is ~539m and the relocated escape-room shell sits ~700m from the far west edge, so everything in the world still fits inside the far plane from any viewpoint; the standing ">= 400" test still passes.
 	add_child(cam)
 	cam.position = player.global_position + Vector3(0, 0.85, 1.75)
-	cam.look_at(player.global_position + Vector3(0, CAM_LOOK_HEIGHT, 0), Vector3.UP)
+	cam.look_at(player.global_position + Vector3(0, _look_height(), 0), Vector3.UP)
 	cam.current = true
 	cam_target_pos = cam.position
 
 func _update_camera(delta: float) -> void:
 	if cam == null or player == null:
 		return
-	var look_target: Vector3 = player.global_position + Vector3(0, CAM_LOOK_HEIGHT, 0)
+	var look_target: Vector3 = player.global_position + Vector3(0, _look_height(), 0)
 	var dist: float = _camera_dist()
 	# CHASE CAMERA: still third-person behind the cat, but the frame
 	# eases out and biases toward the pursuer so BOTH stay in frame —
@@ -2698,29 +3345,31 @@ func _update_camera(delta: float) -> void:
 				if d < best_d:
 					best_d = d
 					nearest_chaser = n
+		if pound_worker != null: # POUND VAN: the chase camera frames his chases too
+			var pwm2: String = str(pound_worker.get("mode"))
+			if pwm2 == "chase" or pwm2 == "pursue" or pwm2 == "tell":
+				var d2: float = pound_worker.global_position.distance_to(player.global_position)
+				if d2 < best_d:
+					best_d = d2
+					nearest_chaser = pound_worker
 		if nearest_chaser != null:
 			chase_cam_active = true
-			dist = 5.6 # v1.2: 6.8 was tuned for the old big cat — closer now so the small cat AND the pursuer both read clearly (Michael: "hard to see people chasing him")
+			dist = 6.4 # v1.2: 6.8 was tuned for the old big cat — closer now so the small cat AND the pursuer both read clearly (Michael: "hard to see people chasing him"). v1.3: 5.6 -> 6.4 and the aim point raised (below) — measured with the town framing the pursuer's CHASE/GRAB bar still sat off the top of the frame (y=-0.16 at 5m behind); at 6.4 with the raised aim it measures y=0.15 with the cat still mid-frame (ShotRunnerCamera).
 			var cp: Vector3 = (nearest_chaser as Node3D).global_position
-			look_target = player.global_position.lerp(cp, 0.28) + Vector3(0, CAM_LOOK_HEIGHT, 0)
+			look_target = player.global_position.lerp(cp, 0.28) + Vector3(0, _look_height() + 0.45, 0) # v1.3: aim higher in a chase so the pursuer's overhead bar fits too
 	current_cam_dist = dist
 	var pitch_rad: float = deg_to_rad(look_pitch_deg)
 	var behind: Vector3 = Basis(Vector3.UP, look_yaw) * Vector3(0, 0, 1)
 	var desired: Vector3 = look_target + behind * (cos(pitch_rad) * dist) + Vector3(0, sin(pitch_rad) * dist, 0)
 	desired.y = maxf(desired.y, 0.35) # never sink under the ground when looking up
-	# COLLAR ZOOM (v0.7, item 12): while the collar check is open the
-	# camera eases in close on the cat's neck — the REAL 3D collar and
-	# round paw tag fill the frame, with the address caption in-scene
-	# by the tag. Smooth in and out via collar_zoom_t + smoothstep.
-	collar_zoom_t = move_toward(collar_zoom_t, 1.0 if collar_open else 0.0, delta * 1.7)
-	if collar_zoom_t > 0.001 and player:
-		var neck: Vector3 = player.call("get_neck_global_pos")
-		var front: Vector3 = (player.global_transform.basis * Vector3(0, 0, 1)).normalized()
-		var rightv: Vector3 = (player.global_transform.basis * Vector3(1, 0, 0)).normalized()
-		var collar_desired: Vector3 = neck + front * 0.46 + rightv * 0.13 + Vector3(0, 0.07, 0)
-		var k: float = collar_zoom_t * collar_zoom_t * (3.0 - 2.0 * collar_zoom_t)
-		desired = desired.lerp(collar_desired, k)
-		look_target = look_target.lerp(neck + Vector3(0, -0.035, 0), k)
+	# v1.3 FOV by state: town play runs the wider 70 so people + their
+	# overhead bars fit at conversational distance; the escape room
+	# and the capture cutscene keep the 62 they were verified with.
+	# (v1.0.8: the collar-zoom FOV blend is gone with the collar check.)
+	if state == "escape" or state == "cutscene":
+		cam.fov = CAM_FOV
+	else:
+		cam.fov = CAM_TOWN_FOV
 	# ESCAPE CAMERA (v1.1): while the visible escape plays, frame the
 	# exit and the cat together. The room's orbit camera can wedge
 	# into furniture at some mechanisms (at the carrier it ends up
@@ -2733,6 +3382,20 @@ func _update_camera(delta: float) -> void:
 		var exit_pos: Vector3 = _escape_exit_pos(escape_anim_kind)
 		look_target = exit_pos.lerp(player.global_position + Vector3(0, 0.25, 0), 0.45)
 		desired = _escape_cam_pos(escape_anim_kind)
+	if state == "cutscene" and captor != null and captor is Node3D:
+		# v1.3 SCOOP CAMERA: frame the PAIR, not just the cat. The
+		# plain follow cam loses him behind her body the moment she
+		# turns for home (he's cradled at her chest now, not at her
+		# back), so during the capture beat the shot eases to a
+		# three-quarter view off her front — the bend, the lift, the
+		# cradle and the walk-off all keep both of them in frame.
+		# The position damp below smooths the swing; the escape
+		# room's teleport snap takes over when the beat ends.
+		var npc_pos: Vector3 = (captor as Node3D).global_position
+		look_target = player.global_position.lerp(npc_pos, 0.38) + Vector3(0, 0.62, 0)
+		var cyaw: float = (captor as Node3D).rotation.y
+		var cam_dir := Vector3(sin(cyaw - 0.7), 0, cos(cyaw - 0.7))
+		desired = look_target + cam_dir * 2.7 + Vector3(0, 0.95, 0)
 	# Snap (don't sweep across the map) when the cat teleports, e.g. into
 	# or out of the escape room ~200 units away.
 	if cam_target_pos.distance_to(desired) > 20.0:
@@ -2776,7 +3439,10 @@ func _update_camera(delta: float) -> void:
 					# the camera into the small gap that remains.
 					cam_pos = look_target + dir.normalized() * 0.4
 	cam.position = cam_pos
-	if cam.position.distance_to(look_target) > 0.3:
+	# v1.5: 0.3 -> 0.12 — a tight dead zone, so the camera keeps
+	# re-aiming during close approaches instead of holding a stale
+	# angle (the old 0.3 left it un-aimed inside 0.3 of the target).
+	if cam.position.distance_to(look_target) > 0.12:
 		cam.look_at(look_target, Vector3.UP)
 
 # ---------------------------------------------------------------- HUD (same layout as v0.1)
@@ -2855,22 +3521,12 @@ func _build_hud() -> void:
 	message_label.offset_bottom = -118
 	escape_label = _hud_label(hud_layer, "", Vector2(16, 134), 26)
 	escape_label.label_settings.font_color = Color(1.0, 0.95, 0.6)
-	# v0.7 COLLAR CHECK = CAMERA ZOOM (item 12): the old 2D panel with
-	# a sprite is GONE. The game camera flies in on the real 3D cat
-	# (see _update_camera); this caption lives IN the 3D scene, just
-	# in front of the cat's chest under the real collar tag, and is
-	# only visible while zoomed. FIXED_Y billboard: it turns to face
-	# the camera around the vertical axis but stays part of the scene.
-	collar_caption = Label3D.new()
-	collar_caption.font_size = 44
-	collar_caption.pixel_size = 0.0012
-	collar_caption.billboard = BaseMaterial3D.BILLBOARD_FIXED_Y
-	collar_caption.modulate = Color(1.0, 0.95, 0.7)
-	collar_caption.outline_size = 8
-	collar_caption.outline_modulate = Color(0, 0, 0, 0.55)
-	collar_caption.position = Vector3(0, 0.02, 0.36) # just under the real tag (local 0,0.158,0.288)
-	collar_caption.visible = false
-	player.add_child(collar_caption)
+	# The title panel is where the run's address is shown (start of
+	# the run only). The address is ALSO printed on the 3D tag's own
+	# face (see cat.set_tag_address, called from _spawn_player).
+	# v1.0.8: the old in-play COLLAR check (button + camera zoom) is
+	# removed — under the new story the collar is lost before the
+	# pound, so there is no mid-run re-check any more.
 	title_panel = _make_panel(hud_layer, Vector2(240, 40), Vector2(800, 640), Color(0.09, 0.11, 0.2, 0.97))
 	# v0.7: centre the panel on the ACTUAL screen (was fixed at
 	# (240,40) of a 1280x720 design — off-centre on Michael's phone).
@@ -2897,7 +3553,7 @@ func _build_hud() -> void:
 	addr.label_settings.font_color = Color(1.0, 0.9, 0.45)
 	addr.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	addr.custom_minimum_size = Vector2(740, 55)
-	_hud_label(title_panel, "Memorise it! Find that house. Don't let kind people\ntake you home with them — press C when stopped to re-check.", Vector2(70, 410), 23)
+	_hud_label(title_panel, "Memorise it! Find that house. Don't let kind people\ntake you home with them.", Vector2(70, 410), 23)
 	var start_btn := Button.new()
 	start_btn.text = "▶  START  —  Find Home!"
 	start_btn.position = Vector2(200, 520)
@@ -3075,32 +3731,18 @@ func _build_touch_controls() -> void:
 	_round_action("A\nHOP", Vector2(1178, 590), 92, Color(0.85, 0.3, 0.3, 0.88), _on_hop_pressed)
 	_round_action("B\nPAW", Vector2(1066, 614), 84, Color(0.3, 0.45, 0.9, 0.88), func() -> void: _on_interact())
 	_round_action("MEOW", Vector2(1146, 492), 70, Color(0.55, 0.4, 0.85, 0.85), func() -> void: _on_meow())
-	collar_btn = _round_action("COLLAR", Vector2(1062, 506), 70, Color(0.3, 0.65, 0.55, 0.85), func() -> void: _toggle_collar())
 	# v0.7: NO Sprint button — sprint is pushing the joystick all the
 	# way (Michael's final decision). NO Map button — mini-map removed.
+	# v1.0.8: NO COLLAR button either — the collar check is removed
+	# entirely (the collar is lost before the pound in the new story).
 	# Presses starting on a button never start a look drag; the live
 	# button rects are checked in _look_press_blocked.
-	# Discoverable look-area indicator: a soft circle on the right edge.
-	# It is display-only (mouse_filter IGNORE) — dragging anywhere on the
-	# right half (off the buttons) is what actually looks around.
-	var look_dot := Button.new()
-	look_dot.text = "👀\nLOOK"
-	look_dot.anchor_left = 1.0
-	look_dot.anchor_right = 1.0
-	look_dot.anchor_top = 0.5
-	look_dot.anchor_bottom = 0.5
-	look_dot.offset_left = -84
-	look_dot.offset_right = -12
-	look_dot.offset_top = -36
-	look_dot.offset_bottom = 36
-	look_dot.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	look_dot.focus_mode = Control.FOCUS_NONE
-	look_dot.add_theme_font_size_override("font_size", 14)
-	look_dot.add_theme_stylebox_override("normal", _round_style(Color(0.1, 0.14, 0.22, 0.5), 72))
-	look_dot.add_theme_stylebox_override("pressed", _round_style(Color(0.1, 0.14, 0.22, 0.5), 72))
-	look_dot.add_theme_stylebox_override("hover", _round_style(Color(0.1, 0.14, 0.22, 0.5), 72))
-	look_dot.add_theme_stylebox_override("disabled", _round_style(Color(0.1, 0.14, 0.22, 0.5), 72))
-	touch_layer.add_child(look_dot)
+	# v1.0.8: NO on-screen LOOK button (Michael: "We don't need the
+	# look button"). The old indicator was display-only anyway
+	# (mouse_filter IGNORE) — dragging anywhere on the right half of
+	# the screen (off the action buttons) is what looks around, via
+	# _input / apply_look_drag, and that path is unchanged. The
+	# start-of-run hint below still explains the drag.
 	# Start-of-run hint (fades after ~7 seconds of play).
 	hint_label = _hud_label(touch_layer, "🐾 LEFT side: touch & drag to MOVE — push ALL the way to sprint!\n👀 RIGHT side: drag to LOOK — tilt UP to read the street signs!", Vector2(330, 92), 26)
 	hint_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -3325,32 +3967,6 @@ func show_message(text: String, seconds: float = 3.0) -> void:
 	message_label.text = text
 	message_timer = seconds
 
-func _toggle_collar() -> void:
-	if state != "play" and state != "escape":
-		return
-	if collar_open:
-		_close_collar()
-		return
-	if player and player.has_method("is_moving") and player.is_moving():
-		show_message("Stop first, then check your collar.", 2.0)
-		return
-	# v0.7: opening the collar check starts the CAMERA ZOOM onto the
-	# real collar (see _update_camera) and shows the in-scene caption.
-	collar_open = true
-	collar_timer = 6.0
-	if collar_caption:
-		collar_caption.text = "🏠 " + home_address
-		collar_caption.visible = true
-	if player: player.set("frozen", true)
-
-func _close_collar() -> void:
-	if not collar_open:
-		return
-	collar_open = false
-	if collar_caption:
-		collar_caption.visible = false
-	if player: player.set("frozen", false)
-
 func _on_meow() -> void:
 	if state != "play" or meow_cooldown > 0.0 or player == null:
 		return
@@ -3415,11 +4031,14 @@ func on_grabber_tell(npc: Node) -> void:
 	if state != "play":
 		return
 	sfx_notice.play()
-	show_message("❗ " + str(npc.get("display_name")) + ": \"Here, kitty kitty!\" — RUN!", 2.2)
+	if npc == pound_worker:
+		show_message("🚐 The pound worker spotted you: \"There you are! Let's get you home!\" — RUN!", 2.4)
+	else:
+		show_message("❗ " + str(npc.get("display_name")) + ": \"Here, kitty kitty!\" — RUN!", 2.2)
 
 # ---------------------------------------------------------------- traffic (v0.7)
 const TRAFFIC_ROADS_H: Array = [-55.0, -11.0, 15.0, 55.0] # z of the horizontal roads
-const TRAFFIC_ROADS_V: Array = [-70.0, -20.0, 24.0, 72.0] # x of the vertical roads
+const TRAFFIC_ROADS_V: Array = [-70.0, -20.0, 24.0, 72.0, 128.0, 176.0, 224.0, 272.0, 320.0] # MAP DOUBLING: + the five east cross streets # x of the vertical roads
 
 func spawn_traffic_car() -> Node3D:
 	# One car enters at a map edge and drives straight down a street.
@@ -3435,7 +4054,7 @@ func spawn_traffic_car() -> Node3D:
 	if rng.randf() < 0.55:
 		var rz: float = TRAFFIC_ROADS_H[rng.randi_range(0, TRAFFIC_ROADS_H.size() - 1)]
 		var lane: float = rz + (1.8 if dir_sign > 0.0 else -1.8)
-		node = _build_car(traffic_group, Vector3(-124.0 * dir_sign, 0, lane), cols[rng.randi_range(0, cols.size() - 1)], true, types[rng.randi_range(0, types.size() - 1)], true)
+		node = _build_car(traffic_group, Vector3(382.0 if dir_sign < 0.0 else -130.0, 0, lane), cols[rng.randi_range(0, cols.size() - 1)], true, types[rng.randi_range(0, types.size() - 1)], true) # MAP DOUBLING: spawn just off the new edges
 		node.rotation_degrees = Vector3(0, 0.0 if dir_sign > 0.0 else 180.0, 0)
 		vel = Vector3(speed * dir_sign, 0, 0)
 	else:
@@ -3464,7 +4083,7 @@ func _process_traffic(delta: float) -> void:
 		# arrives on schedule). Cars spawn at the map edges, often
 		# 200m+ away across town — pure draw calls until they near.
 		n.visible = player == null or n.position.distance_squared_to(player.global_position) < 22500.0
-		if absf(n.position.x) > 128.0 or absf(n.position.z) > 93.0:
+		if n.position.x > 384.0 or n.position.x < -132.0 or absf(n.position.z) > 93.0: # MAP DOUBLING: east despawn moved with the border
 			dead.append(tc)
 		elif state == "play" and player and traffic_hit_cd <= 0.0:
 			var d: Vector3 = player.global_position - n.position
@@ -3484,6 +4103,400 @@ func apply_traffic_hit(car_vel: Vector3) -> void:
 	if player:
 		player.call("apply_car_bump", car_vel.normalized())
 	show_message("🚗 Whoa! A car startled you — -%d points! (You're fine, just bounced.)" % TRAFFIC_HIT_PENALTY, 2.5)
+
+# ---------------------------------------------------------------- pound van (Michael, 2026-11-17)
+func _spawn_pound() -> void:
+	# The patrol circuit: one right-hand loop around the whole
+	# town, driven on the traffic lanes (lane offsets as in
+	# spawn_traffic_car): east along the z=15 road, north up
+	# Sunset Drive (x=320), west along the z=-55 road, south down
+	# the x=-70 road, and around again — forever.
+	pound_route = [
+		Vector3(-116.0, 0, 16.8),
+		Vector3(321.8, 0, 16.8),
+		Vector3(321.8, 0, -56.8),
+		Vector3(-71.8, 0, -56.8),
+		Vector3(-71.8, 0, 16.8),
+	]
+	pound_route_idx = 1
+	pound_van = _build_car(traffic_group, pound_route[0], Color(0.96, 0.96, 0.94), true, "van", true)
+	pound_van.name = "PoundVan"
+	pound_van_yaw = 0.0
+	pound_van.rotation.y = 0.0
+	# Lettering ON the body, both flanks — flat print that reads
+	# face-on as he passes, like the street signs. (The van is a
+	# traffic-system vehicle, so the static-prop roadway audits,
+	# which skip the Traffic subtree by design, are untouched.)
+	_label3d_flat(pound_van, "POUND", Vector3(-0.45, 0.60, 0.99), 120, Color(0.10, 0.30, 0.55), 0.0, 0.006)
+	_label3d_flat(pound_van, "ANIMAL CONTROL", Vector3(-0.45, 1.84, 0.99), 60, Color(0.10, 0.30, 0.55), 0.0, 0.006)
+	_label3d_flat(pound_van, "POUND", Vector3(-0.45, 0.60, -0.99), 120, Color(0.10, 0.30, 0.55), 180.0, 0.006)
+	_label3d_flat(pound_van, "ANIMAL CONTROL", Vector3(-0.45, 1.84, -0.99), 60, Color(0.10, 0.30, 0.55), 180.0, 0.006)
+	# A little roof light bar, so he reads as an official vehicle
+	# at a glance and not just another white van in traffic.
+	_box(pound_van, Vector3(1.08, 2.05, 0), Vector3(0.5, 0.08, 0.95), Color(0.25, 0.25, 0.28))
+	_box(pound_van, Vector3(1.08, 2.12, 0.25), Vector3(0.34, 0.07, 0.32), Color(1.0, 0.62, 0.15), false, 0.7)
+	_box(pound_van, Vector3(1.08, 2.12, -0.25), Vector3(0.34, 0.07, 0.32), Color(0.2, 0.5, 1.0), false, 0.7)
+	# The worker: a person.gd "poundworker" (white uniform, cap,
+	# net in hand) with the grabber role, so his chase, grab and
+	# capture ARE the game's own machinery. He is NOT one of the
+	# 48 town NPCs — never added to npcs, so the population and
+	# its 25% avoid-share are exactly as they were. Main drives
+	# him (active = false) except while he is chasing / pursuing,
+	# when his own brain takes over.
+	pound_worker = CharacterBody3D.new()
+	pound_worker.set_script(PersonScript)
+	pound_worker.set("npc_type", "poundworker")
+	pound_worker.set("role", "grabber")
+	pound_worker.set("outfit_idx", 0)
+	pound_worker.set("wide_bounds", true)
+	pound_worker.position = pound_route[0] + Vector3(0, 0.15, 0)
+	add_child(pound_worker)
+	pound_worker.set("main_ref", self)
+	pound_worker.set("player_ref", player)
+	pound_worker.set("active", false)
+	pound_worker.visible = false
+
+func _pound_forward() -> Vector3:
+	return Vector3(cos(pound_van_yaw), 0, -sin(pound_van_yaw))
+
+func _pound_pin_worker() -> void:
+	# Riding: he travels inside the van, unseen, until he gets out.
+	pound_worker.global_position = pound_van.position + Vector3(0, 0.15, 0)
+
+func _pound_drive_route(delta: float, cruise: float) -> void:
+	var target: Vector3 = pound_route[pound_route_idx]
+	var to: Vector3 = target - pound_van.position
+	to.y = 0.0
+	if to.length() < 7.0:
+		pound_route_idx = (pound_route_idx + 1) % pound_route.size()
+		target = pound_route[pound_route_idx]
+		to = target - pound_van.position
+		to.y = 0.0
+	var want_yaw: float = atan2(-to.z, to.x)
+	pound_van_yaw = lerp_angle(pound_van_yaw, want_yaw, minf(1.0, 1.15 * delta))
+	var turn_gap: float = absf(angle_difference(pound_van_yaw, want_yaw))
+	var spd: float = cruise * clampf(1.15 - turn_gap, 0.45, 1.0)
+	# A careful driver: if the cat is standing in the road just
+	# ahead and the worker is NOT getting out (the cat is hidden,
+	# on cooldown, or someone else is already after him), the van
+	# stops and waits rather than driving through him.
+	if player and state == "play":
+		var rel: Vector3 = player.global_position - pound_van.position
+		rel.y = 0.0
+		var fwd: Vector3 = _pound_forward()
+		var ahead: float = rel.dot(fwd)
+		var side: float = rel.dot(Vector3(-fwd.z, 0, fwd.x))
+		if ahead > 0.5 and ahead < 5.0 and absf(side) < 1.7:
+			spd = 0.0
+	pound_van_speed = move_toward(pound_van_speed, spd, (7.0 if spd < pound_van_speed else 3.5) * delta)
+	pound_van.position += _pound_forward() * pound_van_speed * delta
+	pound_van.rotation.y = pound_van_yaw
+
+func _pound_gates_open() -> bool:
+	# THE COLLAR FLAG (player_collared): while the cat has a collar
+	# on, the worker never engages — story mode will set the flag
+	# when the cat is collared again. It defaults to false.
+	if player_collared:
+		return false
+	if pound_engage_cd > 0.0:
+		return false
+	if player == null:
+		return false
+	if bool(player.get("is_hidden")):
+		return false # a cat he can't see is a cat he can't help
+	if not pursuers.is_empty():
+		return false # someone is already looking for the cat
+	for n in npcs:
+		var m: String = str(n.get("mode"))
+		if m == "chase" or m == "pursue" or m == "tell":
+			return false # never pile his chase onto one already running
+	return true
+
+func _pound_begin_pullover() -> void:
+	# Pull to the kerb on HIS side of the road he is on, rolling a
+	# little way forward as he stops — parallel to the kerb at the
+	# asphalt's edge (offset 2.75 of a 3.6 half-width), clear of
+	# the road centre and of the far lane.
+	var fwd: Vector3 = _pound_forward()
+	if absf(fwd.x) > absf(fwd.z):
+		var centre: float = TRAFFIC_ROADS_H[0]
+		var bd: float = 1e9
+		for rz in TRAFFIC_ROADS_H:
+			if absf(pound_van.position.z - rz) < bd:
+				bd = absf(pound_van.position.z - rz)
+				centre = rz
+		var side_sign: float = signf(pound_van.position.z - centre)
+		if side_sign == 0.0:
+			side_sign = 1.0
+		pound_stop_pos = pound_van.position + fwd * 6.0
+		pound_stop_pos.z = centre + side_sign * 2.75
+		pound_kerb_dir = Vector3(0, 0, side_sign)
+	else:
+		var centre2: float = TRAFFIC_ROADS_V[0]
+		var bd2: float = 1e9
+		for rx in TRAFFIC_ROADS_V:
+			if absf(pound_van.position.x - rx) < bd2:
+				bd2 = absf(pound_van.position.x - rx)
+				centre2 = rx
+		var side_sign2: float = signf(pound_van.position.x - centre2)
+		if side_sign2 == 0.0:
+			side_sign2 = 1.0
+		pound_stop_pos = pound_van.position + fwd * 6.0
+		pound_stop_pos.x = centre2 + side_sign2 * 2.75
+		pound_kerb_dir = Vector3(side_sign2, 0, 0)
+	pound_stop_pos.y = 0.0
+	pound_stop_yaw = pound_van_yaw
+	pound_state = "pullover"
+
+func _pound_drive_pullover(delta: float) -> void:
+	var to: Vector3 = pound_stop_pos - pound_van.position
+	to.y = 0.0
+	var dist: float = to.length()
+	# Arrive: close enough, OR the stop point has slipped behind
+	# the front bumper on the final approach (snapping the last
+	# step of a park is invisible at these speeds). Aiming straight
+	# at the point the whole way in keeps the approach a gentle
+	# diagonal; the snap squares him to the road at the end.
+	# (An earlier version blended the heading onto the road
+	# direction during the approach and could circle the stop
+	# point forever, never arriving.)
+	if dist < 0.8 or (dist < 2.0 and to.dot(_pound_forward()) < 0.0):
+		pound_van.position = pound_stop_pos
+		pound_van_yaw = pound_stop_yaw
+		pound_van.rotation.y = pound_van_yaw
+		pound_van_speed = 0.0
+		_pound_worker_out()
+		return
+	var want_yaw: float = atan2(-to.z, to.x)
+	pound_van_yaw = lerp_angle(pound_van_yaw, want_yaw, minf(1.0, 2.2 * delta))
+	pound_van_speed = move_toward(pound_van_speed, clampf(dist * 0.8, 0.35, 4.2), 8.0 * delta)
+	pound_van.position += _pound_forward() * pound_van_speed * delta
+	pound_van.rotation.y = pound_van_yaw
+
+func _pound_door_pos() -> Vector3:
+	# Where he stands when he gets out / climbs back in: beside
+	# the cab, on the kerb side of the parked van.
+	return pound_van.position + _pound_forward() * 0.9 + pound_kerb_dir * 1.7 + Vector3(0, 0.2, 0)
+
+func _pound_worker_out() -> void:
+	pound_state = "exit"
+	pound_exit_t = 0.75
+	pound_worker.global_position = _pound_door_pos()
+	pound_worker.rotation.y = atan2(pound_kerb_dir.x, pound_kerb_dir.z)
+	pound_worker.visible = true
+	var m = pound_worker.get("model")
+	if m:
+		(m as Node3D).visible = true
+	pound_worker.call("set_expression", "happy")
+
+func _pound_clear_label() -> void:
+	var nl = pound_worker.get("notice_label")
+	if nl:
+		(nl as Label3D).text = ""
+
+func _pound_reset_return_watch() -> void:
+	# POUND RETURN FIX: (re)arm the stuck watch — called whenever a
+	# return begins, ends, or is interrupted by a re-engagement.
+	pound_return_best = INF
+	pound_return_still_t = 0.0
+	pound_return_stuck_total = 0.0
+	pound_return_sidesteps = 0
+	pound_return_dodge_t = 0.0
+	pound_return_has_target = false
+
+func _pound_return_target(door: Vector3) -> Vector3:
+	# POUND RETURN FIX (2026-11-17): where the walk back to the van
+	# should aim this frame. The old routing walked him straight at
+	# the door (routing around the nose only from the road side),
+	# and from behind the van that line presses him onto the rear
+	# face — he wedged on its corner for good, pound_state stuck at
+	# "return", patrol dead for the session; from deep in a front
+	# yard the same straight line speared him on fences/flowerbeds
+	# short of the door. Now every side gets the nose rule's
+	# treatment: waypoints on the KERB CORRIDOR line (the door's own
+	# line, lat 1.7 — clear of the flank, inside the fence line),
+	# picked by where he stands in van space (lon = along the van,
+	# + = ahead of the nose; lat = toward the kerb).
+	var fwd: Vector3 = _pound_forward()
+	var rel: Vector3 = pound_worker.global_position - pound_van.position
+	var lon: float = rel.dot(fwd)
+	var lat: float = rel.dot(pound_kerb_dir)
+	if lat > 2.6:
+		# Deep in a front yard: head straight OUT to the corridor
+		# line first, then along it to the door — never a diagonal
+		# across the lawn. (Once he is inside the out-point's
+		# arrival bubble the aim switches to the door itself —
+		# _pound_move_worker parks him at < 0.8 from a target, so
+		# a waypoint he has effectively reached must stop being
+		# the target or he stands on it forever.)
+		var out_pt: Vector3 = pound_van.position + fwd * lon + pound_kerb_dir * 1.7 + Vector3(0, 0.2, 0)
+		if pound_worker.global_position.distance_to(out_pt) > 0.85:
+			return out_pt
+		return door
+	if lon < -2.6 and lat < 1.6:
+		# Behind the van: around the BACK first — a rear waypoint
+		# clear of the rear bumper, on the corridor line — then
+		# forward along the kerb side to the door. Inside the rear
+		# waypoint's arrival bubble the aim steps forward to a
+		# mid-flank corridor point instead (same parking rule as
+		# the out-point above; from there the region rules above
+		# hand him on to the door).
+		var rear_pt: Vector3 = pound_van.position + fwd * -3.8 + pound_kerb_dir * 1.7 + Vector3(0, 0.2, 0)
+		if pound_worker.global_position.distance_to(rear_pt) > 0.85:
+			return rear_pt
+		return pound_van.position + fwd * -1.0 + pound_kerb_dir * 1.7 + Vector3(0, 0.2, 0)
+	if lat < 0.6:
+		# Road side (the original nose rule): around the nose,
+		# then back along the kerb side.
+		return pound_van.position + fwd * 3.4 + pound_kerb_dir * 1.7 + Vector3(0, 0.2, 0)
+	return door
+
+func _pound_move_worker(target: Vector3, speed: float, delta: float) -> bool:
+	# Main-driven walking (the _room_move_toward pattern): set the
+	# velocity, move NOW, animate — his own brain is parked
+	# (active = false) so nothing fights the motion. Returns true
+	# on arrival.
+	var npc := pound_worker as CharacterBody3D
+	var mdl = pound_worker.get("model")
+	if mdl and not (mdl as Node3D).visible:
+		(mdl as Node3D).visible = true # the distance-hider may have parked his model during a long pursuit
+	var to: Vector3 = target - npc.global_position
+	to.y = 0.0
+	if to.length() < 0.8:
+		npc.velocity = Vector3(0, npc.velocity.y, 0)
+		npc.call("_animate", delta, 0.0)
+		return true
+	var dir: Vector3 = to.normalized()
+	npc.velocity = Vector3(dir.x * speed, -2.0, dir.z * speed)
+	npc.move_and_slide()
+	npc.rotation.y = lerp_angle(npc.rotation.y, atan2(dir.x, dir.z), minf(1.0, 8.0 * delta))
+	npc.call("_animate", delta, speed)
+	return false
+
+func _update_pound(delta: float) -> void:
+	if pound_van == null or pound_worker == null:
+		return
+	if state == "splash" or state == "title":
+		# The town is alive behind the title screens: the van
+		# patrols, but the worker never engages before play starts.
+		if pound_state == "patrol":
+			_pound_drive_route(delta, POUND_VAN_SPEED)
+			_pound_pin_worker()
+		return
+	if state != "play":
+		return # cutscene / escape / win: he is busy being the captor (or the moment is frozen)
+	if pound_engage_cd > 0.0:
+		pound_engage_cd -= delta
+	match pound_state:
+		"patrol":
+			_pound_drive_route(delta, POUND_VAN_SPEED)
+			_pound_pin_worker()
+			if _pound_gates_open():
+				var d: Vector3 = player.global_position - pound_van.position
+				d.y = 0.0
+				if d.length() <= POUND_SPOT_RADIUS:
+					_pound_begin_pullover()
+		"pullover":
+			_pound_drive_pullover(delta)
+			if pound_state == "pullover":
+				_pound_pin_worker() # still parking: he rides. (On the arrival frame _pound_worker_out has already put him at the door — pinning then would drag him back inside.)
+		"exit":
+			pound_exit_t -= delta
+			if pound_exit_t <= 0.0:
+				# Out he comes — the game's own grabber tell + chase
+				# take it from here (his line: "There you are!
+				# Let's get you home!").
+				pound_state = "chase"
+				pound_worker.set("active", true)
+				pound_worker.set("notice", 1.0)
+				pound_worker.call("_start_chase")
+		"chase":
+			var wm: String = str(pound_worker.get("mode"))
+			if wm != "chase" and wm != "tell" and wm != "pursue":
+				# He lost the cat — the ordinary chase lose rules
+				# (distance / line of sight / cat gap) fired inside
+				# person.gd. Take the wheel back and walk him home
+				# to the van. (A capture leaves "play" instead, and
+				# on_cat_taken moves him to "away".)
+				pound_state = "return"
+				pound_worker.set("active", false)
+				_pound_clear_label()
+				_pound_reset_return_watch()
+		"return":
+			var d2: Vector3 = player.global_position - pound_worker.global_position
+			d2.y = 0.0
+			if _pound_gates_open() and d2.length() <= POUND_SPOT_RADIUS:
+				# The cat wandered back into view on his way to the
+				# van — he turns around and comes after him again.
+				pound_state = "chase"
+				pound_worker.set("active", true)
+				pound_worker.set("notice", 1.0)
+				pound_worker.call("_start_chase")
+				_pound_reset_return_watch()
+			else:
+				var door: Vector3 = _pound_door_pos()
+				var target: Vector3 = _pound_return_target(door)
+				# POUND RETURN FIX: stuck watch. The waypoints are
+				# the fix; this only fires if scenery the waypoints
+				# don't know about still wedges him in real play.
+				# No progress for ~2.5 s -> a sidestep; ~6 s total
+				# of no progress -> quietly place him at the door.
+				if pound_return_dodge_t > 0.0:
+					pound_return_dodge_t -= delta
+					target = pound_return_dodge
+				else:
+					var wpos: Vector3 = pound_worker.global_position
+					var dt2: Vector3 = target - wpos
+					dt2.y = 0.0
+					if not pound_return_has_target or pound_return_last_target.distance_squared_to(target) > 0.04:
+						pound_return_best = INF
+						pound_return_still_t = 0.0
+						pound_return_has_target = true
+					pound_return_last_target = target
+					if dt2.length() < pound_return_best - 0.05:
+						pound_return_best = dt2.length()
+						pound_return_still_t = 0.0
+					else:
+						pound_return_still_t += delta
+						pound_return_stuck_total += delta
+					if pound_return_stuck_total >= 6.0:
+						# Last resort: he is wedged somewhere the
+						# waypoints can't clear. A tiny pop at the
+						# door after 6 stuck seconds beats a patrol
+						# that never resumes.
+						print("POUND RETURN FAILSAFE: teleported worker to the door after ", snappedf(pound_return_stuck_total, 0.1), "s stuck (target was ", target, ")")
+						pound_worker.global_position = door + pound_kerb_dir * 0.3
+						_pound_reset_return_watch()
+						target = door
+					elif pound_return_still_t >= 2.5:
+						# Sidestep: a brisk step perpendicular to
+						# the blocked line — kerb side first, the
+						# other side if he is still stuck after —
+						# then resume the routed walk.
+						var dirv: Vector3 = dt2.normalized()
+						var perp: Vector3 = Vector3(-dirv.z, 0, dirv.x)
+						if perp.dot(pound_kerb_dir) < 0.0:
+							perp = -perp
+						if pound_return_sidesteps > 0:
+							perp = -perp
+						pound_return_dodge = wpos + perp * 1.3
+						pound_return_dodge_t = 0.9
+						pound_return_sidesteps += 1
+						pound_return_still_t = 0.0
+						print("POUND RETURN FAILSAFE: sidestep #", pound_return_sidesteps, " at ", wpos, " toward ", pound_return_dodge)
+						target = pound_return_dodge
+				if _pound_move_worker(target, POUND_RETURN_SPEED, delta) and target == door:
+					# Back at the van: in he gets, net and all, and
+					# the patrol resumes — he'll be round again.
+					pound_worker.visible = false
+					pound_worker.set("active", false)
+					pound_worker.call("set_net_visible", true)
+					pound_worker.call("set_expression", "neutral")
+					pound_state = "patrol"
+					pound_engage_cd = 6.0
+					_pound_reset_return_watch()
+		"away":
+			pass # he is the captor: cutscene, room and pursuit own him until the pursuit drains (see _process)
 
 # ---------------------------------------------------------------- score
 func _update_score_label() -> void:
@@ -3549,11 +4562,28 @@ func on_cat_taken(npc: Node) -> void:
 	captor = npc
 	capture_return_pos = player.global_position
 	pursuers.erase(npc)
-	# v0.6 CAPTURE CUTSCENE: bend down, scoop him up, carry him away,
-	# fade into that captor's escape room (~5.2s, skippable after 1s).
+	if npc == pound_worker:
+		# POUND VAN: he is the captor now — the cutscene, the room
+		# ("back at the pound") and his pursuit own him until the
+		# pursuit drains, which hands him back to the van (below).
+		pound_state = "away"
+		pound_worker.call("set_net_visible", false) # he puts the net down to carry the cat
+	# v1.3 CAPTURE CUTSCENE — THE SCOOP (rebuilt, see _process_cutscene):
+	# she steps in, kneels, both hands come down at his sides and slide
+	# under him; he rises in one eased arc into a cradle at her chest,
+	# startles, settles; she turns and walks home holding him. Fades
+	# into her escape room (~5.2s, skippable after 1s).
 	state = "cutscene"
 	cutscene_t = 0.0
 	cutscene_from = player.global_position
+	cutscene_cat_yaw0 = player.rotation.y
+	cutscene_npc_yaw0 = npc.rotation.y
+	cutscene_npc_from = npc.global_position
+	cutscene_held_started = false
+	var to_cat: Vector3 = player.global_position - npc.global_position
+	to_cat.y = 0.0
+	cutscene_face_yaw = atan2(to_cat.x, to_cat.z) if to_cat.length() > 0.05 else cutscene_npc_yaw0
+	# The way home is back the way she came: opposite her facing.
 	var f: Vector3 = -npc.global_transform.basis.z
 	f.y = 0.0
 	cutscene_dir = f.normalized() if f.length() > 0.05 else Vector3(0, 0, 1)
@@ -3562,10 +4592,49 @@ func on_cat_taken(npc: Node) -> void:
 	show_message("💛 " + str(npc.get("display_name")) + " scooped you up! \"Come home with me, kitty!\"  (tap to skip)", 3.0)
 
 func _held_pos(npc: Node) -> Vector3:
-	var f: Vector3 = -npc.global_transform.basis.z
+	# v1.3: cradled against her CHEST — in front of her facing, belly
+	# to her, head up by her chin. The old formula used -basis.z,
+	# which is BEHIND her (her face/front is +basis.z): he rode at
+	# her back, half inside her skirt, and the follow camera — which
+	# tracks HIM — spent the carry staring at her legs with the cat
+	# out of frame. Scaled by her mscale so a kid captor holds him
+	# at kid-chest height too.
+	var f: Vector3 = npc.global_transform.basis.z
 	f.y = 0.0
 	f = f.normalized() if f.length() > 0.05 else Vector3(0, 0, 1)
-	return npc.global_position + f * 0.48 + Vector3(0, 1.02, 0)
+	var ms: float = 1.0
+	if npc.get("mscale") != null:
+		ms = float(npc.get("mscale"))
+	return npc.global_position + f * (0.42 * ms) + Vector3(0, 1.03 * ms, 0)
+
+func _ease_out_cubic(x: float) -> float:
+	var c: float = clampf(x, 0.0, 1.0)
+	return 1.0 - pow(1.0 - c, 3.0)
+
+func _ease_in_out_cubic(x: float) -> float:
+	var c: float = clampf(x, 0.0, 1.0)
+	if c < 0.5:
+		return 4.0 * c * c * c
+	return 1.0 - pow(-2.0 * c + 2.0, 3.0) * 0.5
+
+func _bezier2(a: Vector3, b: Vector3, c: Vector3, t: float) -> Vector3:
+	var u: float = 1.0 - t
+	return a * (u * u) + b * (2.0 * u * t) + c * (t * t)
+
+func _scoop_step_in(npc3: Node3D, k: float) -> void:
+	# During the bend she closes the last of the gap so her hands can
+	# actually reach him (grab range is 1.2m; arms are 0.68m): ease
+	# her to a spot 0.66m from the cat along the line she stands on,
+	# and square her facing onto him. Absolute lerps from the
+	# captured anchors — no per-frame compounding.
+	var dest: Vector3 = cutscene_npc_from
+	var to_cat: Vector3 = cutscene_from - cutscene_npc_from
+	to_cat.y = 0.0
+	if to_cat.length() > 0.66:
+		dest = cutscene_from - to_cat.normalized() * 0.66
+		dest.y = cutscene_npc_from.y
+	npc3.global_position = cutscene_npc_from.lerp(dest, k)
+	npc3.rotation.y = lerp_angle(cutscene_npc_yaw0, cutscene_face_yaw, k)
 
 func _process_cutscene(delta: float) -> void:
 	cutscene_t += delta
@@ -3573,29 +4642,69 @@ func _process_cutscene(delta: float) -> void:
 	if npc == null:
 		_enter_escape()
 		return
-	var mdl = npc.get("model")
-	if cutscene_t < 1.1:
-		# bend down toward the cat
-		var k: float = cutscene_t / 1.1
-		if mdl:
-			mdl.rotation.x = 0.38 * sin(k * PI * 0.5)
-		player.velocity = Vector3.ZERO
-	elif cutscene_t < 1.9:
-		# lift him up into their arms
-		if mdl:
-			mdl.rotation.x = 0.38 * (1.0 - (cutscene_t - 1.1) / 0.8)
-		var k2: float = clampf((cutscene_t - 1.1) / 0.8, 0.0, 1.0)
-		player.global_position = player.global_position.lerp(_held_pos(npc), k2)
-		player.rotation.y = lerp_angle(player.rotation.y, npc.rotation.y, k2)
+	var npc3 := npc as Node3D
+	player.velocity = Vector3.ZERO
+	if cutscene_t < 1.15:
+		# BEAT 1 — BEND & REACH: she steps in close, kneels down to
+		# his level (person.gd's kneel, cutscene-driven) and both
+		# hands come down at his sides. He stays on the ground.
+		var k: float = _ease_out_cubic(cutscene_t / 1.15)
+		_scoop_step_in(npc3, k)
+		npc.call("set_carry_pose", k, 0.0, k, 0.0)
+	elif cutscene_t < 2.35:
+		# BEAT 2 — THE SCOOP: her hands slide under him (reach aims
+		# them at his flanks, lift_k walks them underneath) and he
+		# rises along ONE eased arc into her chest, turning to face
+		# her as he leaves the ground. The old code lerped position
+		# by a growing per-frame weight — creep, then a final snap.
+		# Here the path is a pure function of the beat clock: a
+		# quadratic bezier (ground -> raised midpoint -> chest) run
+		# on a cubic ease-in-out, so velocity is smooth throughout.
+		if not cutscene_held_started:
+			cutscene_held_started = true
+			if player.has_method("start_held"):
+				player.call("start_held") # startle, then settle (cat.gd)
+		var lk: float = clampf((cutscene_t - 1.15) / 1.2, 0.0, 1.0)
+		var e: float = _ease_in_out_cubic(lk)
+		var cradle: float = clampf((lk - 0.55) / 0.45, 0.0, 1.0)
+		cradle = cradle * cradle * (3.0 - 2.0 * cradle)
+		var reach: float = 1.0 - clampf((lk - 0.78) / 0.22, 0.0, 1.0)
+		# She stays knelt until he's gathered, then stands WITH him:
+		# the kneel release trails the lift instead of racing it.
+		var kneel_now: float = 1.0 - _ease_in_out_cubic(clampf((lk - 0.15) / 0.85, 0.0, 1.0))
+		npc.call("set_carry_pose", reach, cradle, kneel_now, lk)
+		var target: Vector3 = _held_pos(npc)
+		var ctrl: Vector3 = cutscene_from.lerp(target, 0.45) + Vector3(0, 0.30, 0)
+		var p: Vector3 = _bezier2(cutscene_from, ctrl, target, e)
+		# anticipation: a whisker of dip as her hands slide under him
+		p.y -= 0.03 * sin(clampf(lk / 0.22, 0.0, 1.0) * PI) * (1.0 - lk)
+		player.global_position = p
+		player.rotation.y = lerp_angle(cutscene_cat_yaw0, npc3.rotation.y + PI, e)
+	elif cutscene_t < 3.05:
+		# BEAT 3 — SETTLE & TURN: she's upright, he's cradled at her
+		# chest (his held pose completes in cat.gd); she turns to
+		# head home while he settles with a soft decaying double-bob.
+		var sk: float = clampf((cutscene_t - 2.35) / 0.7, 0.0, 1.0)
+		npc.call("set_carry_pose", 0.0, 1.0, 0.0, 1.0)
+		var away_yaw: float = atan2(cutscene_dir.x, cutscene_dir.z)
+		npc3.rotation.y = lerp_angle(cutscene_face_yaw, away_yaw, _ease_in_out_cubic(sk))
+		var bob: float = 0.028 * sin(sk * PI * 2.0) * (1.0 - sk)
+		player.global_position = _held_pos(npc) + Vector3(0, bob, 0)
+		player.rotation.y = npc3.rotation.y + PI
 	else:
-		# walk away carrying him; camera follows the pair
-		if mdl:
-			mdl.rotation.x = 0.0
+		# BEAT 4 — CARRY HOME: she walks off FACING her walk (the old
+		# code walked her backwards), him cradled in front with a
+		# gentle walking bob; her arms stay folded under him because
+		# person.gd's cradle pose outranks the walk swing. The camera
+		# follows him, and now he's actually in front of her — in
+		# frame the whole way. Fade into her house as before.
+		npc.call("set_carry_pose", 0.0, 1.0, 0.0, 1.0)
 		npc.set("velocity", cutscene_dir * 2.2)
 		npc.call("move_and_slide")
 		npc.call("_animate", delta, 2.2)
-		player.global_position = _held_pos(npc)
-		player.rotation.y = npc.rotation.y
+		var bob2: float = sin(cutscene_t * 8.8) * 0.012
+		player.global_position = _held_pos(npc) + Vector3(0, bob2, 0)
+		player.rotation.y = npc3.rotation.y + PI
 		if cutscene_t >= 4.4 and fade_rect:
 			fade_rect.color.a = clampf((cutscene_t - 4.4) / 0.8, 0.0, 1.0)
 	if cutscene_t >= 5.2:
@@ -3611,25 +4720,22 @@ func skip_cutscene() -> void:
 # ---------------------------------------------------------------- escape variants (v0.7 REDESIGN)
 # ONE logical exit mechanism per capture — Michael: the v0.6 chains
 # (knock a book / vase, hop the sofa, THEN the real mechanism) felt
-# like the same arbitrary checklist every time. Now each capture is
-# a single way out that you find and work, themed to the captor:
-# the WINDOW (flip the latch, push the sash — two workings, one
-# mechanism), the PET DOOR flap, the back-door BOLT, or the CARRIER
-# door you wriggle open from inside (that house keeps carriers by
-# the door — you bolt straight out). Since v1.1 each working is the
-# escape PANEL combo (prompt -> panel -> down/up/down/up/PAW -> the
-# visible escape); see the panel section below.
-# Never the same mechanism twice in a row. 15-45s, always doable.
+# like the same arbitrary checklist every time. Since v1.1 the
+# working is the escape PANEL combo (prompt -> panel ->
+# down/up/down/up/PAW -> the visible escape); see the panel section
+# below.
+# v1.4 (Michael's v1.0.6 playtest): the pool is now ONE entry for
+# every captor — the BACK DOOR and its sliding bolt. His rule: the
+# cat carrier is TRANSPORT ONLY (it's how he may be brought in; it
+# is never the puzzle), and the escape game belongs to the DOOR —
+# walk to the door, PAW, work the bolt in the panel, the door
+# swings open, walk out. One clear, learnable rule instead of a
+# per-capture draw between window / pet door / bolt / carrier.
+# The window and pet door remain in the room as dressing (blocked,
+# as a real house's other exits would be); the carrier remains as
+# a prop by the wall. Neither is ever selected again.
 func _variant_pool(ctype: String) -> Array:
-	match ctype:
-		"kid":
-			return [["petdoor"], ["latch", "winpush"], ["carrier"]]
-		"dogwalker":
-			return [["petdoor"], ["carrier"], ["latch", "winpush"]]
-		"shopkeeper":
-			return [["bolt"], ["latch", "winpush"], ["petdoor"]]
-		_:
-			return [["latch", "winpush"], ["petdoor"], ["carrier"]]
+	return [["bolt"]]
 
 func _pick_escape_variant(ctype: String) -> Array:
 	var pool: Array = _variant_pool(ctype)
@@ -3748,6 +4854,7 @@ func _apply_escape_theme(ctype: String) -> void:
 			"kid": room_title_label.text = "🧸 A family house — kid energy everywhere!"
 			"dogwalker": room_title_label.text = "🐶 The dog walker's house — mind the dog!"
 			"shopkeeper": room_title_label.text = "🛒 The shop's back room — find the back door!"
+			"poundworker": room_title_label.text = "🚐 The pound — find the back door!"
 			_: room_title_label.text = "💛 A cozy cat-lover's home — find a way out!"
 
 func _enter_escape() -> void:
@@ -3759,6 +4866,12 @@ func _enter_escape() -> void:
 		var cm = captor.get("model")
 		if cm:
 			cm.rotation.x = 0.0
+		# v1.3: release the scoop poses — her arms are her own again
+		# in the room, and the cat is back on his own four paws.
+		if captor.has_method("set_carry_pose"):
+			captor.call("set_carry_pose", 0.0, 0.0, 0.0, 0.0)
+	if player and player.has_method("stop_held"):
+		player.call("stop_held")
 	var ctype := "woman"
 	if captor and captor.get("npc_type") != null:
 		ctype = str(captor.get("npc_type"))
@@ -3767,10 +4880,9 @@ func _enter_escape() -> void:
 	escape_prog = 0.0
 	_reset_escape_props()
 	_apply_escape_theme(ctype)
-	if escape_steps.size() > 0 and escape_steps[0]["kind"] == "carrier":
-		player.global_position = escape_origin + Vector3(-6, 0.3, 7.5) # you start INSIDE the carrier
-	else:
-		player.global_position = escape_origin + Vector3(0, 0.3, 6)
+	# v1.4: the cat always starts on the rug — never inside the
+	# carrier (the carrier is transport dressing, not a puzzle).
+	player.global_position = escape_origin + Vector3(0, 0.3, 6)
 	if player: player.set("frozen", false)
 	# v1.2: the captor is IN THE ROOM with the cat (Michael's design) —
 	# settling him in, tidying up. She ambles between the room anchors
@@ -3785,9 +4897,19 @@ func _enter_escape() -> void:
 		captor_room_state = "idle"
 		captor_room_wait = 2.0
 		_room_face(player.global_position, 1.0)
-		captor.call("show_bubble", "There we are — home sweet home! 💛", 2.6)
+		if captor == pound_worker:
+			captor.call("show_bubble", "There we are — safe and sound! 💛", 2.6)
+		else:
+			captor.call("show_bubble", "There we are — home sweet home! 💛", 2.6)
+		captor.call("set_expression", "happy") # v1.4: her warm welcome face
+		captor.set("expr_timer", 4.0)
 	_update_escape_label()
-	show_message("You are inside their home — and so is she! Knock something over to distract her, then work the way out! 🐾", 3.6)
+	if captor == pound_worker:
+		# POUND VAN: his capture lands the cat back at the pound —
+		# the same bolt-door escape, exactly as Michael described.
+		show_message("You are inside the POUND — and so is he! Knock something over to distract him, then work the way out! 🐾", 3.6)
+	else:
+		show_message("You are inside their home — and so is she! Knock something over to distract her, then work the way out! 🐾", 3.6)
 
 func _advance_escape_step() -> void:
 	escape_step += 1
@@ -3813,7 +4935,7 @@ func _escape_interact() -> void:
 	elif topple_prop_at_cat():
 		pass # the crash + message in topple_prop say it all
 	else:
-		show_message("Paw the way out to work it — or paw a plant, book or vase over to distract her! 🐾", 1.8)
+		show_message("Paw the way out to work it — or knock something over to distract her! 🐾", 1.8)
 
 # ---------------------------------------------------------------- v1.1 escape PANEL puzzle
 # Michael's flow (2026-11-16): walk to the mechanism and a big
@@ -3948,13 +5070,11 @@ func _panel_combo_success() -> void:
 		_open_exit(kind)
 
 # ------------------------------------------------- v1.2 open exit
-# The combo is done: the mechanism finishes opening for real (sash
-# up, flap unlatched, door swung wide, carrier door open) and CONTROL
-# RETURNS TO THE PLAYER. The opening stays open — no timer, nothing
-# to re-do — so the cat can never be soft-locked inside. For the
-# carrier the cat still has the house to leave: the pet door is the
-# way out (its plug lifts too — walking out is locomotion, not a
-# second puzzle; the suite's one-mechanism rule is about combos).
+# The combo is done: the mechanism finishes opening for real (the
+# back door swung wide — v1.4: the door is the one and only exit)
+# and CONTROL RETURNS TO THE PLAYER. The opening stays open — no
+# timer, nothing to re-do — so the cat can never be soft-locked
+# inside.
 func _open_exit(kind: String) -> void:
 	exit_open = true
 	exit_open_kind = kind
@@ -3979,11 +5099,8 @@ func _open_exit(kind: String) -> void:
 			if backdoor_pivot:
 				backdoor_pivot.rotation.y = -1.75 # swung wide into the room
 			show_message("The back door's OPEN — walk out! 🚪🐾", 2.6)
-		"carrier":
-			_set_blocker(petdoor_blocker, false)
-			if flap_node:
-				flap_node.rotation.x = 0.55
-			show_message("You're out of the carrier! Now slip out the PET DOOR! 🐾", 3.0)
+		# v1.4: no "carrier" arm any more — the carrier is never the
+		# mechanism, so there is no second-stage pet-door exit.
 	if escape_label:
 		escape_label.text = "🚪 The way is OPEN — walk out!"
 	if captor and not captor_distracted():
@@ -4183,12 +5300,21 @@ func topple_prop(p: Dictionary) -> void:
 		return
 	p["toppled"] = true
 	p["anim_t"] = 0.0
+	# v1.5: the cue scales to the object — a cushion must not crash
+	# like a vase. crash = the original low thud; clatter = brighter
+	# and shorter; thud = softer still for soft things.
+	var cue: String = str(p.get("cue", "crash"))
 	if sfx_crash:
+		sfx_crash.pitch_scale = 1.4 if cue == "clatter" else (0.55 if cue == "thud" else 0.5)
+		sfx_crash.volume_db = -9.0 if cue == "thud" else -4.0
 		sfx_crash.play()
-	var lbl := _label3d(self, "💥 CRASH!", (p["base"] as Vector3) + Vector3(0, 1.7, 0), 72, Color(1.0, 0.8, 0.3))
+	var cue_text: String = "💥 CRASH!" if cue == "crash" else ("🔔 Clatter!" if cue == "clatter" else "💨 Thud!")
+	var lbl := _label3d(self, cue_text, (p["base"] as Vector3) + Vector3(0, 1.7, 0), 72, Color(1.0, 0.8, 0.3))
 	crash_labels.append({"node": lbl, "t": 0.0, "y0": lbl.position.y})
 	if captor:
 		captor.call("show_bubble", str(p["bubble"]), 2.2)
+		captor.call("set_expression", "worried") # v1.4: the crash worries her
+		captor.set("expr_timer", 2.5)
 		if captor_room_state == "idle" or captor_room_state == "walk" or captor_room_state == "return" or captor_room_state == "shoo":
 			captor_prop = p
 			captor_trip_t = 0.0
@@ -4208,6 +5334,9 @@ func _on_prop_prompt_pressed() -> void:
 func _interrupt_escape() -> void:
 	if escape_step >= escape_steps.size():
 		return
+	if captor:
+		captor.call("set_expression", "worried") # v1.4: she spotted him at the latch
+		captor.set("expr_timer", 2.0)
 	var kind: String = escape_steps[escape_step]["kind"]
 	if escape_panel:
 		escape_panel.hide_panel()
@@ -4516,6 +5645,23 @@ func _process_escape(delta: float) -> void:
 func _complete_escape() -> void:
 	apply_escape_bonus()
 	state = "play"
+	# v1.4 CAMERA HANDOFF (Michael's v1.0.6 playtest: "When I escaped
+	# I was high up in the air and super small. And it didn't return
+	# to normal."). Diagnosis (tests/EscapeFlowProbe.tscn): FOV,
+	# orbit distance and the look anchor are STATE-driven — they
+	# restore themselves the frame the state flips back to "play".
+	# But look_pitch_deg and look_yaw are PLAYER variables that
+	# persist across every state, and nothing ever reset them:
+	# whatever the player dragged them to while hunting around the
+	# escape room (pitch wound up high is the natural way to scan a
+	# room) followed him back to town — camera ~6 m up, cat at 0.03
+	# of the frame through the whole pursuit, and STILL pitched
+	# down at him after it ended. Restore the shipped town framing
+	# here, at the one funnel every escape completion passes
+	# through; the 0.6 s fade-in below covers the swing.
+	look_pitch_deg = CAM_TOWN_PITCH
+	if player:
+		look_yaw = wrapf(player.rotation.y + PI, -PI, PI) # behind the cat again
 	escape_label.text = ""
 	fade_in_t = 0.6 # the threshold crossing fades over the town-side arrival — no visible pop
 	# v1.2: the room goes quiet behind him — captor out of room mode,
@@ -4572,6 +5718,7 @@ func _win() -> void:
 func _process(delta: float) -> void:
 	_apply_joystick()
 	_process_traffic(delta)
+	_update_pound(delta) # POUND VAN: patrol / pull-over / return-to-van (engagement only in "play")
 	# Splash song: replay while the player lingers on the splash.
 	if state == "splash" and splash_song_player and splash_song_player.stream and not splash_song_player.playing:
 		splash_song_player.volume_db = -9.0
@@ -4607,6 +5754,10 @@ func _process(delta: float) -> void:
 	for n in npcs:
 		if str(n.get("mode")) == "chase" or str(n.get("mode")) == "pursue" or str(n.get("mode")) == "tell":
 			any_chase = true
+	if pound_worker != null: # POUND VAN: his chase counts for stamina/purr exactly like a neighbour's
+		var pwm: String = str(pound_worker.get("mode"))
+		if pwm == "chase" or pwm == "pursue" or pwm == "tell":
+			any_chase = true
 	# Stamina / adrenaline wiring + HUD bar (red segment only in chase).
 	if player:
 		player.call("set_chase_mode", any_chase and state == "play")
@@ -4631,9 +5782,11 @@ func _process(delta: float) -> void:
 				for n in npcs:
 					if str(n.get("mode")) == "chase" or str(n.get("mode")) == "tell":
 						n.call("end_chase_via_spot")
+				if pound_worker != null and (str(pound_worker.get("mode")) == "chase" or str(pound_worker.get("mode")) == "tell"):
+					pound_worker.call("end_chase_via_spot") # POUND VAN: a cat gap ends his chase too — he heads back to the van
 				show_message("🐾 You slipped through the cat gap — they can't follow!", 2.5)
 				break
-	var want_purr: bool = state == "play" and not collar_open and player != null and not bool(player.get("frozen")) and (float(player.get("idle_time")) >= 3.0 or bool(player.call("is_being_petted"))) and not any_chase # v0.9: he purrs while being petted, too
+	var want_purr: bool = state == "play" and player != null and not bool(player.get("frozen")) and (float(player.get("idle_time")) >= 3.0 or bool(player.call("is_being_petted"))) and not any_chase # v0.9: he purrs while being petted, too
 	if want_purr != purr_active:
 		purr_active = want_purr
 		if player:
@@ -4644,13 +5797,7 @@ func _process(delta: float) -> void:
 			else:
 				purr_player.stop()
 	if player:
-		player.set("idle_allowed", state == "play" and not collar_open)
-	# Collar zoom auto-close: a few seconds is enough to memorise
-	# the address; the camera eases back out on its own.
-	if collar_open:
-		collar_timer -= delta
-		if collar_timer <= 0.0:
-			_close_collar()
+		player.set("idle_allowed", state == "play")
 	# Fade back in after the cutscene hands over to the escape room.
 	if fade_in_t >= 0.0:
 		fade_in_t -= delta
@@ -4677,6 +5824,11 @@ func _process(delta: float) -> void:
 		for npc in finished:
 			pursuers.erase(npc)
 			npc.call("stop_pursuit")
+			if npc == pound_worker:
+				pound_state = "return" # POUND VAN: his lookout is over — back to the van, back on patrol
+				pound_worker.set("active", false) # main drives the walk back; his brain must not wander him off it
+				_pound_clear_label()
+				_pound_reset_return_watch()
 			show_message("Phew — they gave up looking and went back to their day. 💛", 2.5)
 		if pursuers.size() > 0:
 			pursuit_label.text = "💛 Being looked for: %d seconds left — hide!" % int(ceil(best))
@@ -4715,8 +5867,6 @@ func _unhandled_input(event: InputEvent) -> void:
 					_close_escape_panel()
 			elif k == KEY_E:
 				_on_interact()
-			elif k == KEY_C:
-				_toggle_collar()
 			elif k == KEY_M:
 				_on_meow()
 			elif k == KEY_SPACE:

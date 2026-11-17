@@ -42,7 +42,7 @@ func _sample(label: String, secs: float) -> void:
 		var m = npc.get("model")
 		if m != null and (m as Node3D).visible:
 			vis_models += 1
-	print("STATE state=", main.get("state"), " player_pos=", (player as Node3D).global_position, " npc_models_visible=", vis_models, "/22")
+	print("STATE state=", main.get("state"), " player_pos=", (player as Node3D).global_position, " npc_models_visible=", vis_models, "/", main.get("npcs").size())
 	print("PHASE ", label,
 		" | frames ", int(n),
 		" | fps ", snappedf(n / secs, 0.1),
@@ -118,17 +118,17 @@ func _ready() -> void:
 	for r in range(reps):
 		for n in npcs:
 			n.call("_has_line_of_sight")
-	print("MICRO: _has_line_of_sight x22 x", reps, " = ", snappedf(float(Time.get_ticks_usec() - t0) / 1000.0, 0.01), "ms total -> per NPC per call ", snappedf(float(Time.get_ticks_usec() - t0) / (1000.0 * reps * npcs.size()), 0.002), "ms")
+	print("MICRO: _has_line_of_sight x", npcs.size(), " x", reps, " = ", snappedf(float(Time.get_ticks_usec() - t0) / 1000.0, 0.01), "ms total -> per NPC per call ", snappedf(float(Time.get_ticks_usec() - t0) / (1000.0 * reps * npcs.size()), 0.002), "ms")
 	t0 = Time.get_ticks_usec()
 	for r in range(reps):
 		for n in npcs:
 			n.call("_update_labels")
-	print("MICRO: _update_labels x22 x", reps, " = ", snappedf(float(Time.get_ticks_usec() - t0) / 1000.0, 0.01), "ms total")
+	print("MICRO: _update_labels x", npcs.size(), " x", reps, " = ", snappedf(float(Time.get_ticks_usec() - t0) / 1000.0, 0.01), "ms total")
 	t0 = Time.get_ticks_usec()
 	for r in range(reps):
 		for n in npcs:
 			n.call("_animate", 1.0 / 120.0, 2.0)
-	print("MICRO: _animate x22 x", reps, " = ", snappedf(float(Time.get_ticks_usec() - t0) / 1000.0, 0.01), "ms total")
+	print("MICRO: _animate x", npcs.size(), " x", reps, " = ", snappedf(float(Time.get_ticks_usec() - t0) / 1000.0, 0.01), "ms total")
 
 	# ---- phases ----------------------------------------------------
 	await _sample("BASELINE", 5.0)

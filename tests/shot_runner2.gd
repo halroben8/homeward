@@ -1,8 +1,10 @@
 extends Node
-## Supplementary v0.7 shots: collar caption framing + full-canopy tree.
+## Supplementary v0.7 shots: full-canopy tree. (The collar shot was
+## dropped in v1.0.8 with the collar check itself.)
 ##   xvfb-run -a godot --resolution 1920x864 --path . tests/ShotRunner2.tscn
 
 const OUT := "/home/hatch/workspace/homeward/screenshots_v07"
+const EmojiFont := preload("res://tests/emoji_font.gd")
 var main: Node = null
 var player: Node = null
 
@@ -17,6 +19,7 @@ func snap(name: String) -> void:
 	print("SHOT: ", name, " ", img.get_size())
 
 func _ready() -> void:
+	EmojiFont.apply() # render-only emoji fallback — before Main is instanced
 	await wait_sec(0.5)
 	var scene: PackedScene = load("res://scenes/Main.tscn")
 	main = scene.instantiate()
@@ -38,13 +41,7 @@ func _ready() -> void:
 	main.set("look_pitch_deg", 10.0)
 	await wait_sec(1.0)
 	await snap("tree_a.png")
-	# COLLAR: caption now sits just under the real tag
-	(player as Node3D).global_position = Vector3(4, 0.2, 6)
-	player.set("velocity", Vector3.ZERO)
-	await wait_sec(0.4)
-	main.call("_toggle_collar")
-	await wait_sec(1.6)
-	await snap("collar_zoom.png")
-	main.call("_close_collar")
+	# (v1.0.8: the old collar shot is gone — the collar check itself
+	# was removed from the game.)
 	print("SHOTS2 DONE")
 	get_tree().quit(0)

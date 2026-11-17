@@ -5,6 +5,7 @@ extends Node
 ## phone-like 1920x864 window (stretch/expand shows anchor behaviour).
 
 const OUT := "/home/hatch/workspace/homeward/screenshots_v07"
+const EmojiFont := preload("res://tests/emoji_font.gd")
 var main: Node = null
 var player: Node = null
 
@@ -31,6 +32,7 @@ func stage(pos: Vector3, yaw_deg: float, pitch_deg: float) -> void:
 	main.set("look_pitch_deg", pitch_deg)
 
 func _ready() -> void:
+	EmojiFont.apply() # render-only emoji fallback — before Main is instanced
 	DisplayServer.window_set_size(Vector2i(1920, 864))
 	await wait_sec(0.5)
 	var scene: PackedScene = load("res://scenes/Main.tscn")
@@ -92,13 +94,7 @@ func _ready() -> void:
 	stage(Vector3(4, 0, 6), 180.0, 14.0)
 	await wait_sec(0.9)
 	await snap("cat_front.png")
-	# 9) COLLAR ZOOM (item 12): camera in on the real collar + tag
-	(player as Node3D).global_position = Vector3(4, 0.2, 6)
-	player.set("velocity", Vector3.ZERO)
-	await wait_sec(0.4)
-	main.call("_toggle_collar")
-	await wait_sec(1.6)
-	await snap("collar_zoom.png")
-	main.call("_close_collar")
+	# (v1.0.8: the old collar-zoom shot is gone — the collar check
+	# itself was removed from the game.)
 	print("SHOTS DONE")
 	get_tree().quit(0)

@@ -5,10 +5,16 @@ extends Node
 ## houses clear of road corridors + numbers in order (items 1+2),
 ## paw swipe always resets (item 4), notice bar ONLY for the grabber
 ## + friendly bend-down pet/treat on paw/meow only (item 5), plus the
-## retained v0.7 set: no minimap / no Sprint button, roles (v1.0: 6 of 22 seek the cat — 25% of everyone),
+## retained v0.7 set: no minimap / no Sprint button, roles (population step: 9 of 34 seek the cat — 25% of everyone, rounded up),
 ## flat sign text, camera far plane, joystick sprint + winded drop,
-## collar camera zoom, single-mechanism escapes, exactly-60s
-## pursuit, traffic, solid fences + open cat gaps, purr.
+## collar check removed (v1.0.8: button/zoom gone, tag print kept),
+## single-mechanism escapes (v1.4: the back
+## door for EVERY capture — the carrier is transport only),
+## exactly-60s pursuit, traffic, solid fences + open cat gaps,
+## purr, the v1.3 camera framing (person + notice bar and sign
+## boards inside the frustum at interaction distance, cat share
+## floor), and the v1.4 camera handoff (an escape restores the
+## town framing — pitch/yaw/FOV/distance — for the pursuit).
 
 var main: Node = null
 var player: Node = null
@@ -147,7 +153,7 @@ func run_tests() -> void:
 		texts.append((b as Button).text)
 	check("no SPRINT button", not texts.any(func(t): return "SPRINT" in t), str(texts))
 	check("no MAP button", not texts.any(func(t): return t == "MAP"), str(texts))
-	check("PAW/HOP/MEOW/COLLAR buttons present", texts.any(func(t): return "PAW" in t) and texts.any(func(t): return "HOP" in t) and texts.any(func(t): return "MEOW" in t) and texts.any(func(t): return "COLLAR" in t), str(texts))
+	check("PAW/HOP/MEOW buttons present, COLLAR + LOOK buttons absent (v1.0.8)", texts.any(func(t): return "PAW" in t) and texts.any(func(t): return "HOP" in t) and texts.any(func(t): return "MEOW" in t) and not texts.any(func(t): return "COLLAR" in t) and not texts.any(func(t): return "LOOK" in t), str(texts))
 	# roles (item 14)
 	var g: int = 0
 	var f: int = 0
@@ -157,8 +163,9 @@ func run_tests() -> void:
 			"grabber": g += 1
 			"friendly": f += 1
 			"ignore": ig += 1
-	check("roles: exactly 6 grabbers of 22 (25% of everyone, v1.0)", g == 6 and main.get("npcs").size() == 22, "g=%d total=%d" % [g, main.get("npcs").size()])
-	check("roles: 8 friendly / 8 ignore", f == 8 and ig == 8, "f=%d ig=%d" % [f, ig])
+	check("roles: exactly 12 grabbers of 48 (map doubling: 25% of 48)", g == 12 and main.get("npcs").size() == 48, "g=%d total=%d" % [g, main.get("npcs").size()])
+	check("roles: grabbers are ~25% of everyone (Michael's rule)", absf(float(g) / float(maxi(1, main.get("npcs").size())) - 0.25) <= 0.02, "share=%.3f" % (float(g) / float(maxi(1, main.get("npcs").size()))))
+	check("roles: 19 friendly / 17 ignore (friendly >= ignore)", f == 19 and ig == 17, "f=%d ig=%d" % [f, ig])
 	# v0.9 structural art: mesh counts must be OBVIOUSLY above v0.8
 	# (cat 103, woman 43) — a texture-only pass cannot pass this.
 	# v12 SCULPT: the cat's ~45 primitive chunks (stacked spheres,
@@ -174,12 +181,12 @@ func run_tests() -> void:
 			woman0 = n
 			break
 	check("npc model: structural geometry jump (>=55 meshes, v0.8 was 43)", woman0 != null and count_meshes(woman0) >= 55, str(count_meshes(woman0)) if woman0 else "none")
-	check("houses: 41 after the fill rows (v0.8 was 29)", (main.get("houses") as Array).size() == 41, str((main.get("houses") as Array).size()))
+	check("houses: 131 after the map doubling (was 41)", (main.get("houses") as Array).size() == 131, str((main.get("houses") as Array).size()))
 	# street signs: text flat ON the board (item 3)
 	var sign_texts: Array = []
 	for s in main.get("street_signs"):
 		sign_texts.append(str(s["text"]))
-	check("16 street signs registered (8 streets x 2)", sign_texts.size() == 16, str(sign_texts.size()))
+	check("26 street signs registered (13 streets x 2)", sign_texts.size() == 26, str(sign_texts.size()))
 	var labels: Array = []
 	collect_label3d(main, labels)
 	var sign_labels: Array = []
@@ -189,7 +196,7 @@ func run_tests() -> void:
 			sign_labels.append(l)
 			if (l as Label3D).billboard != BaseMaterial3D.BILLBOARD_DISABLED:
 				billboard_sign_labels += 1
-	check("sign text on both faces (32 flat labels)", sign_labels.size() == 32, str(sign_labels.size()))
+	check("sign text on both faces (52 flat labels)", sign_labels.size() == 52, str(sign_labels.size()))
 	check("sign text is NOT billboard (readable only face-on)", billboard_sign_labels == 0, str(billboard_sign_labels))
 	# scoreboard (item 9)
 	check("scoreboard font is big (30)", int((main.get("score_label") as Label).label_settings.font_size) == 30)
@@ -211,38 +218,35 @@ func run_tests() -> void:
 	for n in main.get("npcs"):
 		max_chase = maxf(max_chase, float(n.get("chase_speed")))
 	check("cat sprint (11.5) clearly outruns fastest chaser", float(player.get("speed_sprint")) >= max_chase + 2.0, "sprint=%s chase=%s" % [player.get("speed_sprint"), max_chase])
-	# escape variant pools: single-mechanism only (item 6)
-	var families: Array = [["latch", "winpush"], ["petdoor"], ["bolt"], ["carrier"]]
+	# escape variant pools (item 6, v1.4): ONE way out for EVERY
+	# capture — the BACK DOOR (the "bolt" mechanism). Michael's
+	# rule: the cat carrier is transport only and must never be
+	# the puzzle; the window and pet door are never selected
+	# either. One clear, learnable rule: the door is how you
+	# get out.
 	var pools_ok: bool = true
 	var pool_detail: String = ""
 	for ctype in ["woman", "kid", "dogwalker", "shopkeeper", "pedestrian"]:
 		var pool: Array = main.call("_variant_pool", ctype)
-		if pool.size() < 2:
+		if pool.size() != 1 or (pool[0] as Array) != ["bolt"]:
 			pools_ok = false
-			pool_detail = ctype + " pool too small"
-		for variant in pool:
-			var fam_ok: bool = false
-			for fam in families:
-				var all_in: bool = true
-				for kind in variant:
-					if not fam.has(kind):
-						all_in = false
-				if all_in:
-					fam_ok = true
-			if not fam_ok:
-				pools_ok = false
-				pool_detail = ctype + " variant " + str(variant) + " mixes mechanisms"
-	check("escapes: every variant is ONE mechanism (no book/vase/sofa chains)", pools_ok, pool_detail)
+			pool_detail = ctype + " pool " + str(pool)
+	check("escapes: EVERY capture's way out is the back door (carrier = transport only, never the puzzle)", pools_ok, pool_detail)
 
 	# ---------- enter play ----------
 	main.call("dismiss_splash")
 	main.call("start_game")
 	await wait_sec(0.4)
 	check("game starts in play state", str(main.get("state")) == "play", str(main.get("state")))
+	# POUND VAN: the patrol van is live in the world from here on,
+	# but his engagements would make the sections below racy (the
+	# cat legitimately crosses his roads) — hold him off with the
+	# engagement cooldown until his own section re-arms him.
+	main.set("pound_engage_cd", 99999.0)
 
 	# ---------- houses: placement audit + numbering (v0.8 items 1+2) ----------
 	var road_zs: Array = [-55.0, -11.0, 15.0, 55.0]
-	var road_xs: Array = [-70.0, -20.0, 24.0, 72.0]
+	var road_xs: Array = [-70.0, -20.0, 24.0, 72.0, 128.0, 176.0, 224.0, 272.0, 320.0] # MAP DOUBLING: + the five east cross streets
 	var houses_arr: Array = main.get("houses")
 	var aabb_ok: bool = true
 	var vista_ok: bool = true
@@ -252,7 +256,7 @@ func run_tests() -> void:
 		var zmin: float = hp.z + minf(face * 5.2, -face * 3.9)
 		var rect := Rect2(hp.x - 5.8, zmin, 11.6, 9.1) # footprint incl. fences/porch
 		for rz in road_zs:
-			if rect.intersects(Rect2(-200.0, rz - 4.35, 400.0, 8.7)): # road rect + 0.75 margin
+			if rect.intersects(Rect2(-320.0, rz - 4.35, 760.0, 8.7)): # road rect + 0.75 margin (MAP DOUBLING: spans the whole doubled map)
 				aabb_ok = false
 		for rx in road_xs:
 			if rect.intersects(Rect2(rx - 4.35, -200.0, 8.7, 400.0)):
@@ -295,7 +299,7 @@ func run_tests() -> void:
 	var cps: Array = main.get("content_points")
 	check("world content points plentiful (>= 170)", cps.size() >= 170, str(cps.size()))
 	var bad_cells: Array = []
-	for gx in range(-114, 115, 11):
+	for gx in range(-114, 368, 11): # MAP DOUBLING: audit grid covers the east district too
 		for gz in range(-88, 89, 11):
 			var cx: float = float(gx)
 			var cz: float = float(gz)
@@ -315,6 +319,272 @@ func run_tests() -> void:
 				bad_cells.append(Vector2(cx, cz))
 	check("no large empty areas (every land cell has content within 12.5)", bad_cells.is_empty(), str(bad_cells.slice(0, 6)) + " n=" + str(bad_cells.size()))
 
+	# ---------- streets audit (Michael, 2026-11-16): parked cars in
+	# driveways, NEVER on a roadway; every car a proper car ----------
+	# Static cars are found STRUCTURALLY: _build_car names every car
+	# root "Car" but Godot renames duplicates on add_child (@Node3D@N),
+	# so the reliable marker is the "hide ⛺" Label3D only statics
+	# carry (traffic cars live under traffic_group, label-free).
+	var asphalt_rects: Array = []
+	for rz3 in road_zs:
+		asphalt_rects.append(Rect2(-126.0, rz3 - 3.6, 504.0, 7.2)) # MAP DOUBLING: roads span the doubled map
+	for rx3 in road_xs:
+		asphalt_rects.append(Rect2(rx3 - 3.6, -96.0, 7.2, 192.0))
+	var static_cars: Array = []
+	for ch3 in main.get_node("World").get_children():
+		if not (ch3 is Node3D):
+			continue
+		for sub3 in ch3.get_children():
+			if sub3 is Label3D and (sub3 as Label3D).text.contains("hide"):
+				static_cars.append(ch3)
+	check("streets: all static cars present (16 driveways + 6 lot cars)", static_cars.size() == 22, str(static_cars.size()))
+	var cars_on_road := 0
+	var cars_boxy := 0
+	for c3 in static_cars:
+		var crect := Rect2()
+		var cfirst := true
+		var cmeshes := 0
+		var ccyls := 0
+		var cstack: Array = [c3]
+		while not cstack.is_empty():
+			var cn: Node = cstack.pop_back()
+			for cch in cn.get_children():
+				cstack.append(cch)
+			if cn is MeshInstance3D:
+				cmeshes += 1
+				if (cn as MeshInstance3D).mesh is CylinderMesh:
+					ccyls += 1
+				var ca: AABB = (cn as MeshInstance3D).global_transform * (cn as MeshInstance3D).get_aabb()
+				var cr := Rect2(ca.position.x, ca.position.z, ca.size.x, ca.size.z)
+				crect = cr if cfirst else crect.merge(cr)
+				cfirst = false
+		for ar in asphalt_rects:
+			if crect.intersects(ar):
+				cars_on_road += 1
+		if cmeshes < 20 or ccyls < 8: # a box car would have ~1-6 meshes and no wheel cylinders
+			cars_boxy += 1
+	check("streets: ZERO static cars on any roadway", cars_on_road == 0, str(cars_on_road))
+	check("streets: every static car is a proper car (>=20 meshes, >=8 cylinders incl. wheels)", cars_boxy == 0, str(cars_boxy))
+
+	# ---------- clutter audit (Michael, 2026-11-17): NOTHING but
+	# moving traffic belongs on a roadway — benches, fences,
+	# mailboxes, hedges, lamps, bins, flowerbeds, flowers — and
+	# every house has EXACTLY ONE mailbox (he found benches
+	# centred on Cedar/Birch, fence runs crossing four streets,
+	# a lamp in Cedar, Willow Hall's wall in Birch Lane, and
+	# THREE-mailbox clusters). Same structural classification as
+	# the kept probe (tests/ClutterProbe.tscn). Sign BOARDS may
+	# overhang a corner at 3.75m like real signs; their POLES are
+	# audited. Border dressing beyond the fences, where the roads
+	# end, is out of scope. ----------
+	var house_groups: Dictionary = {}
+	for ch4 in main.get_node("World").get_children():
+		if ch4 is Node3D:
+			for h4 in houses_arr:
+				if (ch4 as Node3D).position.distance_to(h4["pos"]) < 0.01:
+					house_groups[ch4] = str(h4["address"])
+	var clutter_totals: Dictionary = {}
+	var clutter_onroad: Dictionary = {}
+	var clutter_other_onroad := 0
+	var stray_mailbox_meshes := 0
+	var cstack: Array = [main.get_node("World")]
+	while not cstack.is_empty():
+		var cn4: Node = cstack.pop_back()
+		if cn4.name == "Traffic" or cn4.name == "Car":
+			continue
+		for cch4 in cn4.get_children():
+			cstack.append(cch4)
+		if not (cn4 is MeshInstance3D):
+			continue
+		var mi4 := cn4 as MeshInstance3D
+		var mp4: Vector3 = mi4.global_position
+		if mp4.x < -117.0 or mp4.x > 369.0 or absf(mp4.z) > 91.0: # MAP DOUBLING: east audit bound moved with the border
+			continue # border dressing beyond the fences
+		# --- classify (mirrors tests/clutter_probe.gd) ---
+		var cat4 := ""
+		var in_mailbox_group := false
+		var anc4: Node = mi4
+		while anc4 != null:
+			if anc4.name == "Mailbox":
+				in_mailbox_group = true
+			anc4 = anc4.get_parent()
+		var cm4 := mi4.material_override as StandardMaterial3D
+		var ccol: Color = cm4.albedo_color if cm4 != null else Color(-1, -1, -1)
+		if in_mailbox_group:
+			cat4 = "mailbox"
+		elif mi4.mesh is BoxMesh:
+			var s4: Vector3 = (mi4.mesh as BoxMesh).size
+			if absf(s4.x - 5.4) < 0.06 and absf(s4.y - 1.06) < 0.06 and absf(s4.z - 0.14) < 0.06:
+				cat4 = "sign_board"
+			elif (absf(s4.x - 0.7) < 0.06 and absf(s4.y - 0.45) < 0.06 and absf(s4.z - 0.5) < 0.06) or (absf(s4.x - 0.6) < 0.06 and absf(s4.y - 0.42) < 0.06 and absf(s4.z - 0.22) < 0.06) or (absf(s4.x - 0.42) < 0.06 and absf(s4.y - 0.3) < 0.06 and absf(s4.z - 0.3) < 0.06):
+				cat4 = "mailbox"
+			elif (absf(s4.y - 0.12) < 0.03 and absf(s4.z - 0.55) < 0.06 and absf(s4.x - 2.2) < 0.06) or (absf(s4.y - 0.1) < 0.03 and absf(s4.z - 0.5) < 0.06 and (absf(s4.x - 1.7) < 0.06 or absf(s4.x - 3.4) < 0.06)):
+				cat4 = "bench"
+			elif absf(s4.x - 3.2) < 0.06 and absf(s4.y - 0.7) < 0.06 and absf(s4.z - 0.5) < 0.06:
+				cat4 = "hedge"
+			elif absf(ccol.r - 0.4) < 0.03 and absf(ccol.g - 0.3) < 0.03 and absf(ccol.b - 0.2) < 0.03 and s4.y <= 0.3 and s4.x >= 3.0:
+				cat4 = "flowerbed"
+			elif s4.y >= 0.85 and s4.y <= 1.15 and minf(s4.x, s4.z) <= 0.2 and maxf(s4.x, s4.z) <= 0.35:
+				cat4 = "fence"
+			elif s4.y <= 0.13 and minf(s4.x, s4.z) <= 0.13 and maxf(s4.x, s4.z) >= 1.9:
+				cat4 = "fence"
+		elif mi4.mesh is CylinderMesh:
+			var cmsh := mi4.mesh as CylinderMesh
+			if absf(cmsh.height - 4.4) < 0.06 and cmsh.bottom_radius <= 0.1:
+				cat4 = "lamp"
+			elif absf(cmsh.height - 3.8) < 0.06 and cmsh.bottom_radius <= 0.1:
+				cat4 = "sign"
+			elif absf(cmsh.height - 0.9) < 0.06 and absf(cmsh.top_radius - 0.26) < 0.06:
+				cat4 = "bin"
+			elif cmsh.height >= 0.85 and cmsh.height <= 1.05 and cmsh.bottom_radius <= 0.055:
+				cat4 = "mailbox"
+			elif absf(ccol.r - 0.4) < 0.03 and absf(ccol.g - 0.3) < 0.03 and absf(ccol.b - 0.2) < 0.03 and cmsh.height <= 0.32 and cmsh.bottom_radius >= 1.5:
+				cat4 = "flowerbed"
+		elif mi4.mesh is SphereMesh:
+			var d4: Vector3 = mi4.scale
+			if d4.x <= 0.15 and mp4.y >= 3.0:
+				cat4 = "sign_board"
+			elif absf(d4.x - 0.5) < 0.06 and absf(ccol.r - 1.0) < 0.03 and absf(ccol.g - 0.9) < 0.03 and absf(ccol.b - 0.6) < 0.03:
+				cat4 = "lamp"
+			elif d4.x <= 0.24 and mp4.y <= 0.32:
+				cat4 = "flower"
+		# --- test against the asphalt ---
+		var ca4: AABB = mi4.global_transform * mi4.get_aabb()
+		var crect4 := Rect2(ca4.position.x, ca4.position.z, ca4.size.x, ca4.size.z)
+		var on4 := false
+		for ar4 in asphalt_rects:
+			if crect4.intersects(ar4):
+				on4 = true
+		if cat4 != "":
+			clutter_totals[cat4] = int(clutter_totals.get(cat4, 0)) + 1
+			if on4:
+				clutter_onroad[cat4] = int(clutter_onroad.get(cat4, 0)) + 1
+			if cat4 == "mailbox":
+				var in_house := false
+				for g4 in house_groups.keys():
+					var p4: Node = mi4
+					while p4 != null:
+						if p4 == g4:
+							in_house = true
+							break
+						p4 = p4.get_parent()
+					if in_house:
+						break
+				if not in_house:
+					stray_mailbox_meshes += 1
+		elif on4:
+			# catch-all: untextured, thicker than ground paint
+			if cm4 != null and cm4.albedo_texture == null and ca4.size.y > 0.06:
+				clutter_other_onroad += 1
+	check("clutter: benches present and ZERO on any roadway", int(clutter_totals.get("bench", 0)) > 0 and int(clutter_onroad.get("bench", 0)) == 0, "on=" + str(clutter_onroad.get("bench", 0)))
+	check("clutter: ZERO fence posts/rails on any roadway (runs stop at road edges)", int(clutter_onroad.get("fence", 0)) == 0, str(clutter_onroad.get("fence", 0)))
+	check("clutter: ZERO mailboxes on any roadway", int(clutter_onroad.get("mailbox", 0)) == 0, str(clutter_onroad.get("mailbox", 0)))
+	check("clutter: ZERO hedges/lamps/bins/flowerbeds/flowers on any roadway", int(clutter_onroad.get("hedge", 0)) + int(clutter_onroad.get("lamp", 0)) + int(clutter_onroad.get("bin", 0)) + int(clutter_onroad.get("flowerbed", 0)) + int(clutter_onroad.get("flower", 0)) == 0, str(clutter_onroad))
+	check("clutter: sign POLES zero on any roadway (boards may overhang)", int(clutter_onroad.get("sign", 0)) == 0, str(clutter_onroad.get("sign", 0)))
+	check("clutter: no other prop mesh on any roadway (catch-all)", clutter_other_onroad == 0, str(clutter_other_onroad))
+	check("clutter: no stray mailboxes outside houses", stray_mailbox_meshes == 0, str(stray_mailbox_meshes))
+	# mailboxes per house: exactly one each
+	var houses_wrong_mb := 0
+	var total_mb_units := 0
+	for g5 in house_groups.keys():
+		var units5 := 0
+		var gstack5: Array = [g5]
+		while not gstack5.is_empty():
+			var gn5: Node = gstack5.pop_back()
+			for gch5 in gn5.get_children():
+				gstack5.append(gch5)
+			if gn5.name == "Mailbox" and gn5.get_parent() != null:
+				var under_mb := false
+				var pp5: Node = gn5.get_parent()
+				while pp5 != null and pp5 != g5:
+					if pp5.name == "Mailbox":
+						under_mb = true
+					pp5 = pp5.get_parent()
+				if not under_mb:
+					units5 += 1
+		total_mb_units += units5
+		if units5 != 1:
+			houses_wrong_mb += 1
+	check("clutter: EVERY house has exactly ONE mailbox (131 houses)", houses_wrong_mb == 0 and total_mb_units == house_groups.size(), "wrong=" + str(houses_wrong_mb) + " units=" + str(total_mb_units) + " houses=" + str(house_groups.size()))
+
+	# ---------- v1.3 CAMERA FRAMING (Michael's v1.0.5 playtest) ----------
+	# Measured BEFORE (tests/CamProbe.tscn, viewport fractions, y 0 =
+	# top edge): at the old camera (orbit 1.45, anchor 0.38, FOV 62,
+	# pitch 18) a person 1.2m from the cat had her face at y=-0.13
+	# and the notice bar at y=-0.85 — off-screen; the bar stayed
+	# off-screen at 5m, and the 3.75m sign boards were off-screen
+	# even at max look-up from 3m. These checks project the REAL
+	# points with the REAL camera and require them INSIDE the
+	# viewport, plus the cat still a healthy share of the frame
+	# (Michael, same call: not tiny either).
+	park_npcs_far()
+	var cam3d: Camera3D = main.get("cam")
+	var shipped_pitch: float = float(main.get("look_pitch_deg"))
+	var vp_size: Vector2 = get_viewport().get_visible_rect().size
+	var in_frame = func(p: Vector3) -> bool:
+		if cam3d.is_position_behind(p):
+			return false
+		var s: Vector2 = cam3d.unproject_position(p)
+		return s.x >= 0.0 and s.x <= vp_size.x and s.y >= 0.0 and s.y <= vp_size.y
+	var gwoman: Node = null
+	for n in main.get("npcs"):
+		if str(n.get("npc_type")) == "woman" and str(n.get("role")) == "grabber":
+			gwoman = n
+			break
+	(player as Node3D).global_position = Vector3(60, 0.2, 84)
+	(player as Node3D).rotation = Vector3(0, PI * 0.5, 0)
+	main.set("look_yaw", -PI * 0.5)
+	main.set("look_pitch_deg", shipped_pitch)
+	(gwoman as Node3D).global_position = Vector3(62, 0.2, 84) # 2.0m gap
+	(gwoman as Node3D).rotation = Vector3(0, -PI * 0.5, 0)
+	await wait_sec(0.4) # her physics shows her model at this range
+	gwoman.set_physics_process(false) # hold her exactly here
+	(gwoman as Node3D).global_position = Vector3(62, 0.2, 84)
+	await wait_sec(1.2) # camera settle
+	var notice_pos: Vector3 = (gwoman.get("notice_label") as Node3D).global_position
+	check("camera framing: notice bar IN FRAME at 2m (was off-screen at 5m)", in_frame.call(notice_pos), str(cam3d.unproject_position(notice_pos) / vp_size))
+	(gwoman as Node3D).global_position = Vector3(61.2, 0.2, 84) # 1.2m gap
+	await wait_sec(1.2)
+	notice_pos = (gwoman.get("notice_label") as Node3D).global_position
+	var gface: Vector3 = (gwoman as Node3D).global_position + Vector3(0, 1.52, 0)
+	check("camera framing: notice bar IN FRAME face-to-face at 1.2m", in_frame.call(notice_pos), str(cam3d.unproject_position(notice_pos) / vp_size))
+	check("camera framing: person's FACE in frame face-to-face at 1.2m", in_frame.call(gface), str(cam3d.unproject_position(gface) / vp_size))
+	# the cat himself: still a healthy share of the ordinary view
+	var cat_a := AABB()
+	var cat_first := true
+	for mi in (player as Node3D).find_children("*", "MeshInstance3D", true, false):
+		var ga: AABB = (mi as MeshInstance3D).global_transform * (mi as MeshInstance3D).get_aabb()
+		cat_a = ga if cat_first else cat_a.merge(ga)
+		cat_first = false
+	var cat_base: Vector3 = (player as Node3D).global_position
+	var cs_bot: Vector2 = cam3d.unproject_position(Vector3(cat_base.x, cat_a.position.y, cat_base.z))
+	var cs_top: Vector2 = cam3d.unproject_position(Vector3(cat_base.x, cat_a.position.y + cat_a.size.y, cat_base.z))
+	var cat_share: float = absf(cs_bot.y - cs_top.y) / vp_size.y
+	check("camera framing: cat still >= 0.18 of frame height (not tiny)", cat_share >= 0.18, str(cat_share))
+	# chase: the pursuer's overhead bar fits too
+	(gwoman as Node3D).global_position = Vector3(55, 0.2, 84)
+	(gwoman as Node3D).rotation = Vector3(0, PI * 0.5, 0)
+	gwoman.set("mode", "chase")
+	await wait_sec(1.2)
+	notice_pos = (gwoman.get("notice_label") as Node3D).global_position
+	check("camera framing: chase cam keeps the pursuer's bar in frame", bool(main.get("chase_cam_active")) and in_frame.call(notice_pos), str(cam3d.unproject_position(notice_pos) / vp_size))
+	gwoman.set("mode", "wander")
+	gwoman.set_physics_process(true)
+	# sign: whole board in frame at max look-up, cat 3m away
+	(gwoman as Node3D).global_position = Vector3(-110, 0.2, 80)
+	(player as Node3D).global_position = Vector3(58, 0.2, 23)
+	(player as Node3D).rotation = Vector3(0, PI, 0)
+	main.set("look_yaw", 0.0)
+	main.set("look_pitch_deg", shipped_pitch)
+	await wait_sec(0.5)
+	main.call("apply_look_drag", Vector2(0, -100000)) # real input path -> max look-up
+	await wait_sec(1.2)
+	check("camera framing: whole street-sign board in frame at max look-up (3m)", in_frame.call(Vector3(58, 3.75, 20)) and in_frame.call(Vector3(58, 4.28, 20)) and in_frame.call(Vector3(58, 3.22, 20)), "centre=" + str(cam3d.unproject_position(Vector3(58, 3.75, 20)) / vp_size))
+	# cleanup: restore the shipped view + park everyone
+	main.set("look_pitch_deg", shipped_pitch)
+	main.set("look_yaw", 0.0)
+	park_npcs_far()
+
 	# ---------- paw / meow instant attention (items 13+15, v0.8 item 5) ----------
 	park_npcs_far()
 	(player as Node3D).global_position = Vector3(100, 0.2, 80)
@@ -330,6 +600,16 @@ func run_tests() -> void:
 	main.call("_paw_action")
 	check("paw near friendly: NO notice for friendly (bar is grabber-only now)", float(friendly.get("notice")) == 0.0, str(friendly.get("notice")))
 	check("paw near friendly: joy reaction", bool(friendly.get("joy_shown")) and str(friendly.get("expression")) == "joy", str(friendly.get("expression")))
+	# v1.4 NPC LOOK: the expression system — mouths swap, and a full
+	# reset leaves no stuck face behind.
+	var fmouths: Dictionary = friendly.get("mouths")
+	check("v1.4 faces: five mouth groups built (smile/grin/frown/flat/small)", fmouths.size() >= 5, str(fmouths.size()))
+	check("v1.4 faces: joy shows the open grin", (fmouths["grin"] as Node3D).visible and not (fmouths["flat"] as Node3D).visible)
+	friendly.call("set_expression", "sad")
+	check("v1.4 faces: sad swaps grin for the frown", (fmouths["frown"] as Node3D).visible and not (fmouths["grin"] as Node3D).visible)
+	friendly.call("set_expression", "neutral")
+	check("v1.4 faces: neutral restores flat mouth + base brows/eyes (no stuck face)", (fmouths["flat"] as Node3D).visible and absf((friendly.get("brow_l") as Node3D).rotation.z) < 0.01 and absf((friendly.get("eye_l_mi") as Node3D).scale.y - (friendly.get("eye_base_scale") as Vector3).y) < 0.001)
+	friendly.call("set_expression", "joy")
 	# v0.9 REAL PETTING SEQUENCE: force the pet kind (the treat kind
 	# is forced in the meow section below) and watch the whole act.
 	friendly.set("interact_kind", "pet")
@@ -339,6 +619,9 @@ func run_tests() -> void:
 	var seq_states: Array = []
 	var min_hand: float = 999.0
 	var max_bend: float = 0.0
+	var kneel_max_pitch: float = 0.0 # v1.4: sampled through the pet
+	var kneel_max_shin: float = 0.0
+	var kneel_min_y: float = 999.0
 	var saw_cat_react: bool = false
 	var saw_hearts: bool = false
 	var gain_at: float = -1.0
@@ -356,6 +639,10 @@ func run_tests() -> void:
 			if (friendly.get("hearts") as Array).size() > 0:
 				saw_hearts = true
 		max_bend = maxf(max_bend, float(friendly.get("bend_a")))
+		var fmodel: Node3D = friendly.get("model")
+		kneel_max_pitch = maxf(kneel_max_pitch, absf(fmodel.rotation.x))
+		kneel_min_y = minf(kneel_min_y, fmodel.position.y)
+		kneel_max_shin = maxf(kneel_max_shin, absf((friendly.get("shin_r") as Node3D).rotation.x))
 		if int(main.get("score")) != score_before_paw and gain_at < 0.0:
 			gain_at = elapsed
 		if st == "" and gain_at > 0.0:
@@ -369,6 +656,12 @@ func run_tests() -> void:
 	var paw_gain: int = int(main.get("score")) - score_before_paw
 	check("pet sequence: +1 lands DURING petting, not on trigger", paw_gain == 1 and gain_at > 1.2, "gain=%d at=%.1f" % [paw_gain, gain_at])
 	check("pet sequence: completes and stands back up", str(friendly.get("interact_state")) == "", str(friendly.get("interact_state")))
+	# v1.4 KNEEL (Michael: "bend at the knee, not fold in half"):
+	# through the whole pet, the torso pitch must stay modest while
+	# the body still gets right down — via hip drop + shin fold.
+	check("v1.4 kneel: torso pitch stays modest (< 0.2 rad, no fold in half)", kneel_max_pitch < 0.2, str(kneel_max_pitch))
+	check("v1.4 kneel: descent comes from the hips/knees (model drop > 0.3 m)", -kneel_min_y > 0.3, str(kneel_min_y))
+	check("v1.4 kneel: the shin folds at the knee (> 0.6 rad)", kneel_max_shin > 0.6, str(kneel_max_shin))
 	var grabber: Node = npc_by_role("grabber")
 	(friendly as Node3D).global_position = (player as Node3D).global_position + Vector3(30, 0, 0) # move the friendly out of paw range first
 	(grabber as Node3D).global_position = (player as Node3D).global_position + Vector3(-2.0, 0, 0)
@@ -376,7 +669,11 @@ func run_tests() -> void:
 	grabber.set("mode", "wander")
 	main.call("_paw_action")
 	check("paw near grabber: instant RUN tell", str(grabber.get("mode")) == "tell", str(grabber.get("mode")))
+	check("v1.4: the RUN tell wears the EXCITED face", str(grabber.get("expression")) == "excited", str(grabber.get("expression")))
 	grabber.call("_end_chase")
+	grabber.set("expr_timer", 0.05)
+	await wait_sec(0.4)
+	check("v1.4: lost-chase sad face resets to neutral on its timer", str(grabber.get("expression")) == "neutral", str(grabber.get("expression")))
 	# meow: friendly at 5 units (outside paw range, inside earshot).
 	# (Grabber parked out of earshot first — in v0.9 a meow this
 	# close would provoke his tell and he'd capture the cat during
@@ -489,29 +786,44 @@ func run_tests() -> void:
 	clear_joy()
 	await wait_sec(0.3)
 
-	# ---------- collar zoom (item 12) ----------
+	# ---------- collar (v1.0.8: the in-play collar check is REMOVED) ----------
+	# Michael's direction: under the new story the collar falls off
+	# before the pound, so the COLLAR button, the C key and the
+	# camera zoom are gone entirely — nothing to re-check mid-run.
+	# What stays: the address printed ON the 3D tag (kept for the
+	# homecoming ending). These checks assert the removal and keep
+	# guarding the tag print.
 	check("no 2D collar panel any more", main.get("collar_panel") == null)
-	main.call("_toggle_collar")
-	check("collar opens while stopped", bool(main.get("collar_open")))
-	await wait_sec(1.2)
-	check("collar zoom eases in (zoom_t > 0.9)", float(main.get("collar_zoom_t")) > 0.9, str(main.get("collar_zoom_t")))
+	check("collar button removed (no collar_btn)", main.get("collar_btn") == null)
+	check("collar zoom action removed (no _toggle_collar)", not main.has_method("_toggle_collar"))
+	var collar_props: Array = []
+	for p in main.get_property_list():
+		collar_props.append(str(p["name"]))
+	check("collar zoom state removed (no collar_open)", not collar_props.has("collar_open"))
+	(player as Node3D).global_position = Vector3(4, 0.2, 6) # open ground: the play camera settles at full orbit distance
+	player.set("velocity", Vector3.ZERO)
+	await wait_sec(1.6)
 	var tag_pos: Vector3 = player.call("get_tag_global_pos")
 	var cam_dist: float = (main.get("cam") as Camera3D).global_position.distance_to(tag_pos)
-	check("camera is CLOSE to the real tag (< 1.9 units)", cam_dist < 1.9, str(cam_dist))
-	var caption: Label3D = main.get("collar_caption")
-	check("in-scene caption shows the home address", caption != null and caption.visible and str(main.get("home_address")) in caption.text, caption.text if caption else "none")
-	main.set("collar_timer", 0.05)
+	check("camera stays at play distance from the tag (> 1.9 units)", cam_dist > 1.9, str(cam_dist))
+	# v1.5 (Michael, 2026-11-17): the address is printed ON the tag —
+	# no floating billboard caption — and it still is, for the ending.
+	check("floating collar caption is gone", main.get("collar_caption") == null)
+	var tag_label: Label3D = player.call("get_tag_label")
+	check("tag carries a printed address label", tag_label != null)
+	if tag_label != null:
+		var printed: String = tag_label.text.replace("\n", " ").replace(", ", " ")
+		var addr_norm: String = str(main.get("home_address")).replace(", ", " ")
+		check("tag print equals the run's home address", printed == addr_norm, "'" + printed + "' vs '" + addr_norm + "'")
+		var tag_node: Node = player.get("collar_tag")
+		check("tag label is parented to the tag (moves with it)", tag_node != null and tag_node.is_ancestor_of(tag_label))
+		check("tag label is fixed to the face (no billboard)", tag_label.billboard == BaseMaterial3D.BILLBOARD_DISABLED)
+	check("no collar zoom: FOV stays at the town FOV (70)", absf((main.get("cam") as Camera3D).fov - 70.0) < 1.0, str((main.get("cam") as Camera3D).fov))
+	check("collar close action removed (no _close_collar)", not main.has_method("_close_collar"))
 	await wait_sec(0.3)
-	check("collar auto-closes after a few seconds", not bool(main.get("collar_open")))
+	check("collar zoom timers removed (no collar_timer / collar_zoom_t)", not collar_props.has("collar_timer") and not collar_props.has("collar_zoom_t"))
 	await wait_sec(0.8)
-	check("camera eases back out (zoom_t < 0.2)", float(main.get("collar_zoom_t")) < 0.2, str(main.get("collar_zoom_t")))
-	# refused while moving
-	set_joy(Vector2(0, -60))
-	await wait_sec(0.4)
-	main.call("_toggle_collar")
-	check("collar refused while moving", not bool(main.get("collar_open")))
-	clear_joy()
-	await wait_sec(0.3)
+	check("cat is not frozen by any collar view", not bool(player.get("frozen")))
 
 	# ---------- paw swipe ALWAYS resets (v0.8 item 4) ----------
 	# For each state: settle, record the no-swipe base rotation of the
@@ -545,7 +857,7 @@ func run_tests() -> void:
 	player.set("idle_action", "")
 	player.set("idle_next_in", 999.0)
 	await wait_sec(0.9) # sit/groom envelopes drain back to standing
-	# -- FROZEN (collar view) --
+	# -- FROZEN --
 	player.set("frozen", true)
 	var base_frozen: Vector3 = await wait_leg_stable(leg1, 0.8)
 	player.call("do_paw_swipe")
@@ -592,7 +904,7 @@ func run_tests() -> void:
 		if tc["node"] == car:
 			car_vel = tc["vel"]
 	if absf(car_vel.x) > 0.0:
-		car.position.x = 126.0 * signf(car_vel.x) # just inside the edge it is driving TOWARD
+		car.position.x = 382.0 if car_vel.x > 0.0 else -130.0 # just inside the (doubled) edge it is driving TOWARD — one 0.5s step at minimum speed (3.5) still crosses the despawn line
 	else:
 		car.position.z = 91.0 * signf(car_vel.z)
 	main.call("_process_traffic", 0.5)
@@ -627,26 +939,15 @@ func run_tests() -> void:
 	main.call("_enter_escape")
 	check("escape state entered", str(main.get("state")) == "escape", str(main.get("state")))
 	var kinds: Array = main.call("current_escape_kinds")
-	var one_mech: bool = false
-	for fam in families:
-		var all_in: bool = true
-		for kind in kinds:
-			if not fam.has(kind):
-				all_in = false
-		if all_in:
-			one_mech = true
-	check("this capture's escape is a single mechanism", one_mech, str(kinds))
-	# drive the WINDOW mechanism end-to-end regardless of the draw,
-	# through the panel: prompt -> panel -> combo, twice (latch, then
-	# the push). v1.2: the intended path starts with a DISTRACTION
-	# (she is in the room now), and the finished combo OPENS the
-	# window — the cat then walks out himself (walk_cat_out).
-	main.set("escape_steps", [{"kind": "latch"}, {"kind": "winpush"}])
-	main.set("escape_step", 0)
-	main.set("escape_prog", 0.0)
+	check("v1.4: this capture's escape is the BACK DOOR only", kinds == ["bolt"], str(kinds))
+	# drive the DOOR mechanism end-to-end, exactly as picked (no
+	# override): prompt -> panel -> combo. v1.2: the intended path
+	# starts with a DISTRACTION (she is in the room now), and the
+	# finished combo swings the DOOR open — the cat then walks out
+	# himself (walk_cat_out).
 	distract_captor()
 	check("v1.2: toppling a prop distracts the captor", bool(main.call("captor_distracted")), str(main.get("captor_room_state")))
-	(player as Node3D).global_position = Vector3(200, 0.3, -8)
+	(player as Node3D).global_position = Vector3(573.4, 0.3, 3.4) # at the back door (escape_origin + (13.4, *, 3.4))
 	var score_before: int = int(main.get("score"))
 	check("escape prompt is offered at the mechanism", bool(main.call("_escape_at_mechanism")))
 	main.call("_on_escape_prompt_pressed")
@@ -656,11 +957,15 @@ func run_tests() -> void:
 	check("wrong swipe gently resets the combo", int(main.get("combo_index")) == 1, str(main.get("combo_index")))
 	for inp in ["up", "down", "up", "paw"]:
 		main.call("escape_panel_input", inp)
-	check("window latch worked via the panel combo", int(main.get("escape_step")) == 1, str(main.get("escape_step")))
-	drive_escape_panel()
-	check("v1.2: a finished combo OPENS the way (no teleport out)", bool(main.get("exit_open")) and str(main.get("state")) == "escape", str(main.get("state")))
+	check("v1.4: a finished combo swings the DOOR open (no teleport out)", bool(main.get("exit_open")) and str(main.get("exit_open_kind")) == "bolt" and str(main.get("state")) == "escape", str(main.get("state")))
+	# v1.4 CAMERA HANDOFF: wind the look controls up the way a
+	# player hunting around the room does — the escape completion
+	# must hand back the shipped town framing, not these values.
+	main.set("look_pitch_deg", 45.0)
+	main.set("look_yaw", 2.2)
 	walk_cat_out()
 	check("escape completes back into play", str(main.get("state")) == "play", str(main.get("state")))
+	check("v1.4: escape completion restores the town pitch (room look drags don't leak)", float(main.get("look_pitch_deg")) == 4.0, str(main.get("look_pitch_deg")))
 	check("escape bonus +3", int(main.get("score")) == score_before + 3, "%d -> %d" % [score_before, int(main.get("score"))])
 	var purs: Dictionary = main.get("pursuers")
 	check("post-escape pursuit starts at exactly 60.0s", purs.has(woman) and float(purs[woman]) == 60.0, str(purs))
@@ -676,14 +981,11 @@ func run_tests() -> void:
 	main.set("captor", woman)
 	main.call("_enter_escape")
 	check("v1.2: the captor is in the room with the cat", (woman as Node3D).global_position.distance_to(main.get("escape_origin")) < 18.0, str((woman as Node3D).global_position))
-	check("v1.2: three knock-over props in the room", (main.get("distract_props") as Array).size() == 3, str((main.get("distract_props") as Array).size()))
-	main.set("escape_steps", [{"kind": "latch"}, {"kind": "winpush"}])
-	main.set("escape_step", 0)
-	main.set("escape_prog", 0.0)
-	# PAW activation, player-style: the cat stands ~2.7 m from the
-	# window exit point (NOT dead-centre of the old rect zone) and the
-	# PAW button's own callback is what fires.
-	(player as Node3D).global_position = Vector3(201.8, 0.3, -7.5)
+	check("v1.5: seventeen knock-over props in the room (almost everything loose)", (main.get("distract_props") as Array).size() == 17, str((main.get("distract_props") as Array).size()))
+	# PAW activation, player-style: the cat stands ~1.4 m from the
+	# back-door exit point (NOT dead-centre of the old rect zone)
+	# and the PAW button's own callback is what fires.
+	(player as Node3D).global_position = Vector3(572.0, 0.3, 3.4)
 	check("v1.2: the mechanism radius reaches a real player's spot", bool(main.call("_escape_at_mechanism")))
 	main.call("_on_interact")
 	check("v1.2: PAW opens the panel at the mechanism", bool((main.get("escape_panel") as Control).visible))
@@ -696,20 +998,78 @@ func run_tests() -> void:
 	check("v1.2: the interruption costs the combo, nothing else", int(main.get("combo_index")) == 0 and str(main.get("state")) == "escape", str(main.get("state")))
 	check("v1.2: she comes to shoo the cat from the door", ["shoo", "return"].has(str(main.get("captor_room_state"))), str(main.get("captor_room_state")))
 	check("v1.2: right after an interruption she is extra watchful", float(main.get("notice_cooldown")) > 0.0, str(main.get("notice_cooldown")))
-	# The intended path: distract, then work the latch SLOWLY (room
-	# time passing between inputs) — no interruption while she's busy.
+	# The intended path: distract, then work the bolt SLOWLY (room
+	# time passing between inputs) — no interruption while she's
+	# busy. v1.4: the bolt is the ONLY step, so the finished combo
+	# opens the door itself.
 	distract_captor()
-	(player as Node3D).global_position = Vector3(200, 0.3, -8)
+	(player as Node3D).global_position = Vector3(573.4, 0.3, 3.4)
 	main.call("_on_escape_prompt_pressed")
 	for inp in ["down", "up", "down", "up", "paw"]:
 		main.call("escape_panel_input", inp)
 		main.call("_process_escape", 0.4)
-	check("v1.2: distracted, a slow combo still works the latch", int(main.get("escape_step")) == 1, str(main.get("escape_step")))
-	(player as Node3D).global_position = Vector3(200, 0.3, -8) # the player pads back to the window after the shoo
-	drive_escape_panel()
-	check("v1.2: second combo opens the window", bool(main.get("exit_open")))
+	check("v1.2: distracted, a slow combo still works the bolt", bool(main.get("exit_open")) and str(main.get("exit_open_kind")) == "bolt", str(main.get("exit_open_kind")))
 	walk_cat_out()
 	check("v1.2: the cat walks out and the escape completes", str(main.get("state")) == "play", str(main.get("state")))
+	main.call("_process", 60.1) # drain the pursuit before the e2e section
+
+	# ---------- v1.5 KNOCK OVER ALMOST EVERYTHING (Michael, 2026-11-17) ----------
+	# The distraction system now covers nearly every loose object in
+	# the room, not just plant/book/vase. PAW topples NEW props (the
+	# floor lamp, the mug, the coat stand) through the real PAW path;
+	# she rights them one at a time (the others queue); a righted
+	# prop can be knocked over again; the door escape still works
+	# after the chaos.
+	main.set("captor", woman)
+	main.call("_enter_escape")
+	var props_by_id: Dictionary = {}
+	for p in main.get("distract_props"):
+		props_by_id[str(p["id"])] = p
+	var new_ids_ok: bool = true
+	for want_id in ["floorlamp", "tablelamp", "mug", "cushion", "fruitbowl", "shoes", "picture", "bookstack", "yarn", "sillplant", "wastebasket", "coatstand", "stool", "wateringcan"]:
+		if not props_by_id.has(want_id):
+			new_ids_ok = false
+	check("v1.5: all fourteen new knock-over props are registered", new_ids_ok, str(props_by_id.keys()))
+	(player as Node3D).global_position = Vector3(571.9, 0.3, -7.6) # beside the floor lamp
+	main.call("_on_interact")
+	check("v1.5: PAW topples the floor lamp", bool(props_by_id["floorlamp"]["toppled"]))
+	(player as Node3D).global_position = Vector3(560.7, 0.3, 2.2) # at the coffee table
+	main.call("_on_interact")
+	check("v1.5: PAW topples the mug", bool(props_by_id["mug"]["toppled"]))
+	(player as Node3D).global_position = Vector3(572.0, 0.3, 8.0) # by the coat stand
+	main.call("_on_interact")
+	check("v1.5: PAW topples the coat stand", bool(props_by_id["coatstand"]["toppled"]))
+	check("v1.5: she works on the first while the rest queue", str(main.get("captor_prop").get("id", "")) == "floorlamp" and (main.get("distract_queue") as Array).size() == 2, "queue=" + str((main.get("distract_queue") as Array).size()))
+	check("v1.5: she is distracted by the new props", bool(main.call("captor_distracted")), str(main.get("captor_room_state")))
+	var guard2: int = 0
+	while guard2 < 480:
+		var any_down: bool = false
+		for p in main.get("distract_props"):
+			if bool(p["toppled"]):
+				any_down = true
+		if not any_down:
+			break
+		main.call("_process_escape", 0.25)
+		guard2 += 1
+	check("v1.5: she rights every toppled prop, one at a time", not bool(props_by_id["floorlamp"]["toppled"]) and not bool(props_by_id["mug"]["toppled"]) and not bool(props_by_id["coatstand"]["toppled"]), "guard=" + str(guard2))
+	check("v1.5: a righted prop is back at its home rotation", ((props_by_id["floorlamp"]["pivot"] as Node3D).rotation).distance_to(props_by_id["floorlamp"]["home_rot"]) < 0.01)
+	main.call("topple_prop", props_by_id["mug"])
+	check("v1.5: a righted prop can be knocked over again", bool(props_by_id["mug"]["toppled"]))
+	guard2 = 0
+	while bool(props_by_id["mug"]["toppled"]) and guard2 < 200:
+		main.call("_process_escape", 0.25)
+		guard2 += 1
+	check("v1.5: she rights the re-toppled mug too", not bool(props_by_id["mug"]["toppled"]))
+	# Leave the room the intended way so later sections start clean.
+	distract_captor()
+	(player as Node3D).global_position = Vector3(573.4, 0.3, 3.4)
+	main.call("_on_escape_prompt_pressed")
+	for inp in ["down", "up", "down", "up", "paw"]:
+		main.call("escape_panel_input", inp)
+		main.call("_process_escape", 0.4)
+	check("v1.5: after the chaos, the door escape still works", bool(main.get("exit_open")) and str(main.get("exit_open_kind")) == "bolt", str(main.get("exit_open_kind")))
+	walk_cat_out()
+	check("v1.5: the cat walks out after the knock-over spree", str(main.get("state")) == "play", str(main.get("state")))
 	main.call("_process", 60.1) # drain the pursuit before the e2e section
 
 	# ---------- v0.9 CAPTURE END-TO-END (the grabber really takes him home) ----------
@@ -738,22 +1098,231 @@ func run_tests() -> void:
 	check("capture e2e: the captor is the grabber", main.get("captor") == cap_grabber)
 	main.call("skip_cutscene")
 	check("capture e2e: escape room opens after the cutscene", str(main.get("state")) == "escape", str(main.get("state")))
-	main.set("escape_steps", [{"kind": "latch"}, {"kind": "winpush"}])
-	main.set("escape_step", 0)
-	main.set("escape_prog", 0.0)
+	check("capture e2e: the escape he is given is the back door", main.call("current_escape_kinds") == ["bolt"], str(main.call("current_escape_kinds")))
 	# v1.2 intended path: the captor is in the room — distract him
-	# with a toppled prop first, then work the two combos, then the
-	# cat walks out of the opened window himself.
+	# with a toppled prop first, then work the door's combo, then
+	# the cat walks out of the opened doorway himself (v1.4: the
+	# door is every capture's way out — no override needed).
 	distract_captor()
 	check("capture e2e: the captor is distracted by the toppled prop", bool(main.call("captor_distracted")), str(main.get("captor_room_state")))
-	(player as Node3D).global_position = Vector3(200, 0.3, -8)
-	drive_escape_panel()
+	(player as Node3D).global_position = Vector3(573.4, 0.3, 3.4)
 	drive_escape_panel()
 	check("capture e2e: the finished combo opens the way out", bool(main.get("exit_open")))
+	# v1.4: drag the look around the room first (the reported bug:
+	# these values used to follow him back to town for good).
+	main.set("look_pitch_deg", 45.0)
+	main.set("look_yaw", 2.2)
 	walk_cat_out()
 	check("capture e2e: escape returns to play, grabber pursuing", str(main.get("state")) == "play" and (main.get("pursuers") as Dictionary).has(cap_grabber), str(main.get("state")))
+	# v1.4 CAMERA HANDOFF, measured with the real camera during the
+	# pursuit: town FOV, town chase distance, and the cat back at a
+	# normal share of the frame (probe on the old code: pitch stuck
+	# at 45, camera ~6 m up, cat at 0.03 — after the fix: pitch 4,
+	# camera ~1.8 m up, cat 0.09-0.12).
+	await wait_sec(0.35)
+	var ecam: Camera3D = main.get("cam")
+	check("v1.4: pursuit runs at town camera values (FOV 70, chase dist 6.4)", absf(ecam.fov - 70.0) < 0.01 and absf(float(main.get("current_cam_dist")) - 6.4) < 0.01, "fov=" + str(ecam.fov) + " dist=" + str(main.get("current_cam_dist")))
+	var e_aabb := AABB()
+	var e_first := true
+	for mi in (player as Node3D).find_children("*", "MeshInstance3D", true, false):
+		var ga2: AABB = (mi as MeshInstance3D).global_transform * (mi as MeshInstance3D).get_aabb()
+		e_aabb = ga2 if e_first else e_aabb.merge(ga2)
+		e_first = false
+	var e_base: Vector3 = (player as Node3D).global_position
+	var e_vp: Vector2 = get_viewport().get_visible_rect().size
+	var e_share: float = absf(ecam.unproject_position(Vector3(e_base.x, e_aabb.position.y, e_base.z)).y - ecam.unproject_position(Vector3(e_base.x, e_aabb.position.y + e_aabb.size.y, e_base.z)).y) / e_vp.y
+	check("v1.4: the cat is a normal size again during the pursuit (not tiny from above)", e_share >= 0.05, str(e_share))
 	main.call("_process", 60.1)
 	check("capture e2e: pursuit ends at 60s", not (main.get("pursuers") as Dictionary).has(cap_grabber))
+	# ...and once the pursuit is over the framing is the plain town
+	# view again: orbit 2.0 and the cat at his usual >= 0.18 share.
+	park_npcs_far()
+	await wait_sec(1.2)
+	# (measure against the cat's CURRENT spot — he may have idled)
+	var t_base: Vector3 = (player as Node3D).global_position
+	var t_aabb := AABB()
+	var t_first := true
+	for mi in (player as Node3D).find_children("*", "MeshInstance3D", true, false):
+		var ga3: AABB = (mi as MeshInstance3D).global_transform * (mi as MeshInstance3D).get_aabb()
+		t_aabb = ga3 if t_first else t_aabb.merge(ga3)
+		t_first = false
+	var t_share: float = absf(ecam.unproject_position(Vector3(t_base.x, t_aabb.position.y, t_base.z)).y - ecam.unproject_position(Vector3(t_base.x, t_aabb.position.y + t_aabb.size.y, t_base.z)).y) / e_vp.y
+	check("v1.4: after the pursuit the town framing is fully back (orbit 2.0, cat >= 0.18 of frame)", absf(float(main.get("current_cam_dist")) - 2.0) < 0.01 and t_share >= 0.18, "dist=" + str(main.get("current_cam_dist")) + " share=" + str(t_share))
+
+	# ---------- v1.3 SCOOP: the pickup is one continuous motion -----
+	# Michael: the old pickup was "janky and weird" — a per-frame lerp
+	# that crept then snapped, into a rigid standing pose at her BACK
+	# (the follow camera lost him entirely). Drive a REAL capture via
+	# the same on_cat_taken the chase uses and sample his transform
+	# on the real clock: no step may exceed a smooth-motion bound, he
+	# must END in front of her chest in his held pose, and both poses
+	# must release cleanly into the escape room.
+	park_npcs_far()
+	clear_joy()
+	(player as Node3D).global_position = Vector3(30, 0.2, 60)
+	(player as Node3D).rotation = Vector3(0, PI * 0.5, 0)
+	player.set("frozen", false)
+	var scoop_npc: Node = npc_by_role("grabber")
+	(scoop_npc as Node3D).global_position = Vector3(31.05, 0.2, 60)
+	(scoop_npc as Node3D).rotation = Vector3(0, -PI * 0.5, 0)
+	scoop_npc.set("mode", "wander")
+	scoop_npc.set("notice", 0.0)
+	scoop_npc.set("notice_cooldown", 5.0)
+	scoop_npc.set("grab_progress", 0.0)
+	await wait_sec(0.1)
+	main.call("on_cat_taken", scoop_npc)
+	check("scoop: capture enters the cutscene", str(main.get("state")) == "cutscene", str(main.get("state")))
+	var prev_pos: Vector3 = (player as Node3D).global_position
+	var max_step: float = 0.0
+	var scoop_t: float = 0.0
+	var front_dot: float = -1.0
+	var held_seen: bool = false
+	while scoop_t < 3.4 and str(main.get("state")) == "cutscene":
+		await wait_sec(0.1)
+		scoop_t += 0.1
+		var pp: Vector3 = (player as Node3D).global_position
+		max_step = maxf(max_step, pp.distance_to(prev_pos))
+		prev_pos = pp
+		if scoop_t >= 2.6:
+			var fwd: Vector3 = (scoop_npc as Node3D).global_transform.basis.z
+			fwd.y = 0.0
+			var to_cat_v: Vector3 = pp - (scoop_npc as Node3D).global_position
+			to_cat_v.y = 0.0
+			if to_cat_v.length() > 0.05 and fwd.length() > 0.05:
+				front_dot = fwd.normalized().dot(to_cat_v.normalized())
+			if bool(player.call("is_held")):
+				held_seen = true
+	check("scoop: the lift is continuous (no snap/teleport steps)", max_step < 0.6, "max step " + str(max_step))
+	check("scoop: he ends cradled IN FRONT of her chest", front_dot > 0.55, "dot " + str(front_dot))
+	check("scoop: the cat settles into his held pose", held_seen)
+	main.call("skip_cutscene")
+	check("scoop: poses release into the escape room", str(main.get("state")) == "escape" and float(scoop_npc.get("scoop_cradle_a")) == 0.0 and float(player.get("held_target")) == 0.0, str(main.get("state")))
+	# Clean up the intended way, exactly like the e2e above (v1.4:
+	# the picked escape is the back door — one combo, walk out).
+	distract_captor()
+	(player as Node3D).global_position = Vector3(573.4, 0.3, 3.4)
+	drive_escape_panel()
+	walk_cat_out()
+	main.call("_process", 60.1)
+	check("scoop: cleanup returns to play", str(main.get("state")) == "play", str(main.get("state")))
+
+	# ---------- POUND VAN (Michael, 2026-11-17) ----------
+	# ONE white ANIMAL CONTROL van patrols the town forever. Come
+	# within 12m and it pulls over to the kerb, the worker (white
+	# uniform, net in hand) gets out and comes after the collarless
+	# cat; his catch is the ORDINARY capture flow — back at the
+	# pound means the back-door bolt room — then his pursuit; lose
+	# him (or outlast the pursuit) and he walks back to the van and
+	# the patrol resumes. He is NOT one of the 48 town NPCs, and
+	# the collar flag (player_collared) switches him off entirely.
+	park_npcs_far()
+	for n in main.get("npcs"):
+		n.set("notice_cooldown", 99999.0) # nobody else may start a chase in this section
+	clear_joy()
+	main.set("pound_engage_cd", 0.0) # re-arm him (held off since "enter play")
+	var pvan: Node3D = main.get("pound_van")
+	var pworker: Node = main.get("pound_worker")
+	check("pound van: the patrol van and its worker exist", pvan != null and pworker != null)
+	var van_count := 0
+	var vstack: Array = [main]
+	while not vstack.is_empty():
+		var vn: Node = vstack.pop_back()
+		for vch in vn.get_children():
+			vstack.append(vch)
+		if vn.name == "PoundVan":
+			van_count += 1
+	check("pound van: exactly ONE patrol van in the world", van_count == 1, str(van_count))
+	check("pound van: the worker is NOT one of the 48 town NPCs (population + 25% split untouched)", not (main.get("npcs") as Array).has(pworker) and (main.get("npcs") as Array).size() == 48)
+	var van_labels: Array = []
+	collect_label3d(pvan, van_labels)
+	var vt: Array = []
+	for l in van_labels:
+		vt.append(str((l as Label3D).text))
+	check("pound van: POUND / ANIMAL CONTROL lettering printed on the body (both flanks)", vt.count("POUND") == 2 and vt.count("ANIMAL CONTROL") == 2, str(vt))
+	check("pound van: the worker carries his net (pole + hoop + bag on the arm)", pworker.get("net_root") != null and (pworker.get("net_root") as Node3D).get_child_count() >= 3)
+	# patrol: he drives the loop, on the lanes, worker riding inside
+	main.set("pound_state", "patrol")
+	pvan.position = Vector3(-60, 0, 16.8)
+	main.set("pound_van_yaw", 0.0)
+	main.set("pound_route_idx", 1)
+	main.set("pound_van_speed", 0.0)
+	(player as Node3D).global_position = Vector3(-100, 0.2, 80) # far off his roads: no engagement
+	var ppos0: Vector3 = pvan.position
+	for i in range(10):
+		main.call("_update_pound", 0.5)
+	check("pound van: the patrol drives on (moved > 15m over 5s of patrol)", pvan.position.distance_to(ppos0) > 15.0, str(pvan.position.distance_to(ppos0)))
+	check("pound van: the patrol stays on the road lane", absf(pvan.position.z - 16.8) < 1.5, str(pvan.position))
+	check("pound van: the worker rides inside (invisible, travelling with the van)", not pworker.visible and (pworker as Node3D).global_position.distance_to(pvan.position) < 1.0)
+	# engagement: the cat steps onto his road, just ahead of the van
+	(player as Node3D).global_position = pvan.position + Vector3(11.0, 0.2, 0.0)
+	player.set("velocity", Vector3.ZERO)
+	var guard_p: float = 0.0
+	while str(main.get("pound_state")) != "exit" and guard_p < 12.0:
+		await wait_sec(0.25)
+		guard_p += 0.25
+	check("pound van: cat in proximity -> the van pulls over and the worker gets out", str(main.get("pound_state")) == "exit", str(main.get("pound_state")) + " after " + str(guard_p) + "s")
+	check("pound van: pulled over at the KERB, not blocking the road centre (offset >= 2.4 from the z=15 centreline)", absf(pvan.position.z - 15.0) >= 2.4, str(pvan.position))
+	check("pound van: the worker is out on foot beside the van, net in hand", pworker.visible and (pworker as Node3D).global_position.distance_to(pvan.position) > 1.0 and bool((pworker.get("net_root") as Node3D).visible), "vis=" + str(pworker.visible) + " dist=" + str((pworker as Node3D).global_position.distance_to(pvan.position)) + " netvis=" + str(bool((pworker.get("net_root") as Node3D).visible)))
+	guard_p = 0.0
+	while str(pworker.get("mode")) != "chase" and guard_p < 8.0:
+		await wait_sec(0.25)
+		guard_p += 0.25
+	check("pound van: the worker chases — the game's own chase, determined (never angry) face", str(pworker.get("mode")) == "chase" and str(pworker.get("expression")) == "determined", str(pworker.get("mode")) + "/" + str(pworker.get("expression")))
+	check("pound van: his chase engages the chase camera like any chaser", bool(main.get("chase_cam_active")))
+	# capture: the still cat is caught and held -> the ordinary flow
+	guard_p = 0.0
+	while str(main.get("state")) == "play" and guard_p < 14.0:
+		await wait_sec(0.25)
+		guard_p += 0.25
+	check("pound van: his catch routes into the ordinary capture (scoop cutscene, he is the captor)", str(main.get("state")) == "cutscene" and main.get("captor") == pworker, str(main.get("state")))
+	check("pound van: while he is the captor the van waits (pound state 'away')", str(main.get("pound_state")) == "away", str(main.get("pound_state")))
+	main.call("skip_cutscene")
+	check("pound van: back at the pound = the back-door bolt escape room", str(main.get("state")) == "escape" and main.call("current_escape_kinds") == ["bolt"], str(main.get("state")))
+	distract_captor()
+	(player as Node3D).global_position = Vector3(573.4, 0.3, 3.4)
+	drive_escape_panel()
+	walk_cat_out()
+	check("pound van: the escape completes and HE is the pursuer", str(main.get("state")) == "play" and (main.get("pursuers") as Dictionary).has(pworker), str(main.get("state")))
+	main.call("_process", 60.1) # drain his pursuit
+	check("pound van: pursuit over -> he heads back to the van", str(main.get("pound_state")) == "return", str(main.get("pound_state")))
+	(player as Node3D).global_position = Vector3(-100, 0.2, 80) # the player runs off home-free; he just goes back to work
+	guard_p = 0.0
+	while str(main.get("pound_state")) != "patrol" and guard_p < 30.0:
+		await wait_sec(0.25)
+		guard_p += 0.25
+	check("pound van: he gets back in and the patrol resumes", str(main.get("pound_state")) == "patrol" and not pworker.visible, str(main.get("pound_state")) + " after " + str(guard_p) + "s")
+	# lose him WITHOUT a capture: a chase that fails sends him back too
+	pvan.position = Vector3(-60, 0, 16.8)
+	main.set("pound_van_yaw", 0.0)
+	main.set("pound_route_idx", 1)
+	main.set("pound_state", "patrol")
+	main.set("pound_engage_cd", 0.0)
+	(player as Node3D).global_position = pvan.position + Vector3(11.0, 0.2, 0.0)
+	player.set("velocity", Vector3.ZERO)
+	guard_p = 0.0
+	while str(pworker.get("mode")) != "chase" and guard_p < 12.0:
+		await wait_sec(0.25)
+		guard_p += 0.25
+	check("pound van: next time round he gets out and chases again", str(pworker.get("mode")) == "chase", str(pworker.get("mode")) + " after " + str(guard_p) + "s")
+	(player as Node3D).global_position = Vector3(-100, 0.2, 80) # the cat bolts far away: the chase is lost on distance
+	guard_p = 0.0
+	while str(main.get("pound_state")) != "patrol" and guard_p < 30.0:
+		await wait_sec(0.25)
+		guard_p += 0.25
+	check("pound van: chase lost -> he walks back to the van and the patrol resumes", str(main.get("pound_state")) == "patrol" and not pworker.visible, str(main.get("pound_state")) + " after " + str(guard_p) + "s")
+	# THE COLLAR FLAG: while the cat has a collar on, he never engages
+	main.set("player_collared", true)
+	main.set("pound_engage_cd", 0.0)
+	pvan.position = Vector3(-60, 0, 16.8)
+	main.set("pound_van_yaw", 0.0)
+	main.set("pound_route_idx", 1)
+	main.set("pound_state", "patrol")
+	(player as Node3D).global_position = pvan.position + Vector3(11.0, 0.2, 0.0)
+	player.set("velocity", Vector3.ZERO)
+	await wait_sec(3.0)
+	check("pound van: with a collar on (flag set) he never engages — no pull-over, no chase", str(main.get("pound_state")) == "patrol" and not pworker.visible and str(pworker.get("mode")) == "wander", str(main.get("pound_state")) + "/" + str(pworker.get("mode")))
+	main.set("player_collared", false)
+	(player as Node3D).global_position = Vector3(-100, 0.2, 80) # leave him to his rounds
 
 	# ---------- idle purr retained (v0.6) ----------
 	park_npcs_far()

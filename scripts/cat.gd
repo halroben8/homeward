@@ -89,7 +89,22 @@ var pet_t: float = 0.0 # seconds of petting reaction remaining
 var pet_a: float = 0.0 # petting pose envelope 0..1
 var treat_t: float = 0.0 # seconds of treat-eating head dip remaining
 const TREAT_DUR := 1.15
+# --- v1.3 HELD / CARRIED pose (the capture scoop) ---------------------
+# Until now a captured cat hung in his standing pose for the whole
+# ride — a rigid plank floating at chest height. Now main calls
+# start_held() the moment the scoop's lift begins: a brief STARTLE
+# (ears flatten, a little tense crouch), then he SETTLES into the
+# cradle — front paws folded under his chest, back legs dangling
+# loose, tail curled round, chin up looking at the person, the whole
+# body pitched into the cradle by main's held path + model pitch
+# below. held_a envelopes in/out like pet_a, and every offset is
+# additive on the re-based idle bases, same pattern as pet/treat.
+var held_a: float = 0.0 # carried pose envelope 0..1
+var held_target: float = 0.0
+var startle_t: float = 0.0 # seconds of startle remaining
+const STARTLE_DUR := 0.38
 var collar_tag: MeshInstance3D = null # v0.7: the real 3D tag, for the collar-check camera zoom
+var tag_label: Label3D = null # the run's home address, printed ON the tag's face (child of collar_tag)
 
 func set_chase_mode(on: bool) -> void:
 	if on and not chase_mode:
@@ -765,6 +780,25 @@ func _build_model() -> void:
 	_sphere(model, Vector3(0, 0.148, 0.299), Vector3(0.018, 0.014, 0.006), Color(0.15, 0.15, 0.19)) # paw pad
 	for tx in [-0.016, 0.0, 0.016]:
 		_sphere(model, Vector3(tx * 0.85, 0.190, 0.299), Vector3(0.007, 0.009, 0.006), Color(0.15, 0.15, 0.19)) # paw toes
+	# --- The home address, printed ON the tag's face ---
+	# A Label3D riding as a CHILD of the tag mesh — no billboard, so
+	# it moves and tilts with the tag exactly, like print on metal.
+	# Tag-local frame: the tag cylinder's axis is +Y and its front
+	# cap faces +Y, so the label lies flat against that cap: a -90
+	# rotation about X turns the label's facing (+Z) onto +Y and its
+	# text-up onto the model's up. It floats 0.0165 along +Y — the
+	# cap is at 0.005 and the paw-print spheres stand ~0.009 proud
+	# of it — so the print rests just on the paw, never clipping in.
+	tag_label = Label3D.new()
+	tag_label.font_size = 64
+	tag_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	tag_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	tag_label.modulate = Color(1.0, 0.97, 0.85)
+	tag_label.outline_size = 12
+	tag_label.outline_modulate = Color(0.08, 0.07, 0.05, 0.9)
+	tag_label.position = Vector3(0, 0.0165, 0)
+	tag_label.rotation_degrees = Vector3(-90, 0, 0)
+	tag.add_child(tag_label)
 	# --- Tail: 3 chained lofted segments, tapering, white tip ---
 	var parent_node: Node3D = model
 	var base_pos := Vector3(0, 0.26, -0.225)
@@ -901,7 +935,7 @@ func _physics_process(delta: float) -> void:
 		velocity.x = move_toward(velocity.x, 0.0, 26.0 * delta)
 		velocity.z = move_toward(velocity.z, 0.0, 26.0 * delta)
 		move_and_slide()
-		global_position.x = clamp(global_position.x, -118.5, 230.0)
+		global_position.x = clamp(global_position.x, -118.5, 590.0) # MAP DOUBLING: east edge + escape room moved east
 		global_position.z = clamp(global_position.z, -90.5, 90.5)
 		_animate(delta, Vector2(velocity.x, velocity.z).length())
 		return
@@ -956,7 +990,7 @@ func _physics_process(delta: float) -> void:
 		var target_yaw: float = atan2(dir3.x, dir3.z)
 		rotation.y = lerp_angle(rotation.y, target_yaw, min(1.0, 14.0 * delta))
 	move_and_slide()
-	global_position.x = clamp(global_position.x, -118.5, 230.0)
+	global_position.x = clamp(global_position.x, -118.5, 590.0) # MAP DOUBLING: east edge + escape room moved east
 	global_position.z = clamp(global_position.z, -90.5, 90.5)
 	var speed2d: float = Vector2(velocity.x, velocity.z).length()
 	_animate(delta, speed2d)
@@ -1068,6 +1102,61 @@ func _animate(delta: float, speed2d: float) -> void:
 		head_node.rotation.x += 0.55 * dip
 		head_node.position.y = head_base_pos.y + 0.03 * sit_a - 0.03 * dip
 		head_node.position.z = head_base_pos.z + 0.018 * dip
+	# --- v1.3 HELD pose: startle, then settle into the cradle -------
+	held_a = move_toward(held_a, held_target, delta * 2.4)
+	if startle_t > 0.0:
+		startle_t = maxf(0.0, startle_t - delta)
+	var startle_a: float = 0.0
+	if startle_t > 0.0:
+		startle_a = sin((1.0 - startle_t / STARTLE_DUR) * PI)
+	if held_a > 0.001 or startle_a > 0.0:
+		# Whole-body cradle pitch: head end rises, rump settles back
+		# into the arms. model.rotation.x is written NOWHERE else.
+		if model:
+			model.rotation.x = -0.46 * held_a + 0.12 * startle_a
+		body_node.position.y += -0.02 * startle_a # little tense crouch
+		if leg_pivots.size() == 4:
+			# Front paws fold back under the chest; back legs dangle
+			# loose with a lazy sway instead of tucking stiff.
+			# ASSIGNED, not +=: the leg base is only lerp-relaxed
+			# toward 0 (no hard re-base), so an additive offset could
+			# creep — the PET-SPIN lesson. While held the cat is
+			# frozen and idle, so the true base is ~0 and an absolute
+			# function of the (smoothly ramping) held_a cannot pop.
+			leg_pivots[0].rotation.x = 1.5 * held_a
+			leg_pivots[1].rotation.x = 1.5 * held_a
+			var dangle: float = 0.5 * held_a + sin(t * 1.4) * 0.06 * held_a
+			leg_pivots[2].rotation.x = dangle
+			leg_pivots[3].rotation.x = dangle + sin(t * 1.4 + 0.7) * 0.04 * held_a
+		# Tail curls round the side, the way it does when he sits.
+		if tail_pivots.size() == 3:
+			tail_pivots[0].rotation.y += 1.0 * held_a
+			tail_pivots[1].rotation.y += 0.8 * held_a
+			tail_pivots[2].rotation.y += 0.55 * held_a
+			tail_pivots[0].rotation.x += 0.22 * held_a
+		# Chin up, looking at the person; a soft head tilt once
+		# settled. rotation.x rides the idle branch's hard re-base
+		# (safe to add); rotation.z has NO re-base, so assign it —
+		# the pet block assigns its z-offset for the same reason.
+		head_node.rotation.x += -0.34 * held_a
+		head_node.rotation.z = 0.07 * held_a
+		if ear_l:
+			ear_l.rotation.x = -0.55 * startle_a + 0.08 * held_a
+		if ear_r:
+			ear_r.rotation.x = -0.55 * startle_a + 0.08 * held_a
+		# Settled contentment: a slow blink every few seconds.
+		if held_a > 0.9:
+			var blink: float = pow(maxf(sin(t * 1.15), 0.0), 32.0)
+			if eye_l_mi:
+				eye_l_mi.scale.y *= 1.0 - 0.6 * blink
+			if eye_r_mi:
+				eye_r_mi.scale.y *= 1.0 - 0.6 * blink
+	elif model and model.rotation.x != 0.0:
+		model.rotation.x = 0.0
+		if ear_l:
+			ear_l.rotation.x = 0.0
+		if ear_r:
+			ear_r.rotation.x = 0.0
 	# PAW SWIPE (v0.8 REWRITE, item 4): an ABSOLUTE pose, never an
 	# accumulation. The undo at the top of _animate removed last
 	# frame's offset, so the leg currently sits at this frame's base
@@ -1187,6 +1276,20 @@ func start_pet_reaction(dur: float = 2.6) -> void:
 func start_treat_reaction() -> void:
 	treat_t = TREAT_DUR
 
+# --- v1.3 held pose API (called by main's capture cutscene) --------
+func start_held() -> void:
+	# The scoop's lift begins: startle first, then the cradle settle
+	# (held_a ramps in _animate, so the tuck eases in over ~0.4s).
+	held_target = 1.0
+	startle_t = STARTLE_DUR
+
+func stop_held() -> void:
+	held_target = 0.0
+	startle_t = 0.0
+
+func is_held() -> bool:
+	return held_a > 0.5
+
 func is_being_petted() -> bool:
 	return pet_t > 0.0
 
@@ -1217,6 +1320,45 @@ func get_tag_global_pos() -> Vector3:
 	if collar_tag:
 		return collar_tag.global_position
 	return global_position + Vector3(0, 0.158, 0.29) * VISUAL_SCALE
+
+func get_tag_facing() -> Vector3:
+	# World direction the tag's printed face points: the tag
+	# cylinder's local +Y, carried through the cat's own transform
+	# (so it stays right however the model is posed or turned).
+	if collar_tag:
+		return (collar_tag.global_transform.basis.y).normalized()
+	return (global_transform.basis * Vector3(0, 0, 1)).normalized()
+
+func get_tag_label() -> Label3D:
+	return tag_label
+
+func set_tag_address(addr: String) -> void:
+	# Print the run's home address on the collar tag. Two lines so
+	# it fits the little disc ("19 Oak Avenue" / "Apartment 3B",
+	# "31 Willow" / "Crescent"), and the pixel size is fitted to
+	# the measured string so the widest line spans the tag's face.
+	if tag_label == null:
+		return
+	var line1 := addr
+	var line2 := ""
+	if ", " in addr:
+		var parts := addr.split(", ", true, 1)
+		line1 = parts[0]
+		if parts.size() > 1:
+			line2 = parts[1]
+	else:
+		var words := addr.split(" ")
+		if words.size() >= 3:
+			line2 = words[words.size() - 1]
+			words.remove_at(words.size() - 1)
+			line1 = " ".join(words)
+	tag_label.text = line1 if line2 == "" else line1 + "\n" + line2
+	var font := ThemeDB.fallback_font
+	var w: float = 0.0
+	for ln in tag_label.text.split("\n"):
+		w = maxf(w, font.get_string_size(ln, HORIZONTAL_ALIGNMENT_LEFT, -1.0, float(tag_label.font_size)).x)
+	if w > 1.0:
+		tag_label.pixel_size = 0.050 / w
 
 func get_neck_global_pos() -> Vector3:
 	# The collar sits just under the chin, ahead of the chest.

@@ -30,6 +30,8 @@ var far_timer: float = 0.0
 var los_timer: float = 0.0
 var has_los_now: bool = true
 var active: bool = true
+var wide_bounds: bool = false # POUND VAN: the patrol worker roams the DOUBLED map (x to 369); town NPCs keep the historic ±117 position clamp below
+var net_root: Node3D = null # POUND VAN: the catch net (poundworker only), parented to the right arm
 # --- v0.6 interaction roles + grabber RUN tell + obstacle slowdown -----
 # role (assigned by main at spawn): "grabber" | "friendly" | "ignore".
 # Of the NPCs who notice the cat at all, ~1 in 4 is a grabber (2-3 of 14
@@ -45,6 +47,20 @@ var interact_cooldown: float = 0.0
 # mid-bend the pending award fires (pet +1 / treat +5).
 var bend_t: float = 0.0 # seconds of bend-down remaining
 var bend_a: float = 0.0 # bend pose envelope 0..1 (animated in _animate)
+# --- v1.3 CAPTURE SCOOP poses (driven by main's cutscene) ------------
+# The old cutscene posed NOTHING here: main pitched the whole model
+# from outside while this animator relaxed the arms to the sides, so
+# the cat floated up untouched and rode at the person's back. Now
+# main feeds three envelopes per frame (set_carry_pose) and _animate
+# applies them LAST, over every other pose: KNEEL (the petting kneel,
+# cutscene-driven), REACH (both hands aimed down at the cat's flanks,
+# tracking him as he rises, sliding under his belly with lift_k),
+# CRADLE (arms folded under him against the chest — and they STAY
+# folded through the walk-away instead of walk-swinging).
+var scoop_reach_a: float = 0.0
+var scoop_cradle_a: float = 0.0
+var scoop_kneel_a: float = 0.0
+var scoop_lift_k: float = 0.0 # 0 = hands at his sides, 1 = hands under him
 var award_t: float = -1.0 # countdown to the pet/treat moment (-1 = none pending)
 var pending_award: String = "" # "pet" | "treat"
 # --- v0.9 REAL PETTING (Michael, three times: "they just wave their
@@ -83,6 +99,14 @@ var leg_r: Node3D
 var arm_l: Node3D
 var arm_r: Node3D
 var head_node: Node3D
+var shin_l: Node3D = null # v1.4: knee pivots (two-segment legs)
+var shin_r: Node3D = null
+var mouths: Dictionary = {} # v1.4: expression mouth groups by name
+var mouth_root: Node3D = null
+var eye_base_scale := Vector3(0.08, 0.1, 0.042)
+var cheek_base_scale := Vector3(0.078, 0.05, 0.028)
+var skin_col: Color = SKIN # this person's own skin tone
+var hair_col_v: Color = HAIR_BROWN # this person's own hair colour
 # --- v0.6 JOY: faces change when they spot the cat -------------------
 var expression: String = "neutral" # neutral | joy | sad
 var joy_shown: bool = false
@@ -125,27 +149,13 @@ const TEX_FABRIC: Texture2D = preload("res://assets/textures/fabric.png") # v0.8
 const TEX_FABRIC_N: Texture2D = preload("res://assets/textures/fabric_normal.png") # v1.0 step 2: the weave, in relief
 
 func _mat(c: Color, rough: float = 0.85) -> StandardMaterial3D:
-	var m := StandardMaterial3D.new()
-	m.albedo_color = c
-	m.roughness = rough
-	return m
+	return _mat_cached("plain", c, rough)
 
 func _mat_skin(c: Color) -> StandardMaterial3D:
-	# v1.0 step 2: skin is smoother than cloth and catches a soft
-	# sheen — roughness 0.55 instead of the flat 0.85 everything
-	# else used, which read as plastic.
-	return _mat(c, 0.55)
+	return _mat_cached("skin", c, 0.55)
 
 func _mat_fabric(c: Color) -> StandardMaterial3D:
-	var m := StandardMaterial3D.new()
-	m.albedo_texture = TEX_FABRIC
-	m.albedo_color = c
-	m.roughness = 0.92
-	m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
-	m.normal_enabled = true
-	m.normal_texture = TEX_FABRIC_N
-	m.normal_scale = 0.65
-	return m
+	return _mat_cached("fabric", c, 0.92)
 
 func _box(parent: Node, pos: Vector3, size: Vector3, c: Color) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
@@ -205,6 +215,15 @@ func _apply_type() -> void:
 		"shopkeeper":
 			display_name = "Cheerful Shopkeeper"
 			walk_speed = 2.1; chase_speed = 6.0; detect_radius = 6.5; fill_rate = 0.22
+		"poundworker":
+			# POUND VAN (Michael, 2026-11-17): the animal-control
+			# worker from the white van. NOT a town NPC — main spawns
+			# exactly one, keeps him out of the npcs array (so the
+			# 25% avoid-share is untouched) and drives his patrol /
+			# pull-over / return-to-van states itself; his chase,
+			# grab and capture reuse this class's grabber machinery.
+			display_name = "Pound Worker"
+			walk_speed = 2.4; chase_speed = 6.4; detect_radius = 12.0; fill_rate = 0.30
 		_:
 			display_name = "Pedestrian"
 			walk_speed = 2.4; chase_speed = 6.1; detect_radius = 6.0; fill_rate = 0.18
@@ -220,19 +239,268 @@ func _build_collision() -> void:
 
 var last_hand_mi: MeshInstance3D = null # set by _limb: the hand/shoe blob at the limb's end
 
-func _limb(parent: Node, pos: Vector3, len_: float, r: float, c: Color, shoe: Color) -> Node3D:
+
+static var _mat_cache: Dictionary = {}
+static var _mesh_cache: Dictionary = {}
+
+# v1.4 NPC LOOK: materials are shared across all 48 neighbours via
+# a static cache — the old code built a brand-new material for
+# every body part of every person (~60 per person).
+func _mat_cached(kind: String, c: Color, rough: float) -> StandardMaterial3D:
+	var key: String = kind + "|" + str(c) + "|" + str(rough)
+	if _mat_cache.has(key):
+		return _mat_cache[key]
+	var m: StandardMaterial3D
+	if kind == "fabric":
+		m = StandardMaterial3D.new()
+		m.albedo_texture = TEX_FABRIC
+		m.albedo_color = c
+		m.roughness = 0.92
+		m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
+		m.normal_enabled = true
+		m.normal_texture = TEX_FABRIC_N
+		m.normal_scale = 0.65
+	else:
+		m = StandardMaterial3D.new()
+		m.albedo_color = c
+		m.roughness = rough
+	_mat_cache[key] = m
+	return m
+
+# LOFT: sweep an elliptical ring along Y stations — the same
+# shaped-mesh approach that fixed the cat. One continuous surface
+# per body part (torso, head, hair, thigh, shin, arm) instead of
+# stacked spheres/boxes/cylinders. Geometry is cached by its
+# station signature, so every neighbour shares the same meshes;
+# only the material (colour) differs per person.
+func _loft(parent: Node, stations: Array, mat: Material, radial: int = 12) -> MeshInstance3D:
+	var key: String = "loft|" + str(radial)
+	for st in stations:
+		key += "|" + str(st[0]) + "," + str(st[1]) + "," + str(st[2])
+	var mesh: ArrayMesh = _mesh_cache.get(key)
+	if mesh == null:
+		mesh = _build_loft_mesh(stations, radial)
+		_mesh_cache[key] = mesh
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.material_override = mat
+	parent.add_child(mi)
+	return mi
+
+func _build_loft_mesh(stations: Array, radial: int) -> ArrayMesh:
+	var verts := PackedVector3Array()
+	var uvs := PackedVector2Array()
+	var center := Vector3.ZERO
+	for st in stations:
+		center += st[0]
+	center /= float(stations.size())
+	for si in range(stations.size()):
+		var c: Vector3 = stations[si][0]
+		for j in range(radial + 1):
+			var a: float = TAU * float(j) / float(radial)
+			verts.append(c + Vector3(cos(a) * float(stations[si][1]), 0, sin(a) * float(stations[si][2])))
+			uvs.append(Vector2(float(j) / float(radial) * 2.0, c.y * 2.0))
+	var bot_i: int = verts.size()
+	verts.append(stations[0][0] + Vector3(0, -0.012, 0))
+	uvs.append(Vector2(0.5, 0))
+	var top_i: int = verts.size()
+	verts.append(stations[stations.size() - 1][0] + Vector3(0, 0.012, 0))
+	uvs.append(Vector2(0.5, 1))
+	var idx := PackedInt32Array()
+	for i in range(stations.size() - 1):
+		for j in range(radial):
+			var q0: int = i * (radial + 1) + j
+			var q1: int = q0 + 1
+			var q2: int = q0 + radial + 1
+			var q3: int = q2 + 1
+			idx.append_array([q0, q2, q1, q1, q2, q3])
+	for j in range(radial):
+		idx.append_array([bot_i, j + 1, j])
+		var t0: int = (stations.size() - 1) * (radial + 1) + j
+		idx.append_array([top_i, t0, t0 + 1])
+	# Smooth normals, accumulated and signed outward; winding
+	# corrected to Godot's front-face convention (same maths as
+	# the cat sculpt's _finish_mesh).
+	var tot: float = 0.0
+	for k in range(0, idx.size(), 3):
+		var pa: Vector3 = verts[idx[k]]
+		var pb: Vector3 = verts[idx[k + 1]]
+		var pc: Vector3 = verts[idx[k + 2]]
+		tot += (pb - pa).cross(pc - pa).dot((pa + pb + pc) / 3.0 - center)
+	var normals := PackedVector3Array()
+	normals.resize(verts.size())
+	for k in range(0, idx.size(), 3):
+		var fn: Vector3 = (verts[idx[k + 1]] - verts[idx[k]]).cross(verts[idx[k + 2]] - verts[idx[k]])
+		normals[idx[k]] += fn
+		normals[idx[k + 1]] += fn
+		normals[idx[k + 2]] += fn
+	var sgn: float = 1.0 if tot > 0.0 else -1.0
+	for i in range(normals.size()):
+		if normals[i].length() > 0.00001:
+			normals[i] = normals[i].normalized() * sgn
+		else:
+			normals[i] = (verts[i] - center).normalized()
+	if tot > 0.0:
+		for k in range(0, idx.size(), 3):
+			var tmp: int = idx[k + 1]
+			idx[k + 1] = idx[k + 2]
+			idx[k + 2] = tmp
+	var mesh := ArrayMesh.new()
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_INDEX] = idx
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+# Curved front panel (apron, tee front, pocket): an arc strip that
+# follows the torso's curve instead of a flat box floating in front.
+func _front_panel(parent: Node, r: float, y_top: float, y_bot: float, half_arc: float, mat: Material) -> MeshInstance3D:
+	var key: String = "panel|" + str(r) + "|" + str(y_top) + "|" + str(y_bot) + "|" + str(half_arc)
+	var mesh: ArrayMesh = _mesh_cache.get(key)
+	if mesh == null:
+		var verts := PackedVector3Array()
+		var uvs := PackedVector2Array()
+		var normals := PackedVector3Array()
+		var idx := PackedInt32Array()
+		var rows: Array = [y_top, (y_top + y_bot) * 0.5, y_bot]
+		var segs: int = 8
+		for ri in range(rows.size()):
+			for j in range(segs + 1):
+				var a: float = -half_arc + 2.0 * half_arc * float(j) / float(segs)
+				var rr: float = r + (0.006 if ri == 1 else 0.0)
+				verts.append(Vector3(sin(a) * rr, rows[ri], cos(a) * rr))
+				normals.append(Vector3(sin(a), 0, cos(a)))
+				uvs.append(Vector2(float(j) / float(segs), float(ri) * 0.5))
+		for i in range(rows.size() - 1):
+			for j in range(segs):
+				var q0: int = i * (segs + 1) + j
+				var q1: int = q0 + 1
+				var q2: int = q0 + segs + 1
+				var q3: int = q2 + 1
+				idx.append_array([q0, q1, q2, q1, q3, q2])
+		mesh = ArrayMesh.new()
+		var arrays := []
+		arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = verts
+		arrays[Mesh.ARRAY_NORMAL] = normals
+		arrays[Mesh.ARRAY_TEX_UV] = uvs
+		arrays[Mesh.ARRAY_INDEX] = idx
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		_mesh_cache[key] = mesh
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.material_override = mat
+	parent.add_child(mi)
+	return mi
+
+# Two-segment leg: thigh pivot at the hip, SHIN pivot at the knee.
+# This is what makes a real kneel possible — the old single-piece
+# leg could only fold at the hip, so "kneeling" pitched the whole
+# body. Now the descent lives in the knees, like Michael asked.
+func _build_leg(parent: Node, x: float, s: float, thigh_col: Color, shin_col: Color, shoe_col: Color, cuff_col: Color, bare_shin: bool = false) -> Array:
 	var pivot := Node3D.new()
-	pivot.position = pos
+	pivot.position = Vector3(x, 0.85 * s, 0)
 	parent.add_child(pivot)
-	var limb := _cyl(pivot, Vector3(0, -len_ * 0.5, 0), r, r * 0.85, len_, c)
-	limb.material_override = _mat_fabric(c.lightened(0.32)) # v0.8: fabric grain on arms/legs
-	_box(pivot, Vector3(0, -len_, 0.04), Vector3(r * 2.1, 0.08, 0.26), shoe)
-	# v0.9: a rounded HAND (arms) / shoe toe (legs) at the very end —
-	# the petting hand the cat actually feels.
-	last_hand_mi = _sphere(pivot, Vector3(0, -len_ - 0.02, 0.03), Vector3(r * 2.1, r * 1.7, r * 2.1), shoe)
-	if shoe == SKIN:
-		last_hand_mi.material_override = _mat_skin(SKIN) # a hand, not a shoe
+	_loft(pivot, [
+		[Vector3(0, 0.012, 0), 0.108 * s, 0.118 * s],
+		[Vector3(0, -0.22 * s, 0), 0.088 * s, 0.096 * s],
+		[Vector3(0, -0.44 * s, 0), 0.066 * s, 0.070 * s]], _mat_fabric(thigh_col.lightened(0.3)), 10)
+	var shin := Node3D.new()
+	shin.position = Vector3(0, -0.44 * s, 0)
+	pivot.add_child(shin)
+	_loft(shin, [
+		[Vector3(0, 0.012, 0), 0.064 * s, 0.068 * s],
+		[Vector3(0, -0.18 * s, 0), 0.054 * s, 0.057 * s],
+		[Vector3(0, -0.36 * s, 0), 0.046 * s, 0.048 * s]], _mat_skin(shin_col) if bare_shin else _mat_fabric(shin_col.lightened(0.3)), 10)
+	if cuff_col.a > 0.0:
+		var cuff := _cyl(shin, Vector3(0, -0.315 * s, 0), 0.062 * s, 0.066 * s, 0.1 * s, cuff_col)
+		cuff.material_override = _mat_fabric(cuff_col.lightened(0.3))
+	# A shoe that reads as a shoe: rounded toe + a sole.
+	_sphere(shin, Vector3(0, -0.362 * s, 0.038 * s), Vector3(0.155 * s, 0.095 * s, 0.27 * s), shoe_col)
+	var sole := _box(shin, Vector3(0, -0.398 * s, 0.042 * s), Vector3(0.165 * s, 0.028 * s, 0.29 * s), Color(0.92, 0.92, 0.9))
+	sole.material_override = _mat(Color(0.92, 0.92, 0.9), 0.6)
+	return [pivot, shin]
+
+# Arm: one tapered loft (sleeve, or sleeve + bare forearm for the
+# kid's short sleeves), an elbow ball, and a shaped hand with a
+# thumb — the hand the cat feels when he's petted.
+func _build_arm(parent: Node, x: float, s: float, sleeve_col: Color, short_sleeve: bool) -> Node3D:
+	var pivot := Node3D.new()
+	pivot.position = Vector3(x, 1.48 * s, 0)
+	parent.add_child(pivot)
+	if short_sleeve:
+		_loft(pivot, [
+			[Vector3(0, 0.012, 0), 0.084 * s, 0.088 * s],
+			[Vector3(0, -0.16 * s, 0), 0.072 * s, 0.075 * s],
+			[Vector3(0, -0.30 * s, 0), 0.062 * s, 0.064 * s]], _mat_fabric(sleeve_col.lightened(0.3)), 10)
+		_loft(pivot, [
+			[Vector3(0, -0.29 * s, 0), 0.060 * s, 0.062 * s],
+			[Vector3(0, -0.50 * s, 0), 0.052 * s, 0.054 * s],
+			[Vector3(0, -0.66 * s, 0), 0.046 * s, 0.048 * s]], _mat_skin(skin_col), 10)
+	else:
+		_loft(pivot, [
+			[Vector3(0, 0.012, 0), 0.086 * s, 0.090 * s],
+			[Vector3(0, -0.34 * s, 0), 0.066 * s, 0.069 * s],
+			[Vector3(0, -0.66 * s, 0), 0.048 * s, 0.050 * s]], _mat_fabric(sleeve_col.lightened(0.3)), 10)
+	var elb := _sphere(pivot, Vector3(0, -0.34 * s, 0), Vector3(0.125 * s, 0.125 * s, 0.125 * s), sleeve_col)
+	elb.material_override = _mat_fabric(sleeve_col.lightened(0.3)) if not short_sleeve else _mat_skin(skin_col)
+	var hand := _sphere(pivot, Vector3(0, -0.705 * s, 0.012), Vector3(0.105 * s, 0.135 * s, 0.115 * s), skin_col)
+	hand.material_override = _mat_skin(skin_col)
+	var thumb := _sphere(pivot, Vector3(signf(x) * -0.048 * s, -0.665 * s, 0.035), Vector3(0.042 * s, 0.06 * s, 0.042 * s), skin_col)
+	thumb.material_override = _mat_skin(skin_col)
+	last_hand_mi = hand
 	return pivot
+
+
+# v1.4 EXPRESSION MOUTHS: five small mouth groups (bead arcs and an
+# open grin) built once per person; set_expression() just toggles
+# which one is visible. Beads-on-an-arc read as a smile or a frown
+# from across the street — the old single squashed sphere read as
+# a blob at any distance.
+func _build_mouths(s: float) -> void:
+	mouth_root = Node3D.new()
+	mouth_root.position = Vector3(0, -0.128 * s, 0.196 * s)
+	head_node.add_child(mouth_root)
+	var lip := Color(0.58, 0.27, 0.25)
+	var smile := Node3D.new()
+	var frown := Node3D.new()
+	for i in range(5):
+		var fx: float = -0.052 + float(i) * 0.026
+		var arc: float = pow(absf(fx) / 0.052, 2.0) * 0.027
+		var b1 := _sphere(smile, Vector3(fx, arc - 0.014, 0), Vector3(0.031, 0.021, 0.015), lip)
+		b1.material_override = _mat(lip, 0.6)
+		var b2 := _sphere(frown, Vector3(fx, 0.014 - arc, 0), Vector3(0.031, 0.021, 0.015), lip)
+		b2.material_override = _mat(lip, 0.6)
+	mouth_root.add_child(smile)
+	mouth_root.add_child(frown)
+	var small := Node3D.new()
+	for i in range(3):
+		var fx2: float = -0.03 + float(i) * 0.03
+		var b3 := _sphere(small, Vector3(fx2, pow(absf(fx2) / 0.03, 2.0) * 0.012 - 0.006, 0), Vector3(0.028, 0.019, 0.014), lip)
+		b3.material_override = _mat(lip, 0.6)
+	mouth_root.add_child(small)
+	var grin := Node3D.new()
+	var oval := _sphere(grin, Vector3(0, -0.012, 0), Vector3(0.104, 0.122, 0.038), Color(0.33, 0.14, 0.14))
+	oval.material_override = _mat(Color(0.33, 0.14, 0.14), 0.5)
+	var teeth := _box(grin, Vector3(0, 0.03, 0.012), Vector3(0.074, 0.02, 0.012), Color(0.97, 0.96, 0.92))
+	teeth.material_override = _mat(Color(0.97, 0.96, 0.92), 0.35)
+	var tongue := _sphere(grin, Vector3(0, -0.042, 0.008), Vector3(0.056, 0.034, 0.02), Color(0.86, 0.46, 0.5))
+	tongue.material_override = _mat(Color(0.86, 0.46, 0.5), 0.5)
+	mouth_root.add_child(grin)
+	var flat := Node3D.new()
+	var fl := _cyl(flat, Vector3.ZERO, 0.0115, 0.0115, 0.076, lip.darkened(0.15))
+	fl.rotation_degrees = Vector3(0, 0, 90)
+	fl.material_override = _mat(lip.darkened(0.15), 0.6)
+	mouth_root.add_child(flat)
+	mouths = {"smile": smile, "frown": frown, "smile_small": small, "grin": grin, "flat": flat}
+	_show_mouth("flat")
+
+func _show_mouth(which: String) -> void:
+	for k in mouths:
+		(mouths[k] as Node3D).visible = k == which
 
 func _build_model() -> void:
 	model = Node3D.new()
@@ -257,6 +525,10 @@ func _build_model() -> void:
 			top_col = Color(0.95, 0.92, 0.85)
 			leg_col = Color(0.4, 0.3, 0.2)
 			extra = "apron_cap"
+		"poundworker":
+			top_col = Color(0.96, 0.96, 0.94) # white uniform shirt
+			leg_col = Color(0.92, 0.92, 0.90) # white uniform trousers
+			extra = "poundcap"
 		_:
 			top_col = Color(0.5, 0.6, 0.75)
 			leg_col = Color(0.35, 0.35, 0.4)
@@ -271,56 +543,112 @@ func _build_model() -> void:
 		top_col = tops_v[outfit_idx % tops_v.size()]
 		leg_col = legs_v[outfit_idx % legs_v.size()]
 		hair_col = hairs_v[outfit_idx % hairs_v.size()]
+	# v1.4: skin tones vary across the town too (the old build used
+	# one SKIN constant for all 48 people).
+	var skin_tones: Array = [Color(0.96, 0.76, 0.60), Color(0.89, 0.63, 0.46), Color(0.74, 0.50, 0.35), Color(0.56, 0.37, 0.25), Color(0.98, 0.83, 0.69)]
+	var tone_off: int = {"woman": 0, "kid": 2, "dogwalker": 3, "shopkeeper": 1}.get(npc_type, 4)
+	skin_col = skin_tones[(outfit_idx + tone_off) % skin_tones.size()]
+	hair_col_v = hair_col
 	var s: float = body_h / 1.7 # scale factor (kid smaller)
 	mscale = s
-	# Legs
-	leg_l = _limb(model, Vector3(-0.14 * s, 0.85 * s, 0), 0.8 * s, 0.09 * s, leg_col, Color(0.9, 0.9, 0.9))
-	leg_r = _limb(model, Vector3(0.14 * s, 0.85 * s, 0), 0.8 * s, 0.09 * s, leg_col, Color(0.9, 0.9, 0.9))
-	# Torso
-	var torso := _sphere(model, Vector3(0, 1.2 * s, 0), Vector3(0.62 * s, 0.75 * s, 0.4 * s), top_col)
-	torso.material_override = _mat_fabric(top_col.lightened(0.3)) # v0.8: knit sweater/jacket grain
-	# v0.9 BODY STRUCTURE: hips + shoulder bar + neck, so the body
-	# reads as a person with joints, not a capsule with sticks.
-	var hips := _sphere(model, Vector3(0, 0.9 * s, 0), Vector3(0.52 * s, 0.34 * s, 0.38 * s), leg_col)
-	hips.material_override = _mat_fabric(leg_col.lightened(0.3))
-	var shoulders := _sphere(model, Vector3(0, 1.47 * s, 0), Vector3(0.74 * s, 0.3 * s, 0.4 * s), top_col)
-	shoulders.material_override = _mat_fabric(top_col.lightened(0.3))
-	var neck_mi := _cyl(model, Vector3(0, 1.6 * s, 0), 0.085 * s, 0.1 * s, 0.2 * s, SKIN) # neck
-	neck_mi.material_override = _mat_skin(SKIN)
-	_box(model, Vector3(0, 0.98 * s, 0), Vector3(0.56 * s, 0.09 * s, 0.42 * s), leg_col.darkened(0.35)) # belt
-	_box(model, Vector3(0, 0.98 * s, 0.22 * s), Vector3(0.12, 0.07, 0.03), Color(0.85, 0.7, 0.3)) # belt buckle
+	# ---- Legs: two-segment (thigh + shin), shaped lofts ----
+	var thigh_col: Color = leg_col
+	var shin_col: Color = leg_col
+	var shoe_col := Color(0.92, 0.92, 0.92)
+	var cuff_col := Color(0, 0, 0, 0)
+	var bare_shin: bool = false
 	if npc_type == "kid":
-		_box(model, Vector3(0, 1.12 * s, 0.17 * s), Vector3(0.4 * s, 0.28 * s, 0.06), Color(0.95, 0.55, 0.15)) # orange pocket
-		_sphere(model, Vector3(0, 1.52 * s, -0.16 * s), Vector3(0.3 * s, 0.24 * s, 0.18 * s), Color(0.45, 0.25, 0.72)) # hood behind head
-		_box(model, Vector3(0, 1.14 * s, 0.21 * s), Vector3(0.12, 0.12, 0.03), Color(0.98, 0.8, 0.25)) # star on pocket
+		thigh_col = Color(0.16, 0.24, 0.48) # navy patched shorts
+		shin_col = skin_col # bare kid legs
+		bare_shin = true
+		shoe_col = Color(0.15, 0.65, 0.68) # teal sneakers
+	elif npc_type == "woman":
+		cuff_col = Color(0.55, 0.65, 0.82) # rolled jean cuffs
+	elif npc_type == "shopkeeper":
+		shoe_col = Color(0.35, 0.25, 0.18)
+	elif npc_type == "poundworker":
+		shoe_col = Color(0.25, 0.25, 0.28) # dark work shoes under the white uniform
+	var leg_pair_l: Array = _build_leg(model, -0.14 * s, s, thigh_col, shin_col, shoe_col, cuff_col, bare_shin)
+	var leg_pair_r: Array = _build_leg(model, 0.14 * s, s, thigh_col, shin_col, shoe_col, cuff_col, bare_shin)
+	leg_l = leg_pair_l[0]
+	shin_l = leg_pair_l[1]
+	leg_r = leg_pair_r[0]
+	shin_r = leg_pair_r[1]
+	# ---- Pelvis + torso: ONE lofted garment shape each ----
+	_loft(model, [
+		[Vector3(0, 0.79 * s, 0), 0.265 * s, 0.195 * s],
+		[Vector3(0, 0.90 * s, 0), 0.30 * s, 0.215 * s],
+		[Vector3(0, 1.01 * s, 0), 0.28 * s, 0.20 * s]], _mat_fabric(leg_col.lightened(0.3)), 12)
+	var belly: float = 1.16 if npc_type == "shopkeeper" else 1.0
+	_loft(model, [
+		[Vector3(0, 0.94 * s, 0), 0.285 * s, 0.205 * s * belly],
+		[Vector3(0, 1.06 * s, 0), 0.315 * s, 0.22 * s * belly],
+		[Vector3(0, 1.20 * s, 0), 0.295 * s, 0.205 * s * belly],
+		[Vector3(0, 1.36 * s, 0), 0.335 * s, 0.225 * s * belly],
+		[Vector3(0, 1.48 * s, 0), 0.35 * s, 0.215 * s * belly],
+		[Vector3(0, 1.565 * s, 0), 0.185 * s, 0.145 * s]], _mat_fabric(top_col.lightened(0.3)), 12)
+	var belt := _cyl(model, Vector3(0, 0.99 * s, 0), 0.295 * s, 0.295 * s, 0.075 * s, leg_col.darkened(0.35))
+	belt.scale = Vector3(1, 1, 0.71)
+	_box(model, Vector3(0, 0.99 * s, 0.215 * s), Vector3(0.12, 0.07, 0.03), Color(0.85, 0.7, 0.3)) # belt buckle
+	var neck_mi := _cyl(model, Vector3(0, 1.60 * s, 0), 0.082 * s, 0.098 * s, 0.2 * s, skin_col)
+	neck_mi.material_override = _mat_skin(skin_col)
+	# Shoulders: soft balls where the arms join.
+	for shx in [-0.335, 0.335]:
+		var sh := _sphere(model, Vector3(shx * s, 1.47 * s, 0), Vector3(0.175 * s, 0.155 * s, 0.165 * s), top_col)
+		sh.material_override = _mat_fabric(top_col.lightened(0.3))
+	# ---- Torso dressing per type ----
+	if npc_type == "kid":
+		_front_panel(model, 0.222 * s, 1.27 * s, 0.99 * s, 0.52, _mat_fabric(Color(0.95, 0.55, 0.15))) # orange pocket panel
+		_box(model, Vector3(0, 1.15 * s, 0.228 * s), Vector3(0.11, 0.11, 0.02), Color(0.98, 0.8, 0.25)) # star on pocket
+		_sphere(model, Vector3(0, 1.52 * s, -0.17 * s), Vector3(0.3 * s, 0.24 * s, 0.18 * s), Color(0.45, 0.25, 0.72)) # hood behind head
 	if npc_type == "dogwalker":
+		# White tee showing at the front of the open overshirt
+		_front_panel(model, 0.228 * s, 1.47 * s, 1.05 * s, 0.5, _mat_fabric(Color(0.96, 0.95, 0.92)))
 		# Brown messenger bag + diagonal strap (sheet design)
-		var strap := _box(model, Vector3(0.05 * s, 1.28 * s, 0.19 * s), Vector3(0.09, 0.62 * s, 0.04), Color(0.45, 0.3, 0.18))
+		var strap := _box(model, Vector3(0.05 * s, 1.28 * s, 0.20 * s), Vector3(0.09, 0.62 * s, 0.04), Color(0.45, 0.3, 0.18))
 		strap.rotation_degrees = Vector3(0, 0, 38)
 		_box(model, Vector3(0.34 * s, 1.02 * s, 0.1 * s), Vector3(0.3, 0.34, 0.14), Color(0.55, 0.38, 0.22))
+		_box(model, Vector3(0.34 * s, 1.16 * s, 0.12 * s), Vector3(0.32, 0.15, 0.15), Color(0.48, 0.32, 0.19)) # bag flap
 	if extra == "apron_cap":
-		_box(model, Vector3(0, 1.15 * s, 0.19 * s), Vector3(0.44 * s, 0.6 * s, 0.05), Color(0.2, 0.45, 0.3)) # green apron
+		# Apron: a curved panel on the torso, not a flat box.
+		_front_panel(model, 0.238 * s, 1.44 * s, 0.80 * s, 0.85, _mat_fabric(Color(0.2, 0.45, 0.3)))
+		_box(model, Vector3(0, 1.47 * s, 0.16 * s), Vector3(0.3 * s, 0.05, 0.03), Color(0.2, 0.45, 0.3)) # apron neck strap
 		# Cat face ON the apron (sheet design): pale muzzle + ears + eyes
-		_sphere(model, Vector3(0, 1.22 * s, 0.23 * s), Vector3(0.17, 0.15, 0.04), Color(0.95, 0.88, 0.7))
+		_sphere(model, Vector3(0, 1.24 * s, 0.252 * s), Vector3(0.17, 0.15, 0.04), Color(0.95, 0.88, 0.7))
 		for ex in [-0.09, 0.09]:
-			_box(model, Vector3(ex * s, 1.36 * s, 0.22 * s), Vector3(0.07, 0.08, 0.03), Color(0.95, 0.88, 0.7))
-			_sphere(model, Vector3(ex * s, 1.24 * s, 0.26 * s), Vector3(0.025, 0.035, 0.015), Color(0.15, 0.12, 0.1))
+			_box(model, Vector3(ex * s, 1.38 * s, 0.245 * s), Vector3(0.07, 0.08, 0.03), Color(0.95, 0.88, 0.7))
+			_sphere(model, Vector3(ex * s, 1.26 * s, 0.262 * s), Vector3(0.025, 0.035, 0.015), Color(0.15, 0.12, 0.1))
 		# Paper shopping bag with a cat face, held in front (sheet design)
 		_box(model, Vector3(0, 0.82 * s, 0.34 * s), Vector3(0.42, 0.44, 0.2), Color(0.85, 0.72, 0.52))
 		_sphere(model, Vector3(0, 0.86 * s, 0.45 * s), Vector3(0.13, 0.11, 0.03), Color(0.5, 0.35, 0.2))
 		for ex2 in [-0.07, 0.07]:
 			_sphere(model, Vector3(ex2 * s, 0.89 * s, 0.47 * s), Vector3(0.02, 0.028, 0.012), Color(0.2, 0.15, 0.1))
-	# v1.0 step 2: shoulder balls + elbow balls, so arms join the
-	# body and bend at a joint instead of hanging as plain sticks.
-	for shx in [-0.36, 0.36]:
-		var sh := _sphere(model, Vector3(shx * s, 1.48 * s, 0), Vector3(0.17 * s, 0.17 * s, 0.17 * s), top_col)
-		sh.material_override = _mat_fabric(top_col.lightened(0.3))
-	# Arms
-	arm_l = _limb(model, Vector3(-0.36 * s, 1.48 * s, 0), 0.68 * s, 0.07 * s, top_col, SKIN)
-	arm_r = _limb(model, Vector3(0.36 * s, 1.48 * s, 0), 0.68 * s, 0.07 * s, top_col, SKIN)
-	for arm_p in [arm_l, arm_r]:
-		var elb := _sphere(arm_p, Vector3(0, -0.34 * s, 0), Vector3(0.085 * s, 0.085 * s, 0.085 * s), top_col)
-		elb.material_override = _mat_fabric(top_col.lightened(0.3))
+	if npc_type == "poundworker":
+		# Uniform dressing: a teal chest patch + a hi-vis band, so
+		# he reads as ANIMAL CONTROL, not a pedestrian who happens
+		# to be wearing white. Curved panels hug the torso loft.
+		_front_panel(model, 0.238 * s, 1.40 * s, 1.29 * s, 0.30, _mat_fabric(Color(0.15, 0.55, 0.6)))
+		_front_panel(model, 0.232 * s, 1.12 * s, 1.05 * s, 0.62, _mat(Color(0.80, 0.85, 0.90), 0.45))
+	if npc_type == "woman":
+		_sphere(model, Vector3(0, 1.44 * s, 0.2 * s), Vector3(0.045, 0.045, 0.03), Color(0.9, 0.72, 0.25)) # necklace pendant
+		# Phone in front (sheet: she's looking at her phone)
+		_box(model, Vector3(0, 1.18 * s, 0.3 * s), Vector3(0.16, 0.26, 0.04), Color(0.12, 0.13, 0.16))
+		_box(model, Vector3(0, 1.18 * s, 0.325 * s), Vector3(0.13, 0.22, 0.015), Color(0.55, 0.75, 0.9)) # phone screen glow
+		# Cat-face crossbody bag (sheet design): strap + ears + face
+		var strap2 := _box(model, Vector3(-0.08 * s, 1.3 * s, 0.2 * s), Vector3(0.07, 0.6 * s, 0.035), Color(0.6, 0.45, 0.3))
+		strap2.rotation_degrees = Vector3(0, 0, -35)
+		_box(model, Vector3(0.34 * s, 1.02 * s, 0.16 * s), Vector3(0.26, 0.26, 0.1), Color(0.88, 0.75, 0.57))
+		for ex3 in [-0.08, 0.08]:
+			_box(model, Vector3((0.34 + ex3) * s, 1.17 * s, 0.17 * s), Vector3(0.07, 0.08, 0.05), Color(0.88, 0.75, 0.57)) # bag ears
+			_sphere(model, Vector3((0.34 + ex3 * 0.7) * s, 1.05 * s, 0.22 * s), Vector3(0.02, 0.028, 0.012), Color(0.2, 0.15, 0.1)) # bag eyes
+		_sphere(model, Vector3(0.34 * s, 1.0 * s, 0.22 * s), Vector3(0.025, 0.018, 0.012), Color(0.95, 0.5, 0.55)) # bag nose
+		for wx in [-1.0, 1.0]:
+			for wi in range(2):
+				var wh := _box(model, Vector3((0.34 + wx * 0.13) * s, (1.03 - float(wi) * 0.05) * s, 0.225 * s), Vector3(0.11, 0.012, 0.01), Color(0.35, 0.28, 0.2))
+				wh.rotation_degrees = Vector3(0, 0, wx * (8.0 + float(wi) * 7.0))
+	# ---- Arms: tapered lofts + shaped hands ----
+	arm_l = _build_arm(model, -0.36 * s, s, top_col, npc_type == "kid")
+	arm_r = _build_arm(model, 0.36 * s, s, top_col, npc_type == "kid")
 	hand_r_mi = last_hand_mi
 	arm_l.rotation.z = 0.1
 	arm_r.rotation.z = -0.1
@@ -332,24 +660,33 @@ func _build_model() -> void:
 	_sphere(treat_mi, Vector3(0.3, -0.7, 0.2), Vector3(0.2, 0.3, 0.2), Color(0.3, 0.18, 0.1)) # choc chips (children: they hide with the treat)
 	_sphere(treat_mi, Vector3(-0.4, -0.7, -0.1), Vector3(0.18, 0.3, 0.18), Color(0.3, 0.18, 0.1))
 	treat_mi.visible = false
-	# Head
+	if npc_type == "poundworker":
+		_build_net(s) # POUND VAN: his catch net rides in his right hand
+	# ---- Head: ONE lofted shape — jaw, cheeks and crown in a
+	# single surface, no sphere-with-bits-glued-on. ----
 	head_node = Node3D.new()
 	head_node.position = Vector3(0, 1.72 * s, 0)
 	model.add_child(head_node)
-	var head_mi := _sphere(head_node, Vector3.ZERO, Vector3(0.50 * s, 0.53 * s, 0.47 * s), SKIN)
-	head_mi.material_override = _mat_skin(SKIN)
-	for esx in [-1.0, 1.0]: # v0.9: ears
-		var ear_mi := _sphere(head_node, Vector3(esx * 0.245 * s, -0.01, 0), Vector3(0.07 * s, 0.095 * s, 0.05 * s), SKIN)
-		ear_mi.material_override = _mat_skin(SKIN)
-	for sx in [-0.08, 0.08]:
-		# v1.0 step 2: REAL eyes — a white sclera ball with a brown
-		# iris and a black pupil riding on it as children, so the
-		# expression system (which scales eye_l_mi/eye_r_mi) squints
-		# the whole eye at once. v0.9's single dark blob read as a
-		# hole in the face at any distance.
-		var eye_mi := _sphere(head_node, Vector3(sx * s, 0.03, 0.225 * s), Vector3(0.078, 0.098, 0.04), Color(0.97, 0.96, 0.94))
+	_loft(head_node, [
+		[Vector3(0, -0.265 * s, 0), 0.072 * s, 0.066 * s],
+		[Vector3(0, -0.20 * s, 0), 0.152 * s, 0.140 * s],
+		[Vector3(0, -0.12 * s, 0), 0.196 * s, 0.180 * s],
+		[Vector3(0, -0.02 * s, 0), 0.226 * s, 0.202 * s],
+		[Vector3(0, 0.07 * s, 0), 0.229 * s, 0.205 * s],
+		[Vector3(0, 0.15 * s, 0), 0.212 * s, 0.190 * s],
+		[Vector3(0, 0.22 * s, 0), 0.168 * s, 0.150 * s],
+		[Vector3(0, 0.26 * s, 0), 0.095 * s, 0.085 * s]], _mat_skin(skin_col), 14)
+	for esx in [-1.0, 1.0]: # ears
+		var ear_mi := _sphere(head_node, Vector3(esx * 0.222 * s, -0.01, 0), Vector3(0.062 * s, 0.09 * s, 0.044 * s), skin_col)
+		ear_mi.material_override = _mat_skin(skin_col)
+	# Eyes: white sclera + iris + pupil + sparkle, as before — but
+	# now seated on the shaped face, with ONE base scale the
+	# expression system returns to (the old code's resets used a
+	# different, asymmetric scale and the eyes drifted).
+	for sx in [-0.082, 0.082]:
+		var eye_mi := _sphere(head_node, Vector3(sx * s, 0.03, 0.208 * s), eye_base_scale, Color(0.97, 0.96, 0.94))
 		eye_mi.material_override = _mat(Color(0.97, 0.96, 0.94), 0.3)
-		var iris_mi := _sphere(eye_mi, Vector3(0, 0, 0.6), Vector3(0.6, 0.64, 0.5), Color(0.35, 0.22, 0.12))
+		var iris_mi := _sphere(eye_mi, Vector3(0, 0, 0.6), Vector3(0.58, 0.62, 0.5), Color(0.35, 0.22, 0.12))
 		iris_mi.material_override = _mat(Color(0.35, 0.22, 0.12), 0.2)
 		_sphere(iris_mi, Vector3(0, 0, 0.55), Vector3(0.55, 0.58, 0.4), Color(0.05, 0.04, 0.03)) # pupil
 		_sphere(eye_mi, Vector3(0.3, 0.32, 0.7), Vector3(0.2, 0.2, 0.2), Color.WHITE) # sparkle
@@ -357,143 +694,122 @@ func _build_model() -> void:
 			eye_l_mi = eye_mi
 		else:
 			eye_r_mi = eye_mi
-		var brow := _box(head_node, Vector3(sx * s, 0.135 * s, 0.2 * s), Vector3(0.095, 0.026, 0.02), HAIR_BROWN) # eyebrows (joy/sad move these)
+		# Brows: soft bars in the person's own hair colour.
+		var brow := _sphere(head_node, Vector3(sx * s, 0.138 * s, 0.196 * s), Vector3(0.108, 0.031, 0.026), hair_col_v)
+		brow.material_override = _mat(hair_col_v, 0.9)
 		if sx < 0.0:
 			brow_l = brow
 			brow_base_l = brow.position
 		else:
 			brow_r = brow
 			brow_base_r = brow.position
-	var nose_mi := _sphere(head_node, Vector3(0, -0.04, 0.225 * s), Vector3(0.045, 0.05, 0.03), Color(0.93, 0.68, 0.55)) # nose
-	nose_mi.material_override = _mat_skin(Color(0.93, 0.68, 0.55))
+	var nose_mi := _sphere(head_node, Vector3(0, -0.035, 0.206 * s), Vector3(0.05, 0.058, 0.036), skin_col)
+	nose_mi.material_override = _mat_skin(skin_col.lerp(Color(0.92, 0.52, 0.42), 0.28))
 	for sx in [-1.0, 1.0]:
-		var cheek := _sphere(head_node, Vector3(sx * 0.16 * s, -0.08 * s, 0.185 * s), Vector3(0.07, 0.045, 0.03), Color(0.97, 0.62, 0.58)) # rosy cheeks
+		var cheek := _sphere(head_node, Vector3(sx * 0.155 * s, -0.075 * s, 0.176 * s), cheek_base_scale, Color(0.97, 0.60, 0.56))
+		cheek.material_override = _mat(Color(0.97, 0.60, 0.56), 0.8)
 		if sx < 0.0:
 			cheek_l_mi = cheek
 			cheek_base_l = cheek.position
 		else:
 			cheek_r_mi = cheek
 			cheek_base_r = cheek.position
-	mouth_mi = _sphere(head_node, Vector3(0, -0.13 * s, 0.19 * s), mouth_base_scale, Color(0.7, 0.35, 0.3)) # smile-ish mouth
-	if extra == "bun":
-		_sphere(head_node, Vector3(0, 0.16 * s, -0.05), Vector3(0.52 * s, 0.36 * s, 0.49 * s), hair_col) # hair cap
-		_sphere(head_node, Vector3(0, 0.34 * s, -0.08), Vector3(0.24, 0.22, 0.24), hair_col) # bun
-		_sphere(model, Vector3(0, 1.44 * s, 0.2 * s), Vector3(0.045, 0.045, 0.03), Color(0.9, 0.72, 0.25)) # necklace pendant
-		# Phone in front (sheet: she's looking at her phone)
-		_box(model, Vector3(0, 1.18 * s, 0.3 * s), Vector3(0.16, 0.26, 0.04), Color(0.12, 0.13, 0.16))
-		# Cat-face crossbody bag (sheet design): strap + ears + face
-		var strap2 := _box(model, Vector3(-0.08 * s, 1.3 * s, 0.2 * s), Vector3(0.07, 0.6 * s, 0.035), Color(0.6, 0.45, 0.3))
-		strap2.rotation_degrees = Vector3(0, 0, -35)
-		_box(model, Vector3(0.34 * s, 1.02 * s, 0.16 * s), Vector3(0.26, 0.26, 0.1), Color(0.88, 0.75, 0.57))
-		for ex3 in [-0.08, 0.08]:
-			_box(model, Vector3((0.34 + ex3) * s, 1.17 * s, 0.17 * s), Vector3(0.07, 0.08, 0.05), Color(0.88, 0.75, 0.57)) # bag ears
-			_sphere(model, Vector3((0.34 + ex3 * 0.7) * s, 1.05 * s, 0.22 * s), Vector3(0.02, 0.028, 0.012), Color(0.2, 0.15, 0.1)) # bag eyes
-		_sphere(model, Vector3(0.34 * s, 1.0 * s, 0.22 * s), Vector3(0.025, 0.018, 0.012), Color(0.95, 0.5, 0.55)) # bag nose
-	elif extra == "messy":
-		for i in range(7):
-			var spike := _cyl(head_node, Vector3(-0.19 + float(i) * 0.065, 0.27 * s, 0), 0.01, 0.05, 0.22, hair_col)
-			spike.rotation_degrees = Vector3(randf_range(-18, 18), 0, randf_range(-18, 18))
-	elif extra == "apron_cap":
-		_cyl(head_node, Vector3(0, 0.2 * s, 0), 0.24 * s, 0.25 * s, 0.1, Color(0.45, 0.32, 0.18)) # flat cap
-		_box(head_node, Vector3(0, 0.16 * s, 0.22 * s), Vector3(0.3, 0.04, 0.16), Color(0.45, 0.32, 0.18))
-	else:
-		_sphere(head_node, Vector3(0, 0.17 * s, -0.03), Vector3(0.52 * s, 0.32 * s, 0.49 * s), hair_col)
-	# v0.9 HAIR / OUTFIT VARIANTS for the extra neighbours
+	_build_mouths(s)
+	# ---- Hair: a shaped dome seated back on the head (its front
+	# edge dips into the head, so the hairline is clean), plus the
+	# style pieces per type / variant. ----
+	var hair_mat: Material = _mat(hair_col_v, 0.95)
+	var dome: Array = [
+		[Vector3(0, 0.055 * s, -0.030 * s), 0.238 * s, 0.215 * s],
+		[Vector3(0, 0.125 * s, -0.032 * s), 0.234 * s, 0.212 * s],
+		[Vector3(0, 0.20 * s, -0.028 * s), 0.205 * s, 0.188 * s],
+		[Vector3(0, 0.265 * s, -0.018 * s), 0.150 * s, 0.135 * s],
+		[Vector3(0, 0.30 * s, -0.008 * s), 0.055 * s, 0.05 * s]]
 	if outfit_idx > 0 and npc_type != "shopkeeper":
 		match outfit_idx % 3:
 			1: # baseball cap
-				_cyl(head_node, Vector3(0, 0.21 * s, 0), 0.26 * s, 0.27 * s, 0.1 * s, top_col.darkened(0.15))
-				_box(head_node, Vector3(0, 0.17 * s, 0.3 * s), Vector3(0.34 * s, 0.035, 0.22 * s), top_col.darkened(0.15))
-			2: # ponytail + long back hair
-				_sphere(head_node, Vector3(0, 0.05, -0.24 * s), Vector3(0.3 * s, 0.42 * s, 0.18 * s), hair_col)
-				_sphere(head_node, Vector3(0, 0.3 * s, -0.16 * s), Vector3(0.16, 0.14, 0.16), hair_col)
-				_cyl(head_node, Vector3(0, -0.05, -0.3 * s), 0.07, 0.05, 0.5 * s, hair_col)
-			_: # curly puffs
+				_loft(head_node, dome, _mat(top_col.darkened(0.15), 0.9), 14)
+				var brim := _cyl(head_node, Vector3(0, 0.135 * s, 0.09 * s), 0.20 * s, 0.20 * s, 0.028, top_col.darkened(0.15))
+				brim.scale = Vector3(1.1, 1, 1.45)
+			2: # ponytail
+				_loft(head_node, dome, hair_mat, 14)
+				_sphere(head_node, Vector3(0, 0.26 * s, -0.17 * s), Vector3(0.15, 0.13, 0.15), hair_col_v)
+				_loft(head_node, [
+					[Vector3(0, 0.24 * s, -0.20 * s), 0.082 * s, 0.082 * s],
+					[Vector3(0, 0.02 * s, -0.245 * s), 0.066 * s, 0.066 * s],
+					[Vector3(0, -0.24 * s, -0.26 * s), 0.045 * s, 0.045 * s]], hair_mat, 10)
+			_: # curly puffs over a low dome
+				_loft(head_node, dome, hair_mat, 14)
 				for ci in range(6):
 					var ca: float = float(ci) * 1.05
-					_sphere(head_node, Vector3(cos(ca) * 0.13 * s, 0.24 * s + 0.04 * sin(float(ci) * 2.3), sin(ca) * 0.13 * s - 0.02), Vector3(0.13, 0.12, 0.13), hair_col)
+					_sphere(head_node, Vector3(cos(ca) * 0.13 * s, 0.24 * s + 0.04 * sin(float(ci) * 2.3), sin(ca) * 0.13 * s - 0.02), Vector3(0.13, 0.12, 0.13), hair_col_v)
+	elif extra == "apron_cap":
+		# The shopkeeper's flat cap + brim.
+		_loft(head_node, [
+			[Vector3(0, 0.10 * s, -0.01), 0.248 * s, 0.228 * s],
+			[Vector3(0, 0.155 * s, -0.01), 0.242 * s, 0.222 * s],
+			[Vector3(0, 0.205 * s, -0.01), 0.195 * s, 0.180 * s]], _mat(Color(0.45, 0.32, 0.18), 0.9), 14)
+		var brim2 := _cyl(head_node, Vector3(0, 0.135 * s, 0.085 * s), 0.205 * s, 0.205 * s, 0.028, Color(0.45, 0.32, 0.18))
+		brim2.scale = Vector3(1.1, 1, 1.45)
+		# Curved moustache halves under the nose
+		for ex in [-0.08, 0.08]:
+			var mo := _sphere(head_node, Vector3(ex * 0.55 * s, -0.052 * s, 0.20 * s), Vector3(0.115, 0.038, 0.03), Color(0.3, 0.2, 0.12))
+			mo.rotation_degrees = Vector3(0, 0, ex * -160.0)
+	elif extra == "poundcap":
+		# The pound worker's white uniform cap + brim + teal badge.
+		_loft(head_node, [
+			[Vector3(0, 0.10 * s, -0.01), 0.248 * s, 0.228 * s],
+			[Vector3(0, 0.155 * s, -0.01), 0.242 * s, 0.222 * s],
+			[Vector3(0, 0.205 * s, -0.01), 0.195 * s, 0.180 * s]], _mat_fabric(Color(0.96, 0.96, 0.94)), 14)
+		var pbrim := _cyl(head_node, Vector3(0, 0.135 * s, 0.085 * s), 0.205 * s, 0.205 * s, 0.028, Color(0.96, 0.96, 0.94))
+		pbrim.scale = Vector3(1.1, 1, 1.45)
+		pbrim.material_override = _mat_fabric(Color(0.96, 0.96, 0.94))
+		var pbadge := _sphere(head_node, Vector3(0, 0.155 * s, 0.205 * s), Vector3(0.05, 0.05, 0.02), Color(0.15, 0.55, 0.6))
+		pbadge.material_override = _mat(Color(0.15, 0.55, 0.6), 0.5)
+	elif extra == "bun":
+		_loft(head_node, dome, hair_mat, 14)
+		_sphere(head_node, Vector3(0, 0.205 * s, 0.148 * s), Vector3(0.40, 0.125, 0.15), hair_col_v) # soft fringe
+		_sphere(head_node, Vector3(-0.17 * s, 0.02, -0.02), Vector3(0.15, 0.28, 0.28), hair_col_v) # side volume
+		_sphere(head_node, Vector3(0.17 * s, 0.02, -0.02), Vector3(0.15, 0.28, 0.28), hair_col_v)
+		_sphere(head_node, Vector3(0, 0.335 * s, -0.09 * s), Vector3(0.21, 0.19, 0.21), hair_col_v) # the bun
+	elif extra == "messy":
+		_loft(head_node, dome, hair_mat, 14)
+		for i in range(3):
+			_sphere(head_node, Vector3((-0.16 + float(i) * 0.16) * s, 0.25 * s, -0.05), Vector3(0.13, 0.13, 0.13), hair_col_v) # tufts
+		for fx in [-0.14, -0.1, 0.1, 0.14]:
+			_sphere(head_node, Vector3(fx * s, -0.06 * s, 0.198 * s), Vector3(0.014, 0.014, 0.01), Color(0.72, 0.5, 0.35)) # freckles
+	else:
+		_loft(head_node, dome, hair_mat, 14)
+		if npc_type == "dogwalker":
+			for hx in [-0.13, 0.0, 0.13]:
+				_sphere(head_node, Vector3(hx * s, 0.235 * s, -0.02), Vector3(0.17, 0.15, 0.3), hair_col_v) # wavy top
 	if outfit_idx == 2 and npc_type == "woman":
-		# a swishy skirt over the jeans
-		var skirt := _cyl(model, Vector3(0, 0.78 * s, 0), 0.3 * s, 0.5 * s, 0.42 * s, top_col.darkened(0.05))
-		skirt.material_override = _mat_fabric(top_col.darkened(0.05).lightened(0.3))
+		# a swishy skirt over the jeans: a flared loft, not a cone
+		_loft(model, [
+			[Vector3(0, 0.99 * s, 0), 0.275 * s, 0.205 * s],
+			[Vector3(0, 0.86 * s, 0), 0.335 * s, 0.255 * s],
+			[Vector3(0, 0.70 * s, 0), 0.405 * s, 0.305 * s],
+			[Vector3(0, 0.58 * s, 0), 0.445 * s, 0.335 * s]], _mat_fabric(top_col.darkened(0.05).lightened(0.3)), 12)
 	if outfit_idx == 1 and npc_type == "pedestrian":
 		# backpack with a bedroll
 		_box(model, Vector3(0, 1.25 * s, -0.3 * s), Vector3(0.44 * s, 0.56 * s, 0.2), Color(0.8, 0.35, 0.25))
 		_cyl(model, Vector3(0, 1.6 * s, -0.3 * s), 0.09, 0.09, 0.46 * s, Color(0.35, 0.55, 0.7)).rotation_degrees = Vector3(0, 0, 90)
 	if npc_type == "dogwalker":
 		_build_dog()
-	if npc_type == "woman" or npc_type == "pedestrian":
-		hold_pose = true
-
-	# ---- v0.6 sheet-matched extras ----
-	if npc_type == "woman":
-		_sphere(head_node, Vector3(0, 0.235 * s, 0.13 * s), Vector3(0.42, 0.15, 0.2), hair_col) # soft fringe band
-		# fuller hair: side volume + bigger bun; sweater hem; jeans cuffs
-		_sphere(head_node, Vector3(-0.17 * s, 0.02, -0.02), Vector3(0.16, 0.3, 0.3), hair_col)
-		_sphere(head_node, Vector3(0.17 * s, 0.02, -0.02), Vector3(0.16, 0.3, 0.3), hair_col)
-		_sphere(head_node, Vector3(0, 0.37 * s, -0.08), Vector3(0.23, 0.21, 0.23), hair_col)
-		_box(model, Vector3(0, 0.92 * s, 0), Vector3(0.52 * s, 0.13, 0.4 * s), Color(0.88, 0.81, 0.68))
-		for cx in [-0.14, 0.14]:
-			_cyl(model, Vector3(cx * s, 0.12 * s, 0), 0.105 * s, 0.105 * s, 0.13, Color(0.55, 0.65, 0.82)) # rolled jean cuffs
-		# cat-face bag: whiskers to go with the existing ears/eyes/nose
-		for wx in [-1.0, 1.0]:
-			for wi in range(2):
-				var wh := _box(model, Vector3((0.34 + wx * 0.13) * s, (1.03 - float(wi) * 0.05) * s, 0.225 * s), Vector3(0.11, 0.012, 0.01), Color(0.35, 0.28, 0.2))
-				wh.rotation_degrees = Vector3(0, 0, wx * (8.0 + float(wi) * 7.0))
-		_box(model, Vector3(0, 1.18 * s, 0.325 * s), Vector3(0.13, 0.22, 0.015), Color(0.55, 0.75, 0.9)) # phone screen glow
-	elif npc_type == "kid":
-		# navy patched shorts over skin legs + teal sneakers
-		for cx in [-0.13, 0.13]:
-			_box(model, Vector3(cx * s, 0.72 * s, 0), Vector3(0.23 * s, 0.3 * s, 0.25 * s), Color(0.16, 0.24, 0.48))
-			_cyl(model, Vector3(cx * s, 0.42 * s, 0), 0.075 * s, 0.07 * s, 0.34 * s, SKIN)
-			_box(model, Vector3(cx * s, 0.05 * s, 0.05), Vector3(0.19, 0.09, 0.3), Color(0.15, 0.65, 0.68)) # teal sneaker
-			_box(model, Vector3(cx * s, 0.005 * s, 0.05), Vector3(0.2, 0.03, 0.31), Color(0.95, 0.95, 0.95)) # white sole
-		_box(model, Vector3(-0.13 * s, 0.7 * s, 0.14 * s), Vector3(0.09, 0.09, 0.02), Color(0.95, 0.55, 0.15)) # orange patch
-		_box(model, Vector3(0.14 * s, 0.76 * s, 0.14 * s), Vector3(0.08, 0.08, 0.02), Color(0.3, 0.75, 0.5)) # green patch
-		_box(model, Vector3(0.24 * s, 1.2 * s, 0.16 * s), Vector3(0.13 * s, 0.4 * s, 0.05), Color(0.2, 0.65, 0.7)) # teal side panel
-		_box(model, Vector3(0, -0.13 * s + 1.72 * s, 0.235 * s), Vector3(0.16, 0.045, 0.03), Color(0.55, 0.25, 0.2)) # big grin
-		for fx in [-0.14, -0.1, 0.1, 0.14]:
-			_sphere(head_node, Vector3(fx * s, -0.06 * s, 0.2 * s), Vector3(0.014, 0.014, 0.01), Color(0.72, 0.5, 0.35)) # freckles
-		for i in range(3):
-			var tuft := _sphere(head_node, Vector3((-0.16 + float(i) * 0.16) * s, 0.24 * s, -0.05), Vector3(0.13, 0.13, 0.13), hair_col)
-			tuft.position.y += 0.02
-	elif npc_type == "dogwalker":
-		# white tee under an open olive overshirt
-		_box(model, Vector3(0, 1.27 * s, 0.185 * s), Vector3(0.3 * s, 0.44 * s, 0.05), Color(0.96, 0.95, 0.92))
-		for px in [-0.21, 0.21]:
-			_box(model, Vector3(px * s, 1.26 * s, 0.17 * s), Vector3(0.15 * s, 0.5 * s, 0.06), Color(0.38, 0.45, 0.3))
-		# wavy hair: bumpy top
-		for hx in [-0.13, 0.0, 0.13]:
-			_sphere(head_node, Vector3(hx * s, 0.22 * s, -0.02), Vector3(0.17, 0.15, 0.3), hair_col)
-		_box(model, Vector3(0.34 * s, 1.16 * s, 0.12 * s), Vector3(0.32, 0.15, 0.15), Color(0.48, 0.32, 0.19)) # bag flap
 		if dog_model:
 			_box(dog_model, Vector3(0, 0.38, 0.55), Vector3(0.09, 0.04, 0.1), Color(0.95, 0.5, 0.55)) # dog tongue
 			_sphere(dog_model, Vector3(0.1, 0.3, -0.3), Vector3(0.2, 0.18, 0.2), Color(0.97, 0.95, 0.9)) # extra fluff
 			_sphere(dog_model, Vector3(-0.12, 0.52, 0.05), Vector3(0.2, 0.18, 0.2), Color(0.97, 0.95, 0.9))
-	elif npc_type == "shopkeeper":
-		# rounder belly under the apron, longer apron, bigger cat emblem
-		_sphere(model, Vector3(0, 1.02 * s, 0.06), Vector3(0.56 * s, 0.5 * s, 0.38 * s), top_col)
-		_box(model, Vector3(0, 0.8 * s, 0.2 * s), Vector3(0.42 * s, 0.34 * s, 0.05), Color(0.2, 0.45, 0.3))
-		_sphere(model, Vector3(0, 1.3 * s, 0.245 * s), Vector3(0.15, 0.14, 0.035), Color(0.96, 0.9, 0.75)) # emblem face
-		for ex in [-0.08, 0.08]:
-			_box(model, Vector3(ex * s, 1.44 * s, 0.24 * s), Vector3(0.07, 0.08, 0.03), Color(0.96, 0.9, 0.75)) # emblem ears
-			_sphere(model, Vector3(ex * 0.7 * s, 1.32 * s, 0.28 * s), Vector3(0.022, 0.03, 0.012), Color(0.15, 0.12, 0.1)) # emblem eyes
-			var mo := _box(head_node, Vector3(ex * 0.55 * s, -0.045 * s, 0.245 * s), Vector3(0.12, 0.04, 0.035), Color(0.3, 0.2, 0.12))
-			mo.rotation_degrees = Vector3(0, 0, ex * -18.0) # curved moustache halves
+	if npc_type == "woman" or npc_type == "pedestrian":
+		hold_pose = true
+
 	# Labels (billboarded, always face the camera)
-	name_label = Label3D.new()
-	name_label.text = display_name
-	name_label.font_size = 36
-	# v1.2 READABILITY (Michael's v1.0.4 playtest): at the cat's real
-	# scale the overhead labels were too small to read on his phone.
-	# pixel_size is set EXPLICITLY now: name 0.27m tall, the notice /
-	# GRAB bar (the gameplay-critical one) 0.40m with a ~2.2m bar.
-	name_label.pixel_size = 0.0075
-	name_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	name_label.position = Vector3(0, body_h + 0.55, 0)
-	name_label.modulate = Color(1, 1, 1, 0.95)
-	name_label.outline_size = 8
-	add_child(name_label)
+	# NO NAME TITLES (Michael, 2026-11-17): the floating display-name
+	# title over every person's head is gone — he asked for them
+	# removed. name_label stays declared (null) because the distance
+	# visibility toggles and some test harnesses reference it behind
+	# null checks. What remains overhead is gameplay only: the notice
+	# / GRAB bar below and the speech bubble.
 	notice_label = Label3D.new()
 	notice_label.text = ""
 	notice_label.font_size = 44
@@ -515,6 +831,41 @@ func _build_model() -> void:
 	bubble_label.outline_modulate = Color(0.35, 0.2, 0.1)
 	bubble_label.visible = false
 	add_child(bubble_label)
+
+
+# POUND VAN: the animal-control catch net — a pole continuing the
+# right arm's line past the hand, a hoop, and a soft translucent
+# mesh bag. Everything hangs off a root on arm_r, so the net
+# swings as he walks, spreads with the RUN tell and folds with
+# the capture cradle all by itself. Main hides it while he is
+# carrying the cat / hosting the escape room (set_net_visible).
+func _build_net(s: float) -> void:
+	net_root = Node3D.new()
+	arm_r.add_child(net_root)
+	var pole := _cyl(net_root, Vector3(0, -1.06 * s, 0.01), 0.021 * s, 0.021 * s, 0.85 * s, Color(0.55, 0.42, 0.25))
+	pole.material_override = _mat(Color(0.55, 0.42, 0.25), 0.7)
+	var hoop := MeshInstance3D.new()
+	var tm := TorusMesh.new()
+	tm.inner_radius = 0.295 * s
+	tm.outer_radius = 0.33 * s
+	tm.rings = 20
+	tm.ring_segments = 8
+	hoop.mesh = tm
+	hoop.position = Vector3(0, -1.52 * s, 0.01)
+	hoop.rotation_degrees = Vector3(90, 0, 0) # hoop plane faces forward, like a carried net
+	hoop.material_override = _mat(Color(0.6, 0.62, 0.65), 0.4)
+	net_root.add_child(hoop)
+	var bag := _sphere(net_root, Vector3(0, -1.60 * s, -0.10 * s), Vector3(0.56 * s, 0.66 * s, 0.56 * s), Color(0.85, 0.88, 0.8))
+	var bm := StandardMaterial3D.new()
+	bm.albedo_color = Color(0.85, 0.88, 0.8, 0.45)
+	bm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	bm.roughness = 0.9
+	bm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	bag.material_override = bm
+
+func set_net_visible(v: bool) -> void:
+	if net_root:
+		net_root.visible = v
 
 func _build_dog() -> void:
 	# Leash: thin dark line from the walker's hand down to the dog's collar
@@ -554,7 +905,7 @@ func _build_dog() -> void:
 	dog_tail.rotation_degrees = Vector3(-35, 0, 0)
 
 func _pick_wander_target() -> void:
-	wander_target = Vector3(randf_range(-112.0, 112.0), 0, randf_range(-84.0, 84.0))
+	wander_target = Vector3(randf_range(-112.0, 366.0), 0, randf_range(-84.0, 84.0)) # MAP DOUBLING: wander range covers the east district too
 	wander_wait = randf_range(0.0, 1.5)
 
 func _physics_process(delta: float) -> void:
@@ -614,7 +965,7 @@ func _physics_process(delta: float) -> void:
 		bubble_lock_t -= delta
 	if expr_timer > 0.0:
 		expr_timer -= delta
-		if expr_timer <= 0.0 and expression == "sad":
+		if expr_timer <= 0.0 and (expression == "sad" or expression == "worried"):
 			set_expression("neutral")
 	# v0.9: bend marker decays as before; points no longer ride a
 	# timer — they fire inside the petting sequence, on contact.
@@ -661,6 +1012,7 @@ func _physics_process(delta: float) -> void:
 		_update_labels()
 		if tell_t <= 0.0:
 			mode = "chase"
+			set_expression("determined") # v1.4: focused, never angry
 			if main_ref and main_ref.has_method("on_chase_started"):
 				main_ref.on_chase_started(self)
 		return
@@ -771,7 +1123,7 @@ func _physics_process(delta: float) -> void:
 	else:
 		velocity.y = -0.5
 	move_and_slide()
-	global_position.x = clamp(global_position.x, -117.0, 117.0)
+	global_position.x = clamp(global_position.x, -117.0, 369.0 if wide_bounds else 117.0)
 	global_position.z = clamp(global_position.z, -89.0, 89.0)
 	_animate(delta, Vector2(velocity.x, velocity.z).length())
 	_update_labels()
@@ -783,12 +1135,18 @@ func _animate(delta: float, speed2d: float) -> void:
 		var swing: float = sin(walk_phase) * 0.55
 		if leg_l: leg_l.rotation.x = swing
 		if leg_r: leg_r.rotation.x = -swing
+		# v1.4: the shin folds as its leg swings back — a real
+		# knee bend in the walk cycle, not a swinging plank.
+		if shin_l: shin_l.rotation.x = clampf(swing, 0.0, 1.0) * 0.55
+		if shin_r: shin_r.rotation.x = clampf(-swing, 0.0, 1.0) * 0.55
 		if arm_l: arm_l.rotation.x = -swing * 0.8
 		if arm_r: arm_r.rotation.x = swing * 0.8
 		if model: model.position.y = abs(sin(walk_phase)) * 0.04
 	else:
 		if leg_l: leg_l.rotation.x = lerp(leg_l.rotation.x, 0.0, min(1.0, 10.0 * delta))
 		if leg_r: leg_r.rotation.x = lerp(leg_r.rotation.x, 0.0, min(1.0, 10.0 * delta))
+		if shin_l: shin_l.rotation.x = lerp(shin_l.rotation.x, 0.0, min(1.0, 10.0 * delta))
+		if shin_r: shin_r.rotation.x = lerp(shin_r.rotation.x, 0.0, min(1.0, 10.0 * delta))
 		if arm_l: arm_l.rotation.x = lerp(arm_l.rotation.x, 0.0, min(1.0, 10.0 * delta))
 		if arm_r: arm_r.rotation.x = lerp(arm_r.rotation.x, 0.0, min(1.0, 10.0 * delta))
 		if model: model.position.y = sin(t * 2.0) * 0.012 # idle breathing bob
@@ -811,24 +1169,33 @@ func _animate(delta: float, speed2d: float) -> void:
 			arm_r.rotation.x = -0.7
 			arm_r.rotation.z = -1.15
 	elif model:
-		# v0.9 KNEEL-DOWN (replaces the v0.8 bend): the whole body
-		# drops to cat level — knees fold under, torso leans in, head
-		# tips down to the cat. bend_a envelopes in/out with the
+		# v1.4 ONE-KNEE KNEEL (Michael's direction, 2026-11-17:
+		# "bend at the knee, not fold in half"). The descent is a
+		# HIP DROP driven by the two-segment legs: left foot planted
+		# forward (thigh near-horizontal, shin vertical), right
+		# knee DOWN on the ground (thigh angled down-back, shin
+		# folded flat behind it). The torso stays near-upright —
+		# only a slight warm lean (0.10 rad) — and the old Y-squash
+		# is gone entirely. bend_a envelopes in/out with the
 		# interaction sequence, so it never snaps.
 		var kneeling: bool = interact_state == "bend" or interact_state == "pet" or interact_state == "treat"
 		bend_a = move_toward(bend_a, 1.0 if kneeling else 0.0, delta * 3.4)
-		model.scale.y = lerpf(model.scale.y, 1.0 - 0.15 * bend_a, min(1.0, 10.0 * delta))
-		model.rotation.x = lerpf(model.rotation.x, 0.34 * bend_a, min(1.0, 10.0 * delta))
+		model.scale.y = lerpf(model.scale.y, 1.0, min(1.0, 10.0 * delta))
+		model.rotation.x = lerpf(model.rotation.x, 0.10 * bend_a, min(1.0, 10.0 * delta))
 		# position.y is re-based by the walk/idle branch every frame,
 		# so the kneel drop is applied additively from bend_a.
-		model.position.y += -0.3 * mscale * bend_a
+		model.position.y += -0.40 * mscale * bend_a
 		if bend_a > 0.03:
 			if leg_l:
-				leg_l.rotation.x = lerpf(leg_l.rotation.x, 1.9 * bend_a, min(1.0, 14.0 * delta))
+				leg_l.rotation.x = lerpf(leg_l.rotation.x, -1.45 * bend_a, min(1.0, 14.0 * delta))
+			if shin_l:
+				shin_l.rotation.x = lerpf(shin_l.rotation.x, 1.40 * bend_a, min(1.0, 14.0 * delta))
 			if leg_r:
-				leg_r.rotation.x = lerpf(leg_r.rotation.x, 1.2 * bend_a, min(1.0, 14.0 * delta))
+				leg_r.rotation.x = lerpf(leg_r.rotation.x, 0.53 * bend_a, min(1.0, 14.0 * delta))
+			if shin_r:
+				shin_r.rotation.x = lerpf(shin_r.rotation.x, 0.99 * bend_a, min(1.0, 14.0 * delta))
 			if head_node:
-				head_node.rotation.x = lerpf(head_node.rotation.x, 0.3 * bend_a, min(1.0, 8.0 * delta))
+				head_node.rotation.x = lerpf(head_node.rotation.x, 0.28 * bend_a, min(1.0, 8.0 * delta))
 			if interact_state == "bend" or interact_state == "rise":
 				# both arms reaching down toward the cat while folding
 				if arm_l:
@@ -844,7 +1211,7 @@ func _animate(delta: float, speed2d: float) -> void:
 		if model:
 			var hp: float = clampf(1.0 - joy_hop_t / 0.55, 0.0, 1.0)
 			model.position.y += sin(hp * PI) * 0.13
-	if expression == "joy" and (mode == "chase" or mode == "pursue"):
+	if (expression == "joy" or expression == "determined") and (mode == "chase" or mode == "pursue"):
 		if arm_l:
 			arm_l.rotation.x = lerp(arm_l.rotation.x, -1.05, min(1.0, 8.0 * delta))
 			arm_l.rotation.z = lerp(arm_l.rotation.z, 0.5, min(1.0, 8.0 * delta))
@@ -867,6 +1234,57 @@ func _animate(delta: float, speed2d: float) -> void:
 		if arm_l:
 			arm_l.rotation.x = lerpf(arm_l.rotation.x, -0.85, min(1.0, 10.0 * delta))
 			arm_l.rotation.z = lerpf(arm_l.rotation.z, 0.25, min(1.0, 10.0 * delta))
+	# v1.3 CAPTURE SCOOP: kneel / reach / cradle, applied LAST so it
+	# wins over the walk swing, the chase JOY-reach and everything
+	# else — during the cutscene THIS is what the arms are doing.
+	if scoop_reach_a > 0.001 or scoop_cradle_a > 0.001 or scoop_kneel_a > 0.001:
+		if model:
+			# The petting kneel, cutscene-driven: torso tips, body
+			# drops, knees fold — a crouch, not a whole-body tip-over.
+			model.rotation.x = lerpf(model.rotation.x, 0.34 * scoop_kneel_a, min(1.0, 12.0 * delta))
+			model.position.y += -0.3 * mscale * scoop_kneel_a
+			if scoop_kneel_a > 0.03:
+				if leg_l:
+					leg_l.rotation.x = lerpf(leg_l.rotation.x, 1.9 * scoop_kneel_a, min(1.0, 14.0 * delta))
+				if leg_r:
+					leg_r.rotation.x = lerpf(leg_r.rotation.x, 1.2 * scoop_kneel_a, min(1.0, 14.0 * delta))
+				# v1.4: the scoop keeps its verified single-segment
+				# silhouette — shins held straight while it plays.
+				if shin_l:
+					shin_l.rotation.x = lerpf(shin_l.rotation.x, 0.0, min(1.0, 14.0 * delta))
+				if shin_r:
+					shin_r.rotation.x = lerpf(shin_r.rotation.x, 0.0, min(1.0, 14.0 * delta))
+			if head_node:
+				# Down at the cat while reaching; a soft look-down at
+				# him in her arms once he's cradled.
+				head_node.rotation.x = lerpf(head_node.rotation.x, 0.3 * scoop_kneel_a + 0.16 * scoop_cradle_a, min(1.0, 8.0 * delta))
+		if scoop_reach_a > 0.01 and scoop_cradle_a < 0.6 and player_ref != null:
+			# Both hands come down on either side of the cat's body
+			# and TRACK him as he rises; with lift_k they slide from
+			# his flanks in under his belly — the scoop itself.
+			var cat_pos: Vector3 = player_ref.global_position
+			var cat_right: Vector3 = player_ref.global_transform.basis.x
+			cat_right.y = 0.0
+			cat_right = cat_right.normalized() if cat_right.length() > 0.05 else Vector3.RIGHT
+			var flank: float = lerpf(0.20, 0.12, scoop_lift_k)
+			var hand_h: float = lerpf(0.17, 0.03, scoop_lift_k)
+			_aim_arm(arm_l, cat_pos - cat_right * flank + Vector3(0, hand_h, 0))
+			_aim_arm(arm_r, cat_pos + cat_right * flank + Vector3(0, hand_h, 0))
+		if scoop_cradle_a > 0.001:
+			# Arms folded under the cat, hands meeting beneath him.
+			# The blend weight IS the envelope: at cradle 1 this is an
+			# absolute set every call, so the walk cycle's arm swing
+			# (set earlier in this function on the carry-away call)
+			# can never leak through — she is HOLDING him. (Tuned
+			# after the first proof frames: -0.98 reached too far
+			# forward and a forearm crossed his chest; -0.84 / ±0.60
+			# cups the hands under his belly instead.)
+			if arm_l:
+				arm_l.rotation.x = lerpf(arm_l.rotation.x, -0.84, scoop_cradle_a)
+				arm_l.rotation.z = lerpf(arm_l.rotation.z, 0.60, scoop_cradle_a)
+			if arm_r:
+				arm_r.rotation.x = lerpf(arm_r.rotation.x, -0.84, scoop_cradle_a)
+				arm_r.rotation.z = lerpf(arm_r.rotation.z, -0.60, scoop_cradle_a)
 	# Dog trots + wags beside the dog walker
 	if dog_model:
 		if speed2d > 0.3:
@@ -892,6 +1310,15 @@ func pet_hand_global() -> Vector3:
 	if arm_r != null:
 		return arm_r.to_global(Vector3(0, -0.68 * mscale, 0.03))
 	return global_position + Vector3(0, 1, 0)
+
+func set_carry_pose(reach: float, cradle: float, kneel: float, lift_k: float) -> void:
+	# v1.3: main's capture cutscene feeds the scoop envelopes every
+	# frame (already eased there); _animate applies them. All zeros
+	# releases the pose completely.
+	scoop_reach_a = clampf(reach, 0.0, 1.0)
+	scoop_cradle_a = clampf(cradle, 0.0, 1.0)
+	scoop_kneel_a = clampf(kneel, 0.0, 1.0)
+	scoop_lift_k = clampf(lift_k, 0.0, 1.0)
 
 func _spawn_heart() -> void:
 	var hl := Label3D.new()
@@ -1006,7 +1433,7 @@ func _run_interaction(delta: float, dist: float, to_player: Vector3) -> void:
 	else:
 		velocity.y = -0.5
 	move_and_slide()
-	global_position.x = clamp(global_position.x, -117.0, 117.0)
+	global_position.x = clamp(global_position.x, -117.0, 369.0 if wide_bounds else 117.0)
 	global_position.z = clamp(global_position.z, -89.0, 89.0)
 	_animate(delta, Vector2(velocity.x, velocity.z).length())
 	_update_labels()
@@ -1067,8 +1494,16 @@ func _has_line_of_sight() -> bool:
 		return true
 	var a := Vector2(global_position.x, global_position.z)
 	var b := Vector2(player_ref.global_position.x, player_ref.global_position.z)
+	# MAP DOUBLING perf: with 131 houses (was 41) the full loop got
+	# 3x dearer per brain tick. Exact early-out: a house rect reaches
+	# at most 5.88 from its centre, so a house farther than the
+	# sight-line length + 5.9 from the NPC cannot touch the segment
+	# and is skipped — the result is identical, only cheaper.
+	var seg_len: float = a.distance_to(b)
 	for h in houses_arr:
 		var hp: Vector3 = h["pos"]
+		if Vector2(hp.x, hp.z).distance_to(a) > seg_len + 5.9:
+			continue
 		var rect := Rect2(hp.x - 4.4, hp.z - 3.9, 8.8, 7.8)
 		if rect.has_point(a) or rect.has_point(b):
 			continue
@@ -1100,44 +1535,100 @@ func _segment_hits_rect(a: Vector2, b: Vector2, r: Rect2) -> bool:
 	return true
 
 func set_expression(e: String) -> void:
+	# v1.4 EXPRESSIONS: every call sets EVERY face parameter, so a
+	# face can never stick after an interaction ends. Mouths are
+	# pre-built groups (smile / grin / frown / flat / small smile);
+	# brows, eyes and cheeks pose around them. Readable at the
+	# game's real camera distance, not just in close-up:
+	#   joy        big open grin, brows up, happy eye-squint
+	#   happy      warm smile (greetings, the escape-room host)
+	#   excited    RUN tell — grin, brows high, eyes wide
+	#   determined chase/pursuit — focused brows, small smile,
+	#              never angry
+	#   sad        chase lost — frown, inner brows up, head droop
+	#   worried    host noticing / a toppled prop — frown, inner
+	#              brows up hard, eyes wide
+	#   neutral    flat mouth, level brows (passers-by)
 	expression = e
-	if brow_l == null or mouth_mi == null:
+	if brow_l == null or mouth_root == null:
 		return
+	var brow_dy: float = 0.0
+	var brow_rot_l: float = 0.0
+	var brow_rot_r: float = 0.0
+	var brow_in: float = 0.0 # brows pinch toward the centre by this much
+	var eye_sy: float = 1.0
+	var cheek_dy: float = 0.0
+	var cheek_sc: float = 1.0
+	var mouth: String = "flat"
+	var head_rx: float = 0.0
 	match e:
 		"joy":
-			brow_l.position = brow_base_l + Vector3(0, 0.04, 0)
-			brow_r.position = brow_base_r + Vector3(0, 0.04, 0)
-			brow_l.rotation.z = 0.3
-			brow_r.rotation.z = -0.3
-			mouth_mi.scale = mouth_base_scale * Vector3(1.6, 1.7, 1.0) # BIG delighted smile
-			if eye_l_mi: eye_l_mi.scale = Vector3(0.078, 0.066, 0.032) # happy squint
-			if eye_r_mi: eye_r_mi.scale = Vector3(0.063, 0.056, 0.03)
-			if cheek_l_mi: cheek_l_mi.position = cheek_base_l + Vector3(0, 0.02, 0)
-			if cheek_r_mi: cheek_r_mi.position = cheek_base_r + Vector3(0, 0.02, 0)
-			if head_node: head_node.rotation.x = 0.0
+			mouth = "grin"
+			brow_dy = 0.034
+			brow_rot_l = 0.28
+			brow_rot_r = -0.28
+			eye_sy = 0.6
+			cheek_dy = 0.02
+			cheek_sc = 1.3
 			joy_hop_t = 0.55 # a little hop of delight
+		"happy":
+			mouth = "smile"
+			brow_dy = 0.02
+			brow_rot_l = 0.15
+			brow_rot_r = -0.15
+			eye_sy = 0.82
+			cheek_dy = 0.012
+			cheek_sc = 1.15
+		"excited":
+			mouth = "grin"
+			brow_dy = 0.05
+			brow_rot_l = 0.2
+			brow_rot_r = -0.2
+			eye_sy = 1.18
+			cheek_dy = 0.016
+			cheek_sc = 1.2
+			head_rx = -0.05
+		"determined":
+			mouth = "smile_small"
+			brow_dy = -0.006
+			brow_rot_l = -0.30
+			brow_rot_r = 0.30
+			eye_sy = 0.88
 		"sad":
-			brow_l.position = brow_base_l + Vector3(0, -0.015, 0)
-			brow_r.position = brow_base_r + Vector3(0, -0.015, 0)
-			brow_l.rotation.z = -0.38 # inner ends down: gentle disappointment
-			brow_r.rotation.z = 0.38
-			mouth_mi.scale = mouth_base_scale * Vector3(0.65, 0.6, 1.0)
-			if eye_l_mi: eye_l_mi.scale = Vector3(0.068, 0.088, 0.032)
-			if eye_r_mi: eye_r_mi.scale = Vector3(0.068, 0.088, 0.032)
-			if cheek_l_mi: cheek_l_mi.position = cheek_base_l
-			if cheek_r_mi: cheek_r_mi.position = cheek_base_r
-			if head_node: head_node.rotation.x = 0.16 # head droops a little
+			mouth = "frown"
+			brow_dy = 0.018
+			brow_rot_l = 0.42
+			brow_rot_r = -0.42
+			brow_in = 0.010
+			eye_sy = 0.78
+			head_rx = 0.16 # head droops a little
+		"worried":
+			mouth = "frown"
+			brow_dy = 0.026
+			brow_rot_l = 0.5
+			brow_rot_r = -0.5
+			brow_in = 0.014
+			eye_sy = 1.08
+			head_rx = 0.07
 		_:
-			brow_l.position = brow_base_l
-			brow_r.position = brow_base_r
-			brow_l.rotation.z = 0.0
-			brow_r.rotation.z = 0.0
-			mouth_mi.scale = mouth_base_scale
-			if cheek_l_mi: cheek_l_mi.position = cheek_base_l
-			if cheek_r_mi: cheek_r_mi.position = cheek_base_r
-			if eye_l_mi: eye_l_mi.scale = Vector3(0.068, 0.088, 0.032)
-			if eye_r_mi: eye_r_mi.scale = Vector3(0.068, 0.088, 0.032)
-			if head_node: head_node.rotation.x = 0.0
+			pass # neutral: the defaults above
+	_show_mouth(mouth)
+	brow_l.position = brow_base_l + Vector3(brow_in, brow_dy, 0)
+	brow_r.position = brow_base_r + Vector3(-brow_in, brow_dy, 0)
+	brow_l.rotation.z = brow_rot_l
+	brow_r.rotation.z = brow_rot_r
+	if eye_l_mi:
+		eye_l_mi.scale = eye_base_scale * Vector3(1, eye_sy, 1)
+	if eye_r_mi:
+		eye_r_mi.scale = eye_base_scale * Vector3(1, eye_sy, 1)
+	if cheek_l_mi:
+		cheek_l_mi.position = cheek_base_l + Vector3(0, cheek_dy, 0)
+		cheek_l_mi.scale = cheek_base_scale * cheek_sc
+	if cheek_r_mi:
+		cheek_r_mi.position = cheek_base_r + Vector3(0, cheek_dy, 0)
+		cheek_r_mi.scale = cheek_base_scale * cheek_sc
+	if head_node:
+		head_node.rotation.x = head_rx
 
 func show_bubble(text: String, dur: float = 2.6) -> void:
 	if bubble_label:
@@ -1174,8 +1665,13 @@ func _start_chase() -> void:
 	far_timer = 0.0
 	los_timer = 0.0
 	_spot_cat()
-	set_expression("joy")
-	show_bubble("Here, kitty kitty!", 1.8)
+	set_expression("excited") # v1.4: the RUN tell gets the bright excited face
+	if npc_type == "poundworker":
+		# POUND VAN: his line is a rescue, not a grab — he says it
+		# every time he gets out of the van (Michael, 2026-11-17).
+		show_bubble("There you are! Let's get you home!", 2.2)
+	else:
+		show_bubble("Here, kitty kitty!", 1.8)
 	if main_ref and main_ref.has_method("on_grabber_tell"):
 		main_ref.on_grabber_tell(self)
 
@@ -1236,7 +1732,7 @@ func start_pursuit() -> void:
 	grab_progress = 0.0
 	far_timer = 0.0
 	los_timer = 0.0
-	set_expression("joy")
+	set_expression("determined") # v1.4: the post-escape pursuit face
 
 func stop_pursuit() -> void:
 	mode = "wander"
