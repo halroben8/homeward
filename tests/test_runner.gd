@@ -11,6 +11,13 @@ extends Node
 ## per-captor pronoun consistency across all generated escape text (v1.0.19),
 ## the v1.0.20 indoor camera (room profile: entry pitch, orbit/FOV,
 ## cat share bounds mid-room and in a corner, the pull-in lift),
+## the v1.0.21 set: HOP while sprinting through the real
+## three-finger touch path (momentum preserved, lands running),
+## the escape combination as a randomly rolled A/B sequence
+## (5 steps, re-rolled per start, wrong press resets), the
+## officer's grabber notice meter from the van AND on foot, the
+## patrol route audit (the van's body never inside a house lot),
+## and the depot cycle (the van parks INSIDE its garage),
 ## collar check removed (v1.0.8: button/zoom gone, tag print kept),
 ## single-mechanism escapes (v1.4: the back
 ## door for EVERY capture — the carrier is transport only),
@@ -56,6 +63,17 @@ func count_meshes(n: Node) -> int:
 		c += count_meshes(ch)
 	return c
 
+func _subtree_vehicle_path(n: Node) -> String:
+	# v1.0.21: the assets/models GLB a subtree was instantiated
+	# from ("" if none) — how the suite recognises a Meshy vehicle.
+	if n.scene_file_path.begins_with("res://assets/models/") and n.scene_file_path.ends_with(".glb"):
+		return n.scene_file_path
+	for ch in n.get_children():
+		var r: String = _subtree_vehicle_path(ch)
+		if r != "":
+			return r
+	return ""
+
 func npc_by_role(role: String) -> Node:
 	for n in main.get("npcs"):
 		if str(n.get("role")) == role:
@@ -83,15 +101,18 @@ func park_npcs_far() -> void:
 		i += 1
 
 # v1.1 escape driving: the REAL flow — prompt -> panel -> the
-# down/up/down/up/PAW combo. v1.2: a finished combo OPENS the way
-# (no scripted exit); the escape completes when the cat crosses the
-# threshold, so the harness walks him out (walk_cat_out) — and the
-# intended path now starts with a DISTRACTION (distract_captor):
+# combination. v1.2: a finished combo OPENS the way (no scripted
+# exit); the escape completes when the cat crosses the threshold,
+# so the harness walks him out (walk_cat_out) — and the intended
+# path now starts with a DISTRACTION (distract_captor):
 # undistracted, she interrupts the panel in ~1.2 s of room time.
+# v1.0.21: the combination is a RANDOMLY ROLLED A/B sequence (main's
+# escape_combo, 5 presses) — the harness reads the current roll and
+# presses exactly it.
 func drive_escape_panel() -> void:
 	main.call("_on_escape_prompt_pressed")
-	for inp in ["down", "up", "down", "up", "paw"]:
-		main.call("escape_panel_input", inp)
+	for inp in main.get("escape_combo"):
+		main.call("escape_panel_input", str(inp))
 
 func distract_captor() -> void:
 	# The intended path: stand by the plant, paw it over, and let a
@@ -498,7 +519,6 @@ func run_tests() -> void:
 		var crect := Rect2()
 		var cfirst := true
 		var cmeshes := 0
-		var ccyls := 0
 		var cstack: Array = [c3]
 		while not cstack.is_empty():
 			var cn: Node = cstack.pop_back()
@@ -506,8 +526,6 @@ func run_tests() -> void:
 				cstack.append(cch)
 			if cn is MeshInstance3D:
 				cmeshes += 1
-				if (cn as MeshInstance3D).mesh is CylinderMesh:
-					ccyls += 1
 				var ca: AABB = (cn as MeshInstance3D).global_transform * (cn as MeshInstance3D).get_aabb()
 				var cr := Rect2(ca.position.x, ca.position.z, ca.size.x, ca.size.z)
 				crect = cr if cfirst else crect.merge(cr)
@@ -515,10 +533,19 @@ func run_tests() -> void:
 		for ar in asphalt_rects:
 			if crect.intersects(ar):
 				cars_on_road += 1
-		if cmeshes < 20 or ccyls < 8: # a box car would have ~1-6 meshes and no wheel cylinders
+		# v1.0.21: a "proper car" is a Meshy model now (Michael's
+		# all-Meshy rule) — the old >=20-meshes/>=8-cylinders test
+		# described the code-built box cars, which are gone. A
+		# proper car = a vehicle GLB instance under the Car root
+		# (never the Animal Control van — that one is the pound's)
+		# with a car-sized footprint.
+		var cmodel: String = _subtree_vehicle_path(c3)
+		var clen: float = maxf(crect.size.x, crect.size.y)
+		var cwid: float = minf(crect.size.x, crect.size.y)
+		if cmodel == "" or cmodel.ends_with("van_animal_control.glb") or clen < 3.4 or clen > 5.4 or cwid < 1.6 or cwid > 2.6:
 			cars_boxy += 1
 	check("streets: ZERO static cars on any roadway", cars_on_road == 0, str(cars_on_road))
-	check("streets: every static car is a proper car (>=20 meshes, >=8 cylinders incl. wheels)", cars_boxy == 0, str(cars_boxy))
+	check("streets: every static car is a proper car (a Meshy vehicle model, car-sized)", cars_boxy == 0, str(cars_boxy))
 
 	# ---------- clutter audit (Michael, 2026-11-17): NOTHING but
 	# moving traffic belongs on a roadway — benches, fences,
@@ -1049,6 +1076,86 @@ func run_tests() -> void:
 	await wait_sec(0.2)
 	check("v1.0.18 touch path: solo RUN release clears the hold", not bool(main.get("run_on")) and not bool(player.get("touch_sprint")))
 
+	# ---------- v1.0.21: HOP while sprinting, through the REAL touch path ----------
+	# Michael's v1.0.20 report: "you can't jump while running — you
+	# have to stop, then jump, then press forward." Same disease as
+	# v1.0.18's RUN: HOP was wired only to its Button's pressed
+	# signal (the single-pointer emulated-mouse channel), so with
+	# the joystick thumb down the press never arrived. The cat's
+	# physics was never the block (its velocity is driven from the
+	# input every physics frame, airborne included). Drive it
+	# exactly like play: joystick finger down at full push, RUN held
+	# with a second finger, then a THIRD finger taps A (HOP) — the
+	# cat must leave the ground with its sprint speed intact and
+	# land still running.
+	park_npcs_far()
+	(player as Node3D).global_position = Vector3(30, 0.2, 40)
+	player.set("stamina", 100.0)
+	player.set("winded", false)
+	await wait_sec(0.2)
+	var vp21: Vector2 = get_viewport().get_visible_rect().size
+	var joy_pos21 := Vector2(vp21.x * 0.15, vp21.y * 0.55)
+	var run_pos21: Vector2 = (main.get("run_btn") as Button).get_global_rect().get_center()
+	var hop_pos21: Vector2 = (main.get("hop_btn") as Button).get_global_rect().get_center()
+	var hj := InputEventScreenTouch.new()
+	hj.index = 0
+	hj.pressed = true
+	hj.position = joy_pos21
+	get_viewport().push_input(hj, true)
+	await wait_sec(0.15)
+	var hd := InputEventScreenDrag.new()
+	hd.index = 0
+	hd.position = joy_pos21 + Vector2(0, -100)
+	hd.relative = Vector2(0, -100)
+	get_viewport().push_input(hd, true)
+	var hr := InputEventScreenTouch.new()
+	hr.index = 1
+	hr.pressed = true
+	hr.position = run_pos21
+	get_viewport().push_input(hr, true)
+	await wait_sec(0.5)
+	check("v1.0.21 hop: sprinting before the hop (setup)", bool(player.get("is_sprinting")) and Vector2((player as CharacterBody3D).velocity.x, (player as CharacterBody3D).velocity.z).length() > 9.5, str(Vector2((player as CharacterBody3D).velocity.x, (player as CharacterBody3D).velocity.z).length()))
+	var hh := InputEventScreenTouch.new()
+	hh.index = 2
+	hh.pressed = true
+	hh.position = hop_pos21
+	get_viewport().push_input(hh, true)
+	var air_seen: bool = false
+	var air_speed_ok: bool = false
+	var landed_running: bool = false
+	var hop_guard: float = 0.0
+	while hop_guard < 2.0:
+		await wait_sec(0.05)
+		hop_guard += 0.05
+		var vy21: float = (player as CharacterBody3D).velocity.y
+		var hs21: float = Vector2((player as CharacterBody3D).velocity.x, (player as CharacterBody3D).velocity.z).length()
+		if not (player as CharacterBody3D).is_on_floor() and vy21 > 1.0:
+			air_seen = true
+			if hs21 > 9.5:
+				air_speed_ok = true
+		if air_seen and (player as CharacterBody3D).is_on_floor() and hs21 > 9.5:
+			landed_running = true
+			break
+	check("v1.0.21 hop: HOP with the joystick + RUN held launches the cat (airborne, rising)", air_seen)
+	check("v1.0.21 hop: horizontal sprint speed is preserved in the air", air_speed_ok)
+	check("v1.0.21 hop: lands back into the run (nothing was released)", landed_running)
+	var hrel := InputEventScreenTouch.new()
+	hrel.index = 2
+	hrel.pressed = false
+	hrel.position = hop_pos21
+	get_viewport().push_input(hrel, true)
+	var rrel := InputEventScreenTouch.new()
+	rrel.index = 1
+	rrel.pressed = false
+	rrel.position = run_pos21
+	get_viewport().push_input(rrel, true)
+	var jrel := InputEventScreenTouch.new()
+	jrel.index = 0
+	jrel.pressed = false
+	jrel.position = joy_pos21 + Vector2(0, -100)
+	get_viewport().push_input(jrel, true)
+	await wait_sec(0.2)
+
 	# ---------- collar (v1.0.8: the in-play collar check is REMOVED) ----------
 	# Michael's direction: under the new story the collar falls off
 	# before the pound, so the COLLAR button, the C key and the
@@ -1223,11 +1330,33 @@ func run_tests() -> void:
 	check("escape prompt is offered at the mechanism", bool(main.call("_escape_at_mechanism")))
 	main.call("_on_escape_prompt_pressed")
 	check("escape panel opens from the prompt", bool((main.get("escape_panel") as Control).visible))
-	main.call("escape_panel_input", "down")
-	main.call("escape_panel_input", "down") # wrong (up expected): the combo slips back, forgivingly keeping the leading down
-	check("wrong swipe gently resets the combo", int(main.get("combo_index")) == 1, str(main.get("combo_index")))
-	for inp in ["up", "down", "up", "paw"]:
-		main.call("escape_panel_input", inp)
+	# v1.0.21 THE COMBINATION (Michael's direction): the swipe
+	# pattern is gone — every start of the puzzle rolls a fresh
+	# sequence of A / B button presses, 5 long.
+	var combo0: Array = main.get("escape_combo")
+	var combo_ok: bool = combo0.size() == 5
+	for s0 in combo0:
+		if str(s0) != "A" and str(s0) != "B":
+			combo_ok = false
+	check("v1.0.21: starting the puzzle rolls a 5-step A/B combination", combo_ok, str(combo0))
+	var rolls: Dictionary = {}
+	rolls[" ".join(PackedStringArray(combo0))] = true
+	for r in range(11):
+		main.call("_close_escape_panel")
+		main.call("_on_escape_prompt_pressed")
+		var rc: Array = main.get("escape_combo")
+		if rc.size() == 5:
+			rolls[" ".join(PackedStringArray(rc))] = true
+	check("v1.0.21: a fresh start re-rolls the combination", rolls.size() > 1, str(rolls.keys()))
+	var combo: Array = main.get("escape_combo")
+	main.call("escape_panel_input", str(combo[0]))
+	check("v1.0.21: a correct press lights the first step", int(main.get("combo_index")) == 1, str(main.get("combo_index")))
+	var wrong_press: String = "B" if str(combo[1]) == "A" else "A"
+	main.call("escape_panel_input", wrong_press) # wrong: the combo slips back — forgivingly keeping the press if it matches the first step
+	var want_idx: int = 1 if wrong_press == str(combo[0]) else 0
+	check("v1.0.21: a wrong press resets the combination progress", int(main.get("combo_index")) == want_idx, str(main.get("combo_index")))
+	for i in range(want_idx, combo.size()):
+		main.call("escape_panel_input", str(combo[i]))
 	check("v1.4: a finished combo swings the DOOR open (no teleport out)", bool(main.get("exit_open")) and str(main.get("exit_open_kind")) == "bolt" and str(main.get("state")) == "escape", str(main.get("state")))
 	# v1.4 CAMERA HANDOFF: wind the look controls up the way a
 	# player hunting around the room does — the escape completion
@@ -1276,8 +1405,8 @@ func run_tests() -> void:
 	distract_captor()
 	(player as Node3D).global_position = Vector3(573.4, 0.3, 3.4)
 	main.call("_on_escape_prompt_pressed")
-	for inp in ["down", "up", "down", "up", "paw"]:
-		main.call("escape_panel_input", inp)
+	for inp in main.get("escape_combo"):
+		main.call("escape_panel_input", str(inp))
 		main.call("_process_escape", 0.4)
 	check("v1.2: distracted, a slow combo still works the bolt", bool(main.get("exit_open")) and str(main.get("exit_open_kind")) == "bolt", str(main.get("exit_open_kind")))
 	walk_cat_out()
@@ -1335,8 +1464,8 @@ func run_tests() -> void:
 	distract_captor()
 	(player as Node3D).global_position = Vector3(573.4, 0.3, 3.4)
 	main.call("_on_escape_prompt_pressed")
-	for inp in ["down", "up", "down", "up", "paw"]:
-		main.call("escape_panel_input", inp)
+	for inp in main.get("escape_combo"):
+		main.call("escape_panel_input", str(inp))
 		main.call("_process_escape", 0.4)
 	check("v1.5: after the chaos, the door escape still works", bool(main.get("exit_open")) and str(main.get("exit_open_kind")) == "bolt", str(main.get("exit_open_kind")))
 	walk_cat_out()
@@ -1388,8 +1517,8 @@ func run_tests() -> void:
 	distract_captor()
 	(player as Node3D).global_position = Vector3(573.4, 0.3, 3.4)
 	main.call("_on_escape_prompt_pressed")
-	for inp in ["down", "up", "down", "up", "paw"]:
-		main.call("escape_panel_input", inp)
+	for inp in main.get("escape_combo"):
+		main.call("escape_panel_input", str(inp))
 		main.call("_process_escape", 0.4)
 	walk_cat_out()
 	main.call("_process", 30.1) # drain the pursuit
@@ -1653,13 +1782,18 @@ func run_tests() -> void:
 	check("scoop: cleanup returns to play", str(main.get("state")) == "play", str(main.get("state")))
 
 	# ---------- POUND VAN (Michael, 2026-11-17) ----------
-	# ONE white ANIMAL CONTROL van patrols the town forever. Come
-	# within 12m and it pulls over to the kerb, the worker (white
-	# uniform, net in hand) gets out and comes after the collarless
-	# cat; his catch is the ORDINARY capture flow — back at the
-	# pound means the back-door bolt room — then his pursuit; lose
-	# him (or outlast the pursuit) and he walks back to the van and
-	# the patrol resumes. He is NOT one of the 48 town NPCs, and
+	# ONE white ANIMAL CONTROL van patrols the town forever.
+	# v1.0.21: coming near the van (or the worker on foot) no longer
+	# triggers him instantly — the being-noticed meter builds like
+	# any grabber's (over the van while he rides, over his head on
+	# foot), and only a FULL meter pulls the van over to the kerb;
+	# the worker (white uniform, net in hand) gets out and comes
+	# after the collarless cat; his catch is the ORDINARY capture
+	# flow — back at the pound means the back-door bolt room — then
+	# his pursuit; lose him (or outlast the pursuit) and he walks
+	# back to the van, gets in, and the round ends at the DEPOT: the
+	# van drives into its GARAGE and parks inside before pulling out
+	# onto patrol again. He is NOT one of the 48 town NPCs, and
 	# the collar flag (player_collared) switches him off entirely.
 	park_npcs_far()
 	for n in main.get("npcs"):
@@ -1686,6 +1820,34 @@ func run_tests() -> void:
 		vt.append(str((l as Label3D).text))
 	check("pound van: POUND / ANIMAL CONTROL lettering printed on the body (both flanks)", vt.count("POUND") == 2 and vt.count("ANIMAL CONTROL") == 2, str(vt))
 	check("pound van: the worker carries his net (pole + hoop + bag on the arm)", pworker.get("net_root") != null and (pworker.get("net_root") as Node3D).get_child_count() >= 3)
+	# ---------- v1.0.21: Meshy vehicles + the light bar ----------
+	check("v1.0.21 vehicles: the pound van IS the Meshy Animal Control van", _subtree_vehicle_path(pvan) == "res://assets/models/van_animal_control.glb", _subtree_vehicle_path(pvan))
+	var tcar_v: Node3D = main.call("spawn_traffic_car")
+	check("v1.0.21 vehicles: traffic cars are Meshy models too", _subtree_vehicle_path(tcar_v) != "", _subtree_vehicle_path(tcar_v))
+	var tcars_arr: Array = main.get("traffic_cars")
+	for te in tcars_arr.duplicate():
+		if te["node"] == tcar_v:
+			tcars_arr.erase(te)
+	tcar_v.queue_free()
+	# the light bar (Michael's order: meter fills -> LIGHTS ON ->
+	# van stops -> he gets out): dark on patrol; in an encounter
+	# the two lamps alternate, never both, never neither.
+	var lamp_l: MeshInstance3D = main.get("pound_light_lamp_l")
+	var lamp_r: MeshInstance3D = main.get("pound_light_lamp_r")
+	check("v1.0.21 lights: the van carries the flashing light rig", lamp_l != null and lamp_r != null)
+	main.set("pound_state", "patrol")
+	main.call("_pound_update_lights", 0.1)
+	check("v1.0.21 lights: DARK on patrol", not lamp_l.visible and not lamp_r.visible)
+	main.set("pound_state", "chase")
+	main.call("_pound_update_lights", 0.1)
+	var one_lit: bool = lamp_l.visible != lamp_r.visible
+	var first_lamp_l: bool = lamp_l.visible
+	main.call("_pound_update_lights", 0.3)
+	var swapped: bool = lamp_l.visible != first_lamp_l and lamp_l.visible != lamp_r.visible
+	check("v1.0.21 lights: in an encounter exactly one lamp is lit, alternating", one_lit and swapped, str(lamp_l.visible) + "/" + str(lamp_r.visible))
+	main.set("pound_state", "patrol")
+	main.call("_pound_update_lights", 0.1)
+	check("v1.0.21 lights: dark again when the patrol resumes", not lamp_l.visible and not lamp_r.visible)
 	# patrol: he drives the loop, on the lanes, worker riding inside
 	main.set("pound_state", "patrol")
 	pvan.position = Vector3(-60, 0, 16.8)
@@ -1699,14 +1861,58 @@ func run_tests() -> void:
 	check("pound van: the patrol drives on (moved > 15m over 5s of patrol)", pvan.position.distance_to(ppos0) > 15.0, str(pvan.position.distance_to(ppos0)))
 	check("pound van: the patrol stays on the road lane", absf(pvan.position.z - 16.8) < 1.5, str(pvan.position))
 	check("pound van: the worker rides inside (invisible, travelling with the van)", not pworker.visible and (pworker as Node3D).global_position.distance_to(pvan.position) < 1.0)
+	# v1.0.21 ROUTE AUDIT: three full patrol loops, stepped
+	# synchronously — the van's BODY (an oriented box, half extents
+	# 2.05 x 1.0) must never enter a house lot envelope or the
+	# depot's solid walls. (The old route END was the one bad leg:
+	# a coin-flip U-turn at the west waypoint that swung through
+	# the Oak Avenue front yards — the depot legs replace it, and
+	# the depot cycle below audits those too.)
+	var audit_rects: Array = []
+	for h in main.get("houses"):
+		var hp: Vector3 = h["pos"]
+		audit_rects.append(Rect2(hp.x - 5.8, hp.z - 5.2, 11.6, 10.4))
+	for sr in main.get("pound_depot_solids"):
+		audit_rects.append(sr)
+	var audit_bad := 0
+	var audit_steps := 0
+	while audit_steps < 21600: # 3 loops ≈ 3 x ~120 s of driving at 1/60 steps
+		main.call("_pound_drive_route", 1.0 / 60.0, 8.5)
+		audit_steps += 1
+		var vyaw: float = float(main.get("pound_van_yaw"))
+		var vf := Vector2(cos(vyaw), -sin(vyaw))
+		var vs := Vector2(sin(vyaw), cos(vyaw))
+		var vc := Vector2(pvan.position.x, pvan.position.z)
+		for sx in [-1.0, 1.0]:
+			for sz in [-1.0, 1.0]:
+				var corner: Vector2 = vc + vf * (2.05 * sx) + vs * (1.0 * sz)
+				for r in audit_rects:
+					if (r as Rect2).has_point(corner):
+						audit_bad += 1
+	check("v1.0.21: three patrol loops never put the van's body inside a house lot or the depot walls", audit_bad == 0, "violations=" + str(audit_bad) + " steps=" + str(audit_steps))
+	check("v1.0.21: the depot (garage + office) is built and its solids registered", main.get_node_or_null("World/PoundDepot") != null and (main.get("pound_depot_solids") as Array).size() == 4)
 	# engagement: the cat steps onto his road, just ahead of the van
+	pvan.position = Vector3(-60, 0, 16.8)
+	main.set("pound_van_yaw", 0.0)
+	main.set("pound_route_idx", 1)
+	main.set("pound_van_speed", 0.0)
+	main.set("pound_state", "patrol")
 	(player as Node3D).global_position = pvan.position + Vector3(11.0, 0.2, 0.0)
 	player.set("velocity", Vector3.ZERO)
+	# v1.0.21: proximity to the VAN builds the notice meter first
+	# (the van stops for the cat in its road, ~5m short, and the
+	# meter fills over the van) — nothing is instant any more.
 	var guard_p: float = 0.0
+	while float(main.get("pound_notice")) < 0.15 and guard_p < 6.0:
+		await wait_sec(0.25)
+		guard_p += 0.25
+	check("v1.0.21: proximity to the van builds the officer's notice meter", float(main.get("pound_notice")) >= 0.15, "notice=" + str(main.get("pound_notice")) + " after " + str(guard_p) + "s")
+	check("v1.0.21: the meter shows over the VAN while he rides in it", bool((main.get("pound_bar_root") as Node3D).visible))
+	guard_p = 0.0
 	while str(main.get("pound_state")) != "exit" and guard_p < 12.0:
 		await wait_sec(0.25)
 		guard_p += 0.25
-	check("pound van: cat in proximity -> the van pulls over and the worker gets out", str(main.get("pound_state")) == "exit", str(main.get("pound_state")) + " after " + str(guard_p) + "s")
+	check("pound van: a FULL meter -> the van pulls over and the worker gets out", str(main.get("pound_state")) == "exit", str(main.get("pound_state")) + " after " + str(guard_p) + "s")
 	check("pound van: pulled over at the KERB, not blocking the road centre (offset >= 2.4 from the z=15 centreline)", absf(pvan.position.z - 15.0) >= 2.4, str(pvan.position))
 	check("pound van: the worker is out on foot beside the van, net in hand", pworker.visible and (pworker as Node3D).global_position.distance_to(pvan.position) > 1.0 and bool((pworker.get("net_root") as Node3D).visible), "vis=" + str(pworker.visible) + " dist=" + str((pworker as Node3D).global_position.distance_to(pvan.position)) + " netvis=" + str(bool((pworker.get("net_root") as Node3D).visible)))
 	guard_p = 0.0
@@ -1770,6 +1976,81 @@ func run_tests() -> void:
 	check("pound van: with a collar on (flag set) he never engages — no pull-over, no chase", str(main.get("pound_state")) == "patrol" and not pworker.visible and str(pworker.get("mode")) == "wander", str(main.get("pound_state")) + "/" + str(pworker.get("mode")))
 	main.set("player_collared", false)
 	(player as Node3D).global_position = Vector3(-100, 0.2, 80) # leave him to his rounds
+
+	# ---------- v1.0.21: the officer on FOOT notices too ----------
+	# He is walking back to the van (state "return", brain off,
+	# main driving) with the van parked well away down the road.
+	# The cat steps into his view ahead of him: the meter must
+	# build over HIS head (his own bar rig, mirrored by main), and
+	# a full meter turns him around into the chase — the van never
+	# moves.
+	pvan.position = Vector3(-60, 0, 16.8)
+	main.set("pound_van_yaw", 0.0)
+	main.set("pound_van_speed", 0.0)
+	pworker.set("active", false)
+	pworker.visible = true
+	pworker.set("notice_cooldown", 0.0)
+	pworker.set("notice", 0.0)
+	(pworker as Node3D).global_position = Vector3(-30, 0.2, 16.8)
+	main.set("pound_notice", 0.0)
+	main.set("pound_engage_cd", 0.0)
+	main.set("pound_state", "return")
+	main.call("_pound_reset_return_watch")
+	guard_p = 0.0
+	var foot_notice_seen: float = 0.0
+	var foot_bar_seen: bool = false
+	while str(main.get("pound_state")) != "chase" and guard_p < 14.0:
+		(player as Node3D).global_position = (pworker as Node3D).global_position + Vector3(-6.0, 0.0, 0.0) # stay 6m ahead of him, in plain view on the road
+		player.set("velocity", Vector3.ZERO)
+		await wait_sec(0.25)
+		guard_p += 0.25
+		foot_notice_seen = maxf(foot_notice_seen, float(main.get("pound_notice")))
+		if (pworker.get("bar_root") as Node3D).visible:
+			foot_bar_seen = true
+	check("v1.0.21: proximity to the OFFICER on foot builds the notice meter", foot_notice_seen > 0.15, "peak notice=" + str(foot_notice_seen))
+	check("v1.0.21: the meter shows over HIS head while he is on foot", foot_bar_seen)
+	# He turns with the RUN tell first (that IS the grabber flow);
+	# give the tell its beat and confirm the chase proper follows.
+	var tell_guard: float = 0.0
+	while str(pworker.get("mode")) != "chase" and tell_guard < 4.0:
+		await wait_sec(0.25)
+		tell_guard += 0.25
+	check("v1.0.21: a full meter on foot turns him around — RUN tell, then the chase (van never involved)", str(main.get("pound_state")) == "chase" and str(pworker.get("mode")) == "chase", str(main.get("pound_state")) + "/" + str(pworker.get("mode")))
+	(player as Node3D).global_position = Vector3(-100, 0.2, 80) # the cat bolts: the chase is lost on distance
+	guard_p = 0.0
+	while str(main.get("pound_state")) != "patrol" and guard_p < 30.0:
+		await wait_sec(0.25)
+		guard_p += 0.25
+	check("v1.0.21: after the on-foot chase he walks back, gets in, patrol resumes", str(main.get("pound_state")) == "patrol" and not pworker.visible, str(main.get("pound_state")) + " after " + str(guard_p) + "s")
+
+	# ---------- v1.0.21: the DEPOT cycle (the garage) ----------
+	# After an encounter he drives home: stage the van on the
+	# final westbound leg with heading_home set (the flag the
+	# get-in sets), the cat far away, engagement held off — the
+	# van must turn in, park INSIDE the bay, dwell, reverse out
+	# and resume patrol on the road.
+	main.set("pound_engage_cd", 99999.0)
+	main.set("pound_heading_home", true)
+	pvan.position = Vector3(-71.8, 0, 16.8)
+	main.set("pound_van_yaw", PI)
+	main.set("pound_route_idx", 0)
+	main.set("pound_van_speed", 0.0)
+	main.set("pound_state", "patrol")
+	(player as Node3D).global_position = Vector3(-100, 0.2, 80)
+	guard_p = 0.0
+	while str(main.get("pound_state")) != "depot" and guard_p < 45.0:
+		await wait_sec(0.25)
+		guard_p += 0.25
+	check("v1.0.21: heading home, the van drives into the GARAGE and stops inside", str(main.get("pound_state")) == "depot", str(main.get("pound_state")) + " after " + str(guard_p) + "s at " + str(pvan.position))
+	check("v1.0.21: parked at the depot home spot, inside the bay walls", pvan.position.distance_to(Vector3(-112, 0, -1.9)) < 1.5 and pvan.position.x > -114.6 and pvan.position.x < -109.4 and pvan.position.z > -5.4 and pvan.position.z < 1.6, str(pvan.position))
+	check("v1.0.21: parked still (no creeping in the bay)", float(main.get("pound_van_speed")) == 0.0, str(main.get("pound_van_speed")))
+	guard_p = 0.0
+	while str(main.get("pound_state")) != "patrol" and guard_p < 45.0:
+		await wait_sec(0.25)
+		guard_p += 0.25
+	check("v1.0.21: after the dwell he reverses out and resumes patrol on the road", str(main.get("pound_state")) == "patrol" and pvan.position.z > 10.0, str(main.get("pound_state")) + " at " + str(pvan.position) + " after " + str(guard_p) + "s")
+	main.set("pound_engage_cd", 0.0)
+	main.set("pound_heading_home", false)
 
 	# ---------- idle purr retained (v0.6) ----------
 	park_npcs_far()

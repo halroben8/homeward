@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://shotv1021van"]
+
+[ext_resource type="Script" path="res://tests/shot_v1021_van.gd" id="1"]
+
+[node name="ShotV1021Van" type="Node"]
+script = ExtResource("1")

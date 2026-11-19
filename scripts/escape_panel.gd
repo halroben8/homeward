@@ -3,9 +3,12 @@ extends Control
 ## A dialogue-style overlay that appears when the captured cat works
 ## an exit mechanism: a big close-up picture of the mechanism (window
 ## latch / window push / pet-door flap / back-door bolt / carrier
-## door), the combination shown as chips (down, up, down, up, PAW),
-## and the player performs the combo BY SWIPING ON THE PICTURE (or
-## with the arrow keys + Space on PC). Correct inputs light the chips
+## door) and the combination shown as chips. v1.0.21 (Michael's
+## direction, replacing the v1.1 swipe combo): the combination is a
+## sequence of the A and B buttons (A = the game's HOP button,
+## B = PAW), FIVE presses, RANDOMLY ROLLED by main every time the
+## puzzle starts — the panel's own A and B buttons (and the PC hop /
+## paw keys, routed by main) enter it. Correct inputs light the chips
 ## and work the pictured mechanism a notch; a wrong input gently
 ## slips the sequence back — no punishment. v1.2: the captor is in
 ## the room (main3d.gd) — the status strip across the picture shows
@@ -14,11 +17,13 @@ extends Control
 ## about a second. (v1.0.19: the status STRINGS are built by main
 ## from the captor's own pronoun definition — see person.gd.)
 ## All game logic lives in main3d.gd; this is the view + input surface.
-## main wires: on_input("down"|"up"|"paw"), on_close().
+## main wires: on_input("A"|"B"), on_close(). main rolls the combo
+## (see _roll_escape_combo there) and hands it over via set_combo_seq
+## before open_for; the chips below draw THIS sequence.
 
 var mechanism: String = "latch" # latch | winpush | petdoor | bolt | carrier
 var combo_index: int = 0
-var combo: Array = ["down", "up", "down", "up", "paw"]
+var combo: Array = ["A", "B", "A", "B", "A"] # placeholder until main hands over the rolled one
 var on_input: Callable = Callable()
 var on_close: Callable = Callable()
 
@@ -36,15 +41,14 @@ func set_status(text: String, frac: float, warn: bool) -> void:
 	queue_redraw()
 
 var _font: Font = null
-var _dragging: bool = false
-var _drag_acc := Vector2.ZERO
 var _slip_t: float = 0.0
 var _nudge_t: float = 0.0 # brief carrier rattle after a correct input
 
 var _title_label: Label = null
 var _hint_label: Label = null
 var _slip_label: Label = null
-var _paw_btn: Button = null
+var _a_btn: Button = null
+var _b_btn: Button = null
 var _close_btn: Button = null
 
 const BOX_W := 880.0
@@ -68,7 +72,7 @@ func _ready() -> void:
 	_hint_label = Label.new()
 	_hint_label.add_theme_font_size_override("font_size", 24)
 	_hint_label.add_theme_color_override("font_color", Color(0.85, 0.9, 1.0))
-	_hint_label.text = "Swipe the picture:  ↓  ↑  ↓  ↑  —  then tap PAW!"
+	_hint_label.text = "Tap the combination on the A and B buttons — it's a new one every time!"
 	add_child(_hint_label)
 	_slip_label = Label.new()
 	_slip_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -76,17 +80,30 @@ func _ready() -> void:
 	_slip_label.add_theme_color_override("font_color", Color(1.0, 0.8, 0.45))
 	_slip_label.visible = false
 	add_child(_slip_label)
-	_paw_btn = Button.new()
-	_paw_btn.text = "🐾\nPAW"
-	_paw_btn.add_theme_font_size_override("font_size", 21)
-	var paw_col := Color(0.3, 0.45, 0.9, 0.95)
-	_paw_btn.add_theme_stylebox_override("normal", _round_style(paw_col, 104))
-	_paw_btn.add_theme_stylebox_override("pressed", _round_style(paw_col.lightened(0.25), 104))
-	_paw_btn.add_theme_stylebox_override("hover", _round_style(paw_col, 104))
-	_paw_btn.pressed.connect(func() -> void:
+	# v1.0.21: the panel's own A and B buttons — same labels, colours
+	# and order as the game's touch buttons (A HOP red, B PAW blue).
+	_a_btn = Button.new()
+	_a_btn.text = "A"
+	_a_btn.add_theme_font_size_override("font_size", 30)
+	var a_col := Color(0.85, 0.3, 0.3, 0.95)
+	_a_btn.add_theme_stylebox_override("normal", _round_style(a_col, 104))
+	_a_btn.add_theme_stylebox_override("pressed", _round_style(a_col.lightened(0.25), 104))
+	_a_btn.add_theme_stylebox_override("hover", _round_style(a_col, 104))
+	_a_btn.pressed.connect(func() -> void:
 		if on_input.is_valid():
-			on_input.call("paw"))
-	add_child(_paw_btn)
+			on_input.call("A"))
+	add_child(_a_btn)
+	_b_btn = Button.new()
+	_b_btn.text = "B"
+	_b_btn.add_theme_font_size_override("font_size", 30)
+	var b_col := Color(0.3, 0.45, 0.9, 0.95)
+	_b_btn.add_theme_stylebox_override("normal", _round_style(b_col, 104))
+	_b_btn.add_theme_stylebox_override("pressed", _round_style(b_col.lightened(0.25), 104))
+	_b_btn.add_theme_stylebox_override("hover", _round_style(b_col, 104))
+	_b_btn.pressed.connect(func() -> void:
+		if on_input.is_valid():
+			on_input.call("B"))
+	add_child(_b_btn)
 	_close_btn = Button.new()
 	_close_btn.text = "✕"
 	_close_btn.add_theme_font_size_override("font_size", 22)
@@ -130,11 +147,13 @@ func _layout() -> void:
 	_title_label.position = Vector2(b.position.x + 20.0, b.position.y + 16.0)
 	_title_label.size = Vector2(b.size.x - 40.0, 56.0)
 	_hint_label.position = Vector2(b.position.x + 36.0, b.position.y + b.size.y - 54.0)
-	_hint_label.size = Vector2(b.size.x - 220.0, 40.0)
+	_hint_label.size = Vector2(b.size.x - 300.0, 40.0)
 	_slip_label.position = Vector2(b.position.x + 20.0, b.position.y + 478.0)
 	_slip_label.size = Vector2(b.size.x - 40.0, 34.0)
-	_paw_btn.position = Vector2(b.position.x + b.size.x - 140.0, b.position.y + b.size.y - 148.0)
-	_paw_btn.size = Vector2(104.0, 104.0)
+	_b_btn.position = Vector2(b.position.x + b.size.x - 140.0, b.position.y + b.size.y - 148.0)
+	_b_btn.size = Vector2(104.0, 104.0)
+	_a_btn.position = Vector2(b.position.x + b.size.x - 262.0, b.position.y + b.size.y - 148.0)
+	_a_btn.size = Vector2(104.0, 104.0)
 	_close_btn.position = Vector2(b.position.x + b.size.x - 58.0, b.position.y + 12.0)
 	_close_btn.size = Vector2(44.0, 44.0)
 
@@ -163,10 +182,16 @@ func open_for(mech: String) -> void:
 
 func hide_panel() -> void:
 	visible = false
-	_dragging = false
 	status_text = ""
 	status_frac = -1.0
 	status_warn = false
+
+func set_combo_seq(seq: Array) -> void:
+	# v1.0.21: main's freshly rolled A/B combination for this start
+	# of the puzzle — the chips draw exactly this sequence.
+	combo = seq.duplicate()
+	combo_index = 0
+	queue_redraw()
 
 func set_combo(i: int) -> void:
 	combo_index = i
@@ -194,38 +219,13 @@ func _process(delta: float) -> void:
 	queue_redraw() # chip pulse + shake/rattle animation
 
 # ---------------------------------------------------------------- input
+# v1.0.21: the picture takes NO input any more (the swipe combo is
+# gone) — the combination is entered on the A / B buttons below (and
+# the PC hop/paw keys, which main routes). Presses on the panel
+# itself are simply swallowed so nothing leaks to the room behind.
 func _gui_input(event: InputEvent) -> void:
-	if event is InputEventScreenTouch:
-		var t := event as InputEventScreenTouch
-		_dragging = t.pressed
-		_drag_acc = Vector2.ZERO
+	if event is InputEventScreenTouch or event is InputEventScreenDrag or event is InputEventMouseButton or event is InputEventMouseMotion:
 		accept_event()
-	elif event is InputEventScreenDrag:
-		var d := event as InputEventScreenDrag
-		if _dragging:
-			_drag_acc += d.relative
-			_check_swipe()
-		accept_event()
-	elif event is InputEventMouseButton:
-		var mb := event as InputEventMouseButton
-		if mb.button_index == MOUSE_BUTTON_LEFT:
-			_dragging = mb.pressed
-			_drag_acc = Vector2.ZERO
-			accept_event()
-	elif event is InputEventMouseMotion:
-		var mm := event as InputEventMouseMotion
-		if _dragging:
-			_drag_acc += mm.relative
-			_check_swipe()
-			accept_event()
-
-func _check_swipe() -> void:
-	if absf(_drag_acc.y) < 42.0 or absf(_drag_acc.y) < absf(_drag_acc.x) * 1.2:
-		return
-	var dir: String = "down" if _drag_acc.y > 0.0 else "up"
-	_drag_acc = Vector2.ZERO
-	if on_input.is_valid():
-		on_input.call(dir)
 
 # ---------------------------------------------------------------- drawing
 func _draw() -> void:
@@ -272,16 +272,16 @@ func _draw_status(pic: Rect2) -> void:
 		draw_rect(Rect2(pic.position + Vector2(0, 38.0), Vector2(pic.size.x * clampf(status_frac, 0.0, 1.0), 5.0)), col)
 
 func _draw_chips(b: Rect2) -> void:
-	var labels: Array = ["↓", "↑", "↓", "↑", "PAW"]
+	# v1.0.21: the chips spell THIS start's rolled A/B combination.
 	var chip := Vector2(62.0, 62.0)
 	var gap := 16.0
-	var total: float = 4.0 * chip.x + 84.0 + 4.0 * gap
+	var n: int = maxi(combo.size(), 1)
+	var total: float = float(n) * chip.x + float(n - 1) * gap
 	var x: float = b.position.x + (b.size.x - total) * 0.5
 	var y: float = b.position.y + 404.0
 	var pulse: float = 0.5 + 0.5 * sin(float(Time.get_ticks_msec()) * 0.008)
-	for i in range(5):
-		var w: float = 84.0 if i == 4 else chip.x
-		var r := Rect2(x, y, w, chip.y)
+	for i in range(combo.size()):
+		var r := Rect2(x, y, chip.x, chip.y)
 		var st := StyleBoxFlat.new()
 		st.corner_radius_top_left = 14; st.corner_radius_top_right = 14
 		st.corner_radius_bottom_left = 14; st.corner_radius_bottom_right = 14
@@ -296,10 +296,9 @@ func _draw_chips(b: Rect2) -> void:
 			st.bg_color = Color(0.16, 0.19, 0.26, 0.9)
 			st.border_color = Color(0.45, 0.5, 0.6)
 		st.draw(get_canvas_item(), r)
-		var fs: int = 22 if i == 4 else 38
 		var col := Color.WHITE if i <= combo_index else Color(0.6, 0.65, 0.75)
-		draw_string(_font, Vector2(r.position.x, r.position.y + (40.0 if i == 4 else 46.0)), labels[i], HORIZONTAL_ALIGNMENT_CENTER, r.size.x, fs, col)
-		x += w + gap
+		draw_string(_font, Vector2(r.position.x, r.position.y + 44.0), str(combo[i]), HORIZONTAL_ALIGNMENT_CENTER, r.size.x, 36, col)
+		x += chip.x + gap
 
 func _draw_window(pic: Rect2, prog: float, push_step: bool) -> void:
 	# Sky + sun behind the glass.

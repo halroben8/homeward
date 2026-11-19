@@ -4,8 +4,9 @@ extends Node3D
 ## ONLY on the title screen at the start of the run),
 ## 3D animated cat + NPCs, notice->CHASE->grab capture, taken -> varied
 ## per-captor escape puzzles — since v1.1 a visible PANEL puzzle per
-## mechanism (prompt -> panel -> down/up/down/up/PAW combo -> the cat
-## is seen slipping out), replacing the old swipe gestures,
+## mechanism (prompt -> panel -> the A/B button combo, randomly
+## rolled per start since v1.0.21 -> the cat is seen slipping out),
+## replacing the old swipe gestures,
 ## exactly 30s pursuit (max 2), win at the correct door. Landscape,
 ## floating-joystick touch + keyboard. NO D-pad.
 ## v0.6: DUAL touch — LEFT half floating joystick moves (camera-yaw-relative), drag on
@@ -94,14 +95,20 @@ var backdoor_pivot: Node3D = null # v1.1: the back door swings open in the escap
 var flap_node: Node3D = null
 # --- v1.1 escape PANEL puzzle (Michael's design, 2026-11-16) ---------
 # Walk to the mechanism -> an unmissable PROMPT appears -> the PANEL
-# opens with a big picture of the mechanism -> swipe the combination
-# (down, up, down, up, PAW) on the picture -> the cat is SEEN working
-# the mechanism. v1.2: the panel NO LONGER teleports the cat out — a
-# finished combo OPENS the way and the player WALKS the cat out
-# (Michael, 2026-11-16: "I want the door to open and you can walk
-# outside"). Replaces the v0.7 room swipe gestures, which Michael
-# found invisible and random-feeling.
-const ESCAPE_COMBO: Array = ["down", "up", "down", "up", "paw"]
+# opens with a big picture of the mechanism -> enter the combination
+# -> the cat is SEEN working the mechanism. v1.2: the panel NO LONGER
+# teleports the cat out — a finished combo OPENS the way and the
+# player WALKS the cat out (Michael, 2026-11-16: "I want the door to
+# open and you can walk outside"). Replaces the v0.7 room swipe
+# gestures, which Michael found invisible and random-feeling.
+# v1.0.21 (Michael's direction): the combination itself changed —
+# the old fixed swipe pattern (down, up, down, up, PAW) is GONE. The
+# combo is now a sequence of the A and B buttons (A = HOP, B = PAW),
+# ESCAPE_COMBO_LEN presses long, RANDOMLY ROLLED every time the
+# puzzle starts (_roll_escape_combo, called from _open_escape_panel)
+# — the same mechanism in both rooms (house back door, pound door).
+const ESCAPE_COMBO_LEN := 5
+var escape_combo: Array = [] # the CURRENT start's rolled combo: "A"/"B" strings
 const ESCAPE_ANIM_LEN := 2.3 # legacy scripted exit — kept inert, see _open_exit
 # v1.2: PAW-to-activate (Michael's fix for the v1.0.4 playtest, where
 # he could not activate the puzzle at all): the trigger is a generous
@@ -244,14 +251,31 @@ var current_cam_dist: float = 1.7
 var nearest_chaser: Node = null
 # --- v0.7 traffic -------------------------------------------------------
 var traffic_cars: Array = [] # {node, vel}
+var _car_variant: int = 0 # v1.0.21: rotates the Meshy vehicle picks inside a car type (see _vehicle_scene)
+# v1.0.21: each Meshy vehicle's real-world envelope (length X,
+# height Y, width Z, metres) — the collision box in _build_car is
+# sized from these. Measured off the imported models (Blender).
+const VEHICLE_DIMS := {
+	"res://assets/models/van_animal_control.glb": Vector3(4.0, 2.04, 2.0),
+	"res://assets/models/car_sports.glb": Vector3(4.35, 1.27, 2.01),
+	"res://assets/models/car_sedan.glb": Vector3(4.3, 1.65, 2.14),
+	"res://assets/models/car_compact.glb": Vector3(3.9, 1.55, 2.02),
+	"res://assets/models/truck_pickup.glb": Vector3(4.6, 1.88, 2.45),
+	"res://assets/models/car_police.glb": Vector3(4.5, 1.76, 2.08),
+	"res://assets/models/van_delivery.glb": Vector3(4.4, 1.91, 2.06),
+	"res://assets/models/suv.glb": Vector3(4.56, 1.67, 2.12),
+}
 var traffic_timer: float = 2.5
 var traffic_hit_cd: float = 0.0
 var traffic_group: Node3D = null
 const TRAFFIC_HIT_PENALTY := 5
 # --- POUND VAN (Michael, 2026-11-17) ----------------------------------
 # Exactly ONE white ANIMAL CONTROL van patrols the town's roads on a
-# continuous loop, forever. If the cat comes within POUND_SPOT_RADIUS
-# of it, the van pulls over to the kerb, the worker (white uniform,
+# continuous loop, forever. If the cat comes within the worker's
+# sight of the van (or of the worker himself, on foot), the
+# being-noticed meter builds — since v1.0.21 exactly like a
+# grabber's (see _pound_update_notice) — and when it fills, the van
+# pulls over to the kerb, the worker (white uniform,
 # net in hand — the same kind man from the story's opening) gets out
 # and comes after the cat. He is never a villain: he is trying to
 # get a lost cat home. A catch routes through the ORDINARY capture
@@ -267,13 +291,13 @@ const TRAFFIC_HIT_PENALTY := 5
 # reads as collarless to him. No collar gameplay hangs off it yet.
 var player_collared: bool = false
 var story: Node = null # STORY PART 1: the opening cutscene module (scripts/opening_cutscene.gd) — created in _ready; owns the title -> cutscene -> pound flow
-const POUND_SPOT_RADIUS := 12.0 # m — how close the cat must come before the worker gets out
+const POUND_SPOT_RADIUS := 12.0 # m — RETIRED in v1.0.21: the old instant-spot radius. Engagement is the notice meter now (his detect_radius, person.gd poundworker = 12.0, coincidentally the same reach); kept only so older notes resolve.
 const POUND_VAN_SPEED := 8.5 # patrol cruise, in line with traffic (7-10)
 const POUND_RETURN_SPEED := 5.0 # his jog back to the van (brisk, not chase-fast)
 const POUND_CHASE_SPEED := 6.4 # set on the worker in person.gd (inside the locked 6.0-7.0 chaser band)
 var pound_van: Node3D = null
 var pound_worker: CharacterBody3D = null
-var pound_state: String = "patrol" # patrol | pullover | exit | chase | away | return
+var pound_state: String = "patrol" # patrol | pullover | exit | chase | away | return | depot_in | depot | depot_out (v1.0.21: the last three are the garage legs)
 var pound_route: Array = [] # patrol waypoints (Vector3, on the right-hand lanes)
 var pound_route_idx: int = 0
 var pound_van_speed: float = 0.0
@@ -283,6 +307,48 @@ var pound_stop_yaw: float = 0.0
 var pound_kerb_dir: Vector3 = Vector3(0, 0, 1) # unit XZ: which side the kerb (and his door) is on
 var pound_exit_t: float = 0.0
 var pound_engage_cd: float = 0.0 # grace seconds after he gets back in before he can engage again
+# --- v1.0.21: the pound DEPOT (garage) + the officer notice meter --
+# (Michael's v1.0.20 play report) ----------------------------------
+# THE GARAGE: the patrol route used to END at its west waypoint in a
+# coin-flip U-turn — the target flips from the west waypoint to the
+# far-east one and the van teardrops around it, north or south on
+# microscopic yaw differences (traced headless: swings reaching
+# z=0 in one run, z=24 in another, at the end of Oak Avenue),
+# through the front yards and on a wider swing through a house.
+# Michael: "when the pound van goes it just drives into the
+# building. If it's going to drive into the building it better be a
+# garage. Something that makes sense." So the route's end is now a
+# DEPOT on the north side of the z=15 road at the west end: an
+# open-front garage bay with the shelter office attached, built by
+# _build_pound_depot. After an encounter, once the worker is back in
+# the van, the van finishes its round to the depot
+# (pound_heading_home), turns in and parks INSIDE the bay (state
+# "depot_in" -> "depot"); after a dwell it reverses out to the
+# apron and pulls away onto patrol ("depot_out"). No U-turn remains
+# anywhere in the van's driving, and no van leg leaves the roads /
+# the depot apron (audited in the suite).
+const POUND_HOME_POS := Vector3(-112, 0, -1.9) # the parking spot INSIDE the garage bay
+const POUND_HOME_YAW := PI * 0.5 # parked facing north, into the bay: forward = (cos yaw, 0, -sin yaw) = (0, 0, -1)
+const POUND_DEPOT_DWELL := 12.0 # seconds parked in the bay before he pulls out again
+var pound_heading_home: bool = false # set when the worker gets back in after an encounter; cleared as the depot turn-in begins (an engagement interrupts it)
+var pound_depot_t: float = 0.0 # dwell timer while pound_state == "depot"
+var pound_path: Array = [] # Vector3 waypoints of the current depot driving leg
+var pound_path_idx: int = 0
+var pound_backing_out: bool = false # depot_out, phase 1: reversing straight out of the bay
+var pound_depot_solids: Array = [] # Rect2 (XZ) of the depot's solid geometry — the suite's van audit holds the van's body out of every one
+# THE NOTICE METER: the officer now notices the cat the way every
+# grabber does (see _pound_update_notice) — proximity to him OR to
+# his van builds the same being-noticed bar (person.gd's sight
+# range, fill rate and decay, read off his own definition), shown
+# over the van while he rides in it and over his own head once he
+# is on foot. Only a FULL meter starts the pull-over / chase.
+var pound_notice: float = 0.0
+var pound_bar_root: Node3D = null # the notice meter over the VAN (built like person.gd's overhead bar)
+var pound_bar_fill: MeshInstance3D = null
+var pound_bar_label: Label3D = null
+var pound_light_lamp_l: MeshInstance3D = null # v1.0.21: the flashing light bar's two lamps (see _build_pound_light_rig)
+var pound_light_lamp_r: MeshInstance3D = null
+var pound_light_t: float = 0.0 # flash phase accumulator while the bar is live
 # POUND RETURN FIX (2026-11-17): stuck watch for the walk back to
 # the van — see _pound_return_target / the "return" branch. The
 # waypoints are the fix; this watch is belt and braces so a wedge
@@ -303,6 +369,10 @@ var action_buttons: Array = [] # touch buttons (live rects block look drags)
 var run_btn: Button = null # RUN hold button (sits beside MEOW)
 var run_on: bool = false # v1.0.14: RUN HELD state: true only while the button is physically held down
 var run_touch_id: int = -999 # v1.0.18: touch index currently holding RUN (-999 = none) — RUN is claimed/released on the raw touch channel in _input (see the v1.0.18 note there), not only via the Button's emulated-mouse signals
+var hop_btn: Button = null # v1.0.21: the A / HOP button — claimed on the raw touch channel in _input (see the v1.0.21 note there)
+var paw_btn: Button = null # v1.0.21: the B / PAW button — same raw-channel claim
+var meow_btn: Button = null # v1.0.21: the MEOW button — same raw-channel claim
+var _action_claim_msec: Dictionary = {} # v1.0.21: action name -> Time ticks of its last raw-touch claim; the Button handler ignores the emulated-mouse echo of the same tap inside the window
 var shelf_zone := Rect2(546, -9, 6, 5) # XZ rect (MAP DOUBLING: +360 with escape_origin)
 var sofa_zone := Rect2(556, 3, 7, 3)
 var window_zone := Rect2(557, -9.5, 6, 3)
@@ -923,6 +993,7 @@ func _build_world_async() -> void:
 	await _set_boot_stage("People", 75)
 	await _spawn_npcs()
 	await _build_frame()
+	_build_pound_depot() # v1.0.21: the pound's garage + office at the west end (before the van, so its home exists when it first returns)
 	await _spawn_pound()
 	await _build_frame() # v1.0.11: the van + worker build is its own chunk; don't let it merge into the reveal's first stretch
 	await _staged_reveal()
@@ -3389,126 +3460,69 @@ func _park_in_driveway(world: Node3D, house_pos: Vector3, facing: float, road_z:
 	_build_car(world, car_pos, col, false, car_type)
 	return car_pos
 
+func _vehicle_scene(car_type: String) -> PackedScene:
+	# v1.0.21: which Meshy model a car_type wears. The traffic /
+	# driveway type names are the town's own (sedan, hatchback,
+	# pickup, van, convertible) — the models rotate inside a type
+	# so a street never repeats one car, and the police car turns
+	# up occasionally in the sedan pool. "pound" is the Animal
+	# Control van, used only by _spawn_pound.
+	_car_variant += 1
+	match car_type:
+		"pickup":
+			return preload("res://assets/models/truck_pickup.glb")
+		"van":
+			return preload("res://assets/models/van_delivery.glb")
+		"convertible":
+			return preload("res://assets/models/car_sports.glb")
+		"pound":
+			return preload("res://assets/models/van_animal_control.glb")
+		"hatchback":
+			var hp: Array = [preload("res://assets/models/car_compact.glb"), preload("res://assets/models/car_sedan.glb"), preload("res://assets/models/suv.glb")]
+			return hp[_car_variant % hp.size()]
+		_: # sedan
+			if _car_variant % 7 == 0:
+				return preload("res://assets/models/car_police.glb")
+			var sp: Array = [preload("res://assets/models/car_sedan.glb"), preload("res://assets/models/suv.glb"), preload("res://assets/models/car_compact.glb")]
+			return sp[_car_variant % sp.size()]
+
 func _build_car(parent: Node, pos: Vector3, col: Color, along_x: bool, car_type: String = "sedan", for_traffic: bool = false) -> Node3D:
 	if not for_traffic:
 		content_points.append(pos) # v0.9 empty-area audit
-	# v0.6 VARIED CARS: five silhouettes — sedan, hatchback, pickup,
-	# van, convertible — each in several colours. All are solid
-	# obstacles and hiding spots ("hide ⛺"), as before.
+	# v1.0.21 (Michael's all-Meshy rule — "do a build now with all
+	# the cars included"): the code-built box cars are GONE. Every
+	# vehicle on the street — traffic, driveway and lot cars, and
+	# the pound van via the "pound" type — is a Meshy model from
+	# assets/models, instantiated under the same "Car" root with
+	# the conventions the town was built around: nose toward +X,
+	# ground at y=0, one solid box body so the cat still bumps
+	# into them and hides at them. `col` stays in the signature
+	# (the town's builders pass it) but the models carry their
+	# own colours now. The models were decimated + texture-capped
+	# in Blender before import (see vehicles_src): one mesh, one
+	# material each, so a car costs ONE draw call where the box
+	# build cost dozens.
 	var g := Node3D.new()
 	g.name = "Car" # PERF: named so the clutter-range pass can skip car subtrees (a car must never lose parts at range)
 	g.position = pos
 	if not along_x:
 		g.rotation_degrees = Vector3(0, 90, 0)
 	parent.add_child(g)
-	var glass := Color(0.2, 0.26, 0.33)
-	match car_type:
-		"hatchback":
-			var hb := _box(g, Vector3(0, 0.55, 0), Vector3(3.4, 0.72, 1.8), col, true)
-			hb.material_override = _paint(col)
-			var hc := _box(g, Vector3(-0.25, 1.18, 0), Vector3(1.95, 0.62, 1.62), glass)
-			hc.material_override = _car_glass()
-			var hback := _box(g, Vector3(-1.28, 1.1, 0), Vector3(0.5, 0.75, 1.6), glass)
-			hback.rotation_degrees = Vector3(0, 0, 24)
-			hback.material_override = _car_glass()
-			_car_wheels(g, 2.35)
-		"pickup":
-			var pb := _box(g, Vector3(0, 0.55, 0), Vector3(4.2, 0.7, 1.85), col, true)
-			pb.material_override = _paint(col)
-			var pc := _box(g, Vector3(1.15, 1.22, 0), Vector3(1.5, 0.72, 1.7), col)
-			pc.material_override = _paint(col)
-			var pw := _box(g, Vector3(1.2, 1.3, 0), Vector3(1.2, 0.5, 1.74), glass)
-			pw.material_override = _car_glass()
-			for bz4 in [-0.86, 0.86]: # open bed walls
-				_box(g, Vector3(-1.05, 1.05, bz4), Vector3(2.0, 0.42, 0.1), col.darkened(0.12))
-			_box(g, Vector3(-2.05, 1.05, 0), Vector3(0.1, 0.42, 1.8), col.darkened(0.12))
-			_car_wheels(g, 3.1)
-		"van":
-			# STREETS rebuild (Michael, 2026-11-16: the old van was
-			# the "random box" — ONE tall slab whose front/rear
-			# lights, grille and bumpers were all BURIED inside the
-			# slab (body spanned +/-2.15, the shared detail sits at
-			# +/-2.0), a blank rear and a flat window band). Now a
-			# step-van in the same footprint: cargo box set back, a
-			# cab with a raked windshield and side glass, a low hood
-			# nose the shared lights/grille/bumper actually clear,
-			# framed cargo windows, a roof lip, and rear doors with
-			# windows — it reads as a van from EVERY side.
-			var vb := _box(g, Vector3(-0.45, 1.05, 0), Vector3(3.0, 1.85, 1.9), col, true)
-			vb.material_override = _paint(col)
-			var vcap := _box(g, Vector3(-0.45, 2.0, 0), Vector3(3.06, 0.07, 1.94), col.darkened(0.1))
-			vcap.material_override = _paint(col.darkened(0.1))
-			var vcab := _box(g, Vector3(1.08, 1.24, 0), Vector3(0.8, 1.46, 1.86), col, true)
-			vcab.material_override = _paint(col)
-			var vhood := _box(g, Vector3(1.58, 0.6, 0), Vector3(0.76, 0.68, 1.76), col, true)
-			vhood.material_override = _paint(col)
-			var vws := _box(g, Vector3(1.62, 1.35, 0), Vector3(0.55, 0.8, 1.64), glass)
-			vws.rotation_degrees = Vector3(0, 0, 22)
-			vws.material_override = _car_glass()
-			for vsz in [0.94, -0.94]:
-				_box(g, Vector3(1.08, 1.5, vsz), Vector3(0.62, 0.52, 0.04), glass.darkened(0.05)) # cab side window
-				var vside: float = vsz + (0.02 if vsz > 0.0 else -0.02)
-				for pane_x in [-1.3, -0.35]:
-					_box(g, Vector3(pane_x, 1.35, vside), Vector3(0.8, 0.7, 0.04), glass.darkened(0.05)) # framed cargo windows
-				_box(g, Vector3(-0.82, 0.78, vside), Vector3(0.55, 0.05, 0.04), Color(0.3, 0.3, 0.33)) # sliding door rail
-			# Rear doors: centre seam, two windows, two handles — the
-			# back reads as doors, not a slab.
-			_box(g, Vector3(-1.96, 1.05, 0), Vector3(0.04, 1.7, 0.05), col.darkened(0.25))
-			_box(g, Vector3(-1.96, 1.45, 0.45), Vector3(0.04, 0.55, 0.6), glass.darkened(0.05))
-			_box(g, Vector3(-1.96, 1.45, -0.45), Vector3(0.04, 0.55, 0.6), glass.darkened(0.05))
-			_box(g, Vector3(-1.97, 1.0, 0.14), Vector3(0.04, 0.06, 0.2), Color(0.25, 0.25, 0.28))
-			_box(g, Vector3(-1.97, 1.0, -0.14), Vector3(0.04, 0.06, 0.2), Color(0.25, 0.25, 0.28))
-			_car_wheels(g, 3.2)
-		"convertible":
-			var cb := _box(g, Vector3(0, 0.48, 0), Vector3(3.8, 0.58, 1.75), col, true)
-			cb.material_override = _paint(col)
-			_box(g, Vector3(-0.15, 0.82, 0), Vector3(1.9, 0.16, 1.5), Color(0.16, 0.14, 0.13)) # open cockpit
-			for sz in [-0.42, 0.42]:
-				_box(g, Vector3(0.35, 0.88, sz), Vector3(0.5, 0.3, 0.55), Color(0.85, 0.8, 0.7)) # seats
-			var cws := _box(g, Vector3(1.15, 0.95, 0), Vector3(0.06, 0.5, 1.5), glass)
-			cws.rotation_degrees = Vector3(0, 0, -18)
-			cws.material_override = _car_glass()
-			_box(g, Vector3(-1.55, 0.8, 0), Vector3(0.7, 0.22, 1.4), col.darkened(0.15)) # folded top
-			_car_wheels(g, 2.6)
-		_: # sedan (the v0.5 design)
-			var sb := _box(g, Vector3(0, 0.55, 0), Vector3(3.9, 0.75, 1.8), col, true)
-			sb.material_override = _paint(col)
-			var sc2 := _box(g, Vector3(-0.2, 1.2, 0), Vector3(2.0, 0.65, 1.6), glass)
-			sc2.material_override = _car_glass()
-			_car_wheels(g, 2.5)
-	# v0.9: PAIRED headlights + taillights, bumpers and a grille —
-	# v0.8 had a single light blob floating on each end.
-	for lz in [-0.55, 0.55]:
-		_box(g, Vector3(1.99, 0.62, lz), Vector3(0.08, 0.2, 0.42), Color(1, 0.95, 0.7), false, 0.8)
-		_box(g, Vector3(-1.99, 0.62, lz), Vector3(0.08, 0.2, 0.42), Color(0.9, 0.2, 0.15), false, 0.6)
-	_box(g, Vector3(2.0, 0.32, 0), Vector3(0.18, 0.24, 1.86), Color(0.22, 0.22, 0.25)) # front bumper
-	_box(g, Vector3(-2.0, 0.32, 0), Vector3(0.18, 0.24, 1.86), Color(0.22, 0.22, 0.25)) # rear bumper
-	_box(g, Vector3(2.02, 0.58, 0), Vector3(0.05, 0.26, 0.9), Color(0.3, 0.3, 0.34)) # grille
-	_cyl(g, Vector3(-1.7, 0.18, -0.5), 0.05, 0.05, 0.22, Color(0.55, 0.56, 0.6)).rotation_degrees = Vector3(0, 0, 90) # exhaust
-	_box(g, Vector3(0.95, 1.02, 0.99), Vector3(0.16, 0.09, 0.12), col.darkened(0.15)) # mirror R (v0.7 detail)
-	_box(g, Vector3(0.95, 1.02, -0.99), Vector3(0.16, 0.09, 0.12), col.darkened(0.15)) # mirror L
-	# v0.8 car surface detail: door seams + handles + sill line on both flanks
-	for fz2 in [0.915, -0.915]:
-		_box(g, Vector3(0.1, 0.62, fz2), Vector3(0.03, 0.62, 0.02), col.darkened(0.28))
-		_box(g, Vector3(0.42, 0.82, fz2), Vector3(0.3, 0.05, 0.03), Color(0.25, 0.25, 0.28))
-		_box(g, Vector3(-0.5, 0.82, fz2), Vector3(0.3, 0.05, 0.03), Color(0.25, 0.25, 0.28))
-		_box(g, Vector3(0.0, 0.3, fz2), Vector3(3.1, 0.05, 0.02), col.darkened(0.2))
-	_box(g, Vector3(-2.0, 0.55, 0), Vector3(0.04, 0.24, 0.7), Color(0.95, 0.95, 0.92)) # rear plate
+	var scene: PackedScene = _vehicle_scene(car_type)
+	var inst: Node3D = scene.instantiate()
+	g.add_child(inst)
+	var dims: Vector3 = VEHICLE_DIMS.get(scene.resource_path, Vector3(4.2, 1.5, 2.0))
+	var body := StaticBody3D.new()
+	var cs := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(dims.x, dims.y * 0.85, dims.z)
+	cs.shape = shape
+	cs.position = Vector3(0, dims.y * 0.42, 0)
+	body.add_child(cs)
+	g.add_child(body)
 	if not for_traffic:
 		_label3d(g, "hide ⛺", Vector3(0, 2.1, 0), 40, Color(1, 1, 1, 0.85))
 	return g
-
-func _car_wheels(g: Node, span: float) -> void:
-	for wx in [-span * 0.5, span * 0.5]:
-		for wz in [-0.82, 0.82]:
-			var wheel := _cyl(g, Vector3(wx, 0.32, wz), 0.32, 0.32, 0.18, Color(0.1, 0.1, 0.11))
-			wheel.rotation_degrees = Vector3(90, 0, 0)
-			var hub := _cyl(g, Vector3(wx, 0.32, wz + (0.1 if wz > 0.0 else -0.1)), 0.15, 0.15, 0.03, Color(0.62, 0.64, 0.68)) # v0.8 hubcap
-			hub.rotation_degrees = Vector3(90, 0, 0)
-			hub.material_override = _mat(Color(0.62, 0.64, 0.68), 0.3, 0.0) # v1.0 step 2: polished hub metal
-			hub.material_override.metallic = 0.75
-			# v0.9: dark wheel-arch trim over every wheel
-			_box(g, Vector3(wx, 0.68, wz + (0.06 if wz > 0.0 else -0.06)), Vector3(0.78, 0.14, 0.1), Color(0.16, 0.16, 0.18))
 
 func _build_pine(parent: Node, pos: Vector3, s: float = 1.0) -> void:
 	# v0.7: FOUR ragged, slightly offset tiers over a tapered trunk —
@@ -5583,7 +5597,32 @@ func _input(event: InputEvent) -> void:
 		elif t.index == run_touch_id:
 			run_touch_id = -999
 			_on_run_hold(false)
+		# v1.0.21 HOP FIX (Michael's v1.0.20 report: "you can't jump
+		# while running — you have to stop, then jump, then press
+		# forward"): the A (HOP), B (PAW) and MEOW buttons had the
+		# SAME disease v1.0.18 cured for RUN — they were wired only
+		# to their Buttons' pressed signals, which ride the
+		# single-pointer touch->mouse emulation channel, so with the
+		# joystick thumb down a press on HOP never fired. (The cat's
+		# physics was never the block: velocity.x/z are driven from
+		# the input every physics frame, airborne included, and
+		# try_hop only gates on is_on_floor — the press simply never
+		# arrived.) The three momentary actions are now claimed HERE,
+		# on the raw multi-touch channel, exactly like RUN: a press
+		# landing on a button's live rect fires the action at once,
+		# whatever else is held. The Buttons stay as the visuals and
+		# the desktop-mouse path; their handlers ignore the
+		# emulated-mouse echo of a tap the raw channel already fired
+		# (_action_claimed_recently). A claimed press starts no
+		# joystick / look drag (the rects already block look drags;
+		# the claim also skips the registration below).
+		var action_claimed := false
 		if t.pressed:
+			var act: String = _claim_action_touch(t.position)
+			if act != "":
+				action_claimed = true
+				_fire_action(act)
+		if t.pressed and not action_claimed:
 			if t.position.x < vp.x * 0.45 and joy_id == -999:
 				joy_id = t.index
 				joy_origin = t.position
@@ -5990,7 +6029,7 @@ func _build_hud() -> void:
 	title_panel.add_child(start_btn)
 	# v1.0.10: subtle build tag so Michael can confirm which build
 	# he is running from the title screen itself.
-	var ver := _hud_label(title_panel, "v1.0.20", Vector2(706, 522), 16)
+	var ver := _hud_label(title_panel, "v1.0.21", Vector2(706, 522), 16)
 	ver.label_settings.font_color = Color(0.65, 0.7, 0.85)
 	win_panel = _make_panel(hud_layer, Vector2(290, 130), Vector2(700, 460), Color(0.12, 0.2, 0.12, 0.97))
 	win_panel.set_anchors_preset(Control.PRESET_CENTER)
@@ -6160,9 +6199,9 @@ func _build_touch_controls() -> void:
 	joy_knob.add_theme_stylebox_override("panel", jks)
 	joy_knob.visible = false
 	touch_layer.add_child(joy_knob)
-	_round_action("A\nHOP", Vector2(1178, 590), 92, Color(0.85, 0.3, 0.3, 0.88), _on_hop_pressed)
-	_round_action("B\nPAW", Vector2(1066, 614), 84, Color(0.3, 0.45, 0.9, 0.88), func() -> void: _on_interact())
-	_round_action("MEOW", Vector2(1146, 492), 70, Color(0.55, 0.4, 0.85, 0.85), func() -> void: _on_meow())
+	hop_btn = _round_action("A\nHOP", Vector2(1178, 590), 92, Color(0.85, 0.3, 0.3, 0.88), func() -> void: if not _action_claimed_recently("hop"): _on_hop_pressed())
+	paw_btn = _round_action("B\nPAW", Vector2(1066, 614), 84, Color(0.3, 0.45, 0.9, 0.88), func() -> void: if not _action_claimed_recently("paw"): _on_interact())
+	meow_btn = _round_action("MEOW", Vector2(1146, 492), 70, Color(0.55, 0.4, 0.85, 0.85), func() -> void: if not _action_claimed_recently("meow"): _on_meow())
 	run_btn = _round_hold("RUN", Vector2(1062, 492), 70, Color(0.35, 0.38, 0.42, 0.85), _on_run_hold)
 	_refresh_run_button()
 	# RUN button (Michael's direction, superseding v0.7's
@@ -6287,7 +6326,7 @@ func _build_escape_ui() -> void:
 	prop_prompt_btn.pressed.connect(_on_prop_prompt_pressed)
 	prop_prompt_btn.visible = false
 	escape_ui_layer.add_child(prop_prompt_btn)
-	# THE PANEL (scripts/escape_panel.gd): picture + combo + PAW.
+	# THE PANEL (scripts/escape_panel.gd): picture + combo + A/B buttons.
 	# Anchors are set HERE, before it enters the tree — the same
 	# pattern as fade_rect (a script setting its own anchors in its
 	# _ready leaves the rect at size 0; verified by probe).
@@ -6367,6 +6406,32 @@ func _round_hold(text: String, pos: Vector2, diameter: int, color: Color, on_hol
 func _on_hop_pressed() -> void:
 	if player:
 		player.try_hop()
+
+# v1.0.21: the raw-touch claim for the momentary action buttons
+# (see the v1.0.21 note in _input). Returns the action a press at
+# `pos` lands on ("" = none). The buttons are live-rect checked,
+# exactly like _look_press_blocked.
+func _claim_action_touch(pos: Vector2) -> String:
+	if hop_btn != null and hop_btn.is_visible_in_tree() and hop_btn.get_global_rect().has_point(pos):
+		return "hop"
+	if paw_btn != null and paw_btn.is_visible_in_tree() and paw_btn.get_global_rect().has_point(pos):
+		return "paw"
+	if meow_btn != null and meow_btn.is_visible_in_tree() and meow_btn.get_global_rect().has_point(pos):
+		return "meow"
+	return ""
+
+func _fire_action(action: String) -> void:
+	_action_claim_msec[action] = Time.get_ticks_msec()
+	match action:
+		"hop": _on_hop_pressed()
+		"paw": _on_interact()
+		"meow": _on_meow()
+
+func _action_claimed_recently(action: String) -> bool:
+	# True while the emulated-mouse echo of a raw-claimed tap may
+	# still be in flight — the Button's own handler stands down so
+	# the action fires exactly once per tap.
+	return Time.get_ticks_msec() - int(_action_claim_msec.get(action, -1000000)) < 150
 
 func _on_sprint_hold(p: bool) -> void:
 	# Legacy hold-style setter (pre-v1.0.13 Sprint button remnant).
@@ -6686,6 +6751,162 @@ func apply_traffic_hit(car_vel: Vector3) -> void:
 	show_message("🚗 Whoa! A car startled you — -%d points! (You're fine, just bounced.)" % TRAFFIC_HIT_PENALTY, 2.5)
 
 # ---------------------------------------------------------------- pound van (Michael, 2026-11-17)
+func _build_pound_depot() -> void:
+	# v1.0.21: the pound's home — an open-front GARAGE BAY with the
+	# shelter office attached, on the north side of the z=15 road at
+	# the west end of town (the patrol route's end). The bay faces
+	# the road (opening toward +z); the van parks facing north at
+	# POUND_HOME_POS. Geometry is plain boxes in the town's own
+	# build language; the solid pieces register their XZ rects in
+	# pound_depot_solids for the suite's van audit. Clearances
+	# (audited headless against every building AABB in the town):
+	# the backdrop block to the west ends at x=-121, 7 Oak Avenue's
+	# walls start at x=-101.8, the Maple road corridor starts at
+	# z=-7.4 — the depot (x -120.3..-105, z -6.1..11.5) touches none.
+	var world_node := get_node("World")
+	var depot := Node3D.new()
+	depot.name = "PoundDepot"
+	world_node.add_child(depot)
+	var wall_col := Color(0.88, 0.86, 0.82) # shelter-block off-white, kin to the ward inside
+	var trim_col := Color(0.10, 0.30, 0.55) # the van's own blue
+	var roof_col := Color(0.32, 0.34, 0.38)
+	# The apron: concrete from the road's edge to the bay mouth.
+	_box(depot, Vector3(-112, 0.03, 6.5), Vector3(14.0, 0.06, 10.0), Color(0.62, 0.62, 0.64))
+	# Bay walls (interior x -114.6..-109.4, z -5.4..1.6).
+	_box(depot, Vector3(-114.85, 1.65, -1.9), Vector3(0.5, 3.3, 7.5), wall_col, true) # west wall
+	_box(depot, Vector3(-109.15, 1.65, -1.9), Vector3(0.5, 3.3, 7.5), wall_col, true) # east wall
+	_box(depot, Vector3(-112, 1.65, -5.65), Vector3(6.2, 3.3, 0.5), wall_col, true) # back wall
+	_box(depot, Vector3(-112, 3.45, -1.9), Vector3(6.7, 0.3, 8.4), roof_col) # roof slab
+	_box(depot, Vector3(-112, 2.95, 1.75), Vector3(6.7, 0.7, 0.5), trim_col) # header over the opening (clear height below it: 2.6 — the van is 2.2)
+	_box(depot, Vector3(-114.85, 0.5, 1.85), Vector3(0.5, 1.0, 0.5), trim_col) # mouth posts
+	_box(depot, Vector3(-109.15, 0.5, 1.85), Vector3(0.5, 1.0, 0.5), trim_col)
+	# The shelter office, attached on the west side.
+	_box(depot, Vector3(-117.6, 1.5, -1.9), Vector3(5.4, 3.0, 7.5), Color(0.80, 0.78, 0.74), true)
+	_box(depot, Vector3(-117.6, 3.15, -1.9), Vector3(6.0, 0.3, 8.1), roof_col) # office roof slab
+	_box(depot, Vector3(-117.6, 1.15, 1.87), Vector3(1.0, 2.3, 0.06), Color(0.35, 0.25, 0.16), true) # office door (front face)
+	_box(depot, Vector3(-119.3, 1.8, 1.87), Vector3(1.3, 0.9, 0.06), Color(0.72, 0.87, 0.95)) # office window
+	_box(depot, Vector3(-115.9, 1.8, 1.87), Vector3(1.3, 0.9, 0.06), Color(0.72, 0.87, 0.95))
+	# Signs the player can read from the road.
+	_label3d(depot, "POUND", Vector3(-112, 2.95, 2.35), 72, Color(0.85, 0.92, 1.0))
+	_label3d(depot, "🐾 ANIMAL SHELTER", Vector3(-117.6, 2.55, 2.3), 54, Color(0.15, 0.33, 0.3))
+	pound_depot_solids = [
+		Rect2(-115.1, -5.65, 0.5, 7.5), # bay west wall
+		Rect2(-109.4, -5.65, 0.5, 7.5), # bay east wall
+		Rect2(-115.1, -5.9, 6.2, 0.5), # bay back wall
+		Rect2(-120.3, -5.65, 5.4, 7.5), # the office block
+	]
+
+func _build_pound_van_bar() -> void:
+	# v1.0.21: the being-noticed meter over the VAN — the same rig
+	# person.gd builds over a grabber's head (frame + track + yellow
+	# fill, BAR_W x BAR_H), riding above the roof while the worker
+	# is inside. Once he is on foot, his own bar takes over (main
+	# mirrors pound_notice onto him — see _pound_update_notice).
+	pound_bar_root = Node3D.new()
+	pound_bar_root.position = Vector3(0, 2.85, 0)
+	pound_bar_root.visible = false
+	pound_van.add_child(pound_bar_root)
+	var frame := MeshInstance3D.new()
+	var fq := QuadMesh.new()
+	fq.size = Vector2(2.13, 0.32)
+	frame.mesh = fq
+	frame.material_override = _pound_bar_material(Color(0.03, 0.03, 0.05, 0.92))
+	pound_bar_root.add_child(frame)
+	var track := MeshInstance3D.new()
+	var tq := QuadMesh.new()
+	tq.size = Vector2(2.05, 0.24)
+	track.mesh = tq
+	track.position.z = 0.006
+	track.material_override = _pound_bar_material(Color(0.23, 0.20, 0.16, 0.95))
+	pound_bar_root.add_child(track)
+	pound_bar_fill = MeshInstance3D.new()
+	var iq := QuadMesh.new()
+	iq.size = Vector2(1.0, 0.18)
+	pound_bar_fill.mesh = iq
+	pound_bar_fill.position.z = 0.012
+	pound_bar_fill.material_override = _pound_bar_material(Color(1.0, 0.85, 0.3))
+	pound_bar_root.add_child(pound_bar_fill)
+	pound_bar_label = Label3D.new()
+	pound_bar_label.text = ""
+	pound_bar_label.font_size = 44
+	pound_bar_label.pixel_size = 0.009
+	pound_bar_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	pound_bar_label.position = Vector3(0, 0.52, 0)
+	pound_bar_label.modulate = Color(1.0, 0.85, 0.3)
+	pound_bar_label.outline_size = 8
+	pound_bar_root.add_child(pound_bar_label)
+
+func _pound_bar_material(c: Color) -> StandardMaterial3D:
+	# person.gd's bar material recipe (unshaded, double-sided,
+	# no depth test so the meter reads through the van roof line).
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.albedo_color = c
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	m.no_depth_test = true
+	if c.a < 1.0:
+		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	return m
+
+func _update_pound_van_bar() -> void:
+	# Show/aim the van's notice meter for the CURRENT pound_notice.
+	# Visible only while he rides (patrol / the depot legs with a
+	# meter up — in practice patrol) and through the pull-over and
+	# getting-out beats at full; hidden once his own bar takes over.
+	if pound_bar_root == null:
+		return
+	var show: bool = pound_notice > 0.03 and (pound_state == "patrol" or pound_state == "pullover" or pound_state == "exit")
+	pound_bar_root.visible = show
+	if not show:
+		return
+	pound_bar_label.text = "👀"
+	var f: float = clampf(pound_notice, 0.0, 1.0)
+	pound_bar_fill.scale = Vector3(maxf(2.05 * f, 0.001), 1.0, 1.0)
+	pound_bar_fill.position.x = -2.05 * 0.5 + 2.05 * f * 0.5
+	# Yaw-face the camera, like person.gd's bar (the van's own yaw
+	# must not swing the meter away from the player).
+	var cam3d := get_viewport().get_camera_3d()
+	if cam3d:
+		var cp := cam3d.global_position
+		var bp := pound_bar_root.global_position
+		pound_bar_root.global_rotation = Vector3(0, atan2(cp.x - bp.x, cp.z - bp.z), 0)
+
+func _build_pound_light_rig() -> void:
+	# v1.0.21: the FLASHING light bar. The Meshy van has a light
+	# bar modelled on its roof, but it is part of the single body
+	# mesh — it cannot flash by itself. This rig rides on the roof
+	# over the cab: a low dark base and two blue lamps that
+	# alternate while the encounter is live (see
+	# _pound_update_lights). Both lamps start dark — on patrol the
+	# modelled bar alone reads as the official marking.
+	_box(pound_van, Vector3(1.15, 2.07, 0), Vector3(0.55, 0.07, 1.0), Color(0.16, 0.16, 0.19))
+	pound_light_lamp_l = _box(pound_van, Vector3(1.15, 2.14, 0.27), Vector3(0.42, 0.08, 0.4), Color(0.3, 0.6, 1.0), false, 1.6)
+	pound_light_lamp_r = _box(pound_van, Vector3(1.15, 2.14, -0.27), Vector3(0.42, 0.08, 0.4), Color(0.3, 0.6, 1.0), false, 1.6)
+	pound_light_lamp_l.visible = false
+	pound_light_lamp_r.visible = false
+
+func _pound_lights_active() -> bool:
+	# Michael's order of events (his v1.0.21 restatement): the
+	# meter fills -> the LIGHTS GO ON -> the van stops -> the
+	# officer gets out and chases. So the bar is live from the
+	# pull-over beat through the whole encounter — getting out,
+	# the chase, the capture-away, the walk back — and goes dark
+	# again once he is back in and the patrol resumes.
+	return pound_state == "pullover" or pound_state == "exit" or pound_state == "chase" or pound_state == "away" or pound_state == "return"
+
+func _pound_update_lights(delta: float) -> void:
+	if pound_light_lamp_l == null or pound_light_lamp_r == null:
+		return
+	if not _pound_lights_active():
+		pound_light_lamp_l.visible = false
+		pound_light_lamp_r.visible = false
+		pound_light_t = 0.0
+		return
+	pound_light_t += delta
+	var phase: int = int(pound_light_t / 0.26) % 2
+	pound_light_lamp_l.visible = phase == 0
+	pound_light_lamp_r.visible = phase == 1
+
 func _spawn_pound() -> void:
 	# The patrol circuit: one right-hand loop around the whole
 	# town, driven on the traffic lanes (lane offsets as in
@@ -6712,7 +6933,7 @@ func _spawn_pound() -> void:
 			Vector3(-71.8, 0, 16.8),
 		]
 	pound_route_idx = 1
-	pound_van = _build_car(traffic_group, pound_route[0], Color(0.96, 0.96, 0.94), true, "van", true)
+	pound_van = _build_car(traffic_group, pound_route[0], Color(0.96, 0.96, 0.94), true, "pound", true)
 	pound_van.name = "PoundVan"
 	pound_van_yaw = 0.0
 	pound_van.rotation.y = 0.0
@@ -6720,15 +6941,14 @@ func _spawn_pound() -> void:
 	# face-on as he passes, like the street signs. (The van is a
 	# traffic-system vehicle, so the static-prop roadway audits,
 	# which skip the Traffic subtree by design, are untouched.)
-	_label3d_flat(pound_van, "POUND", Vector3(-0.45, 0.60, 0.99), 120, Color(0.10, 0.30, 0.55), 0.0, 0.006)
-	_label3d_flat(pound_van, "ANIMAL CONTROL", Vector3(-0.45, 1.84, 0.99), 60, Color(0.10, 0.30, 0.55), 0.0, 0.006)
-	_label3d_flat(pound_van, "POUND", Vector3(-0.45, 0.60, -0.99), 120, Color(0.10, 0.30, 0.55), 180.0, 0.006)
-	_label3d_flat(pound_van, "ANIMAL CONTROL", Vector3(-0.45, 1.84, -0.99), 60, Color(0.10, 0.30, 0.55), 180.0, 0.006)
-	# A little roof light bar, so he reads as an official vehicle
-	# at a glance and not just another white van in traffic.
-	_box(pound_van, Vector3(1.08, 2.05, 0), Vector3(0.5, 0.08, 0.95), Color(0.25, 0.25, 0.28))
-	_box(pound_van, Vector3(1.08, 2.12, 0.25), Vector3(0.34, 0.07, 0.32), Color(1.0, 0.62, 0.15), false, 0.7)
-	_box(pound_van, Vector3(1.08, 2.12, -0.25), Vector3(0.34, 0.07, 0.32), Color(0.2, 0.5, 1.0), false, 0.7)
+	# v1.0.21: the body is the Meshy Animal Control van now (2.0 m
+	# wide — the labels ride just off its flanks at z = +/-1.02).
+	_label3d_flat(pound_van, "POUND", Vector3(-0.45, 0.60, 1.02), 120, Color(0.10, 0.30, 0.55), 0.0, 0.006)
+	_label3d_flat(pound_van, "ANIMAL CONTROL", Vector3(-0.45, 1.84, 1.02), 60, Color(0.10, 0.30, 0.55), 0.0, 0.006)
+	_label3d_flat(pound_van, "POUND", Vector3(-0.45, 0.60, -1.02), 120, Color(0.10, 0.30, 0.55), 180.0, 0.006)
+	_label3d_flat(pound_van, "ANIMAL CONTROL", Vector3(-0.45, 1.84, -1.02), 60, Color(0.10, 0.30, 0.55), 180.0, 0.006)
+	# v1.0.21: the FLASHING light bar (see _build_pound_light_rig).
+	_build_pound_light_rig()
 	await _build_frame() # v1.0.11 chunking: van build and worker build are two chunks, not one ~112 ms stretch
 	# The worker: a person.gd "poundworker" (white uniform, cap,
 	# net in hand) with the grabber role, so his chase, grab and
@@ -6749,6 +6969,7 @@ func _spawn_pound() -> void:
 	pound_worker.set("player_ref", player)
 	pound_worker.set("active", false)
 	pound_worker.visible = false
+	_build_pound_van_bar() # v1.0.21: the notice meter over the van
 
 func _pound_forward() -> Vector3:
 	return Vector3(cos(pound_van_yaw), 0, -sin(pound_van_yaw))
@@ -6805,6 +7026,76 @@ func _pound_gates_open() -> bool:
 		if m == "chase" or m == "pursue" or m == "tell":
 			return false # never pile his chase onto one already running
 	return true
+
+func _pound_update_notice(delta: float) -> void:
+	# v1.0.21: the officer notices the cat the way every grabber
+	# does (Michael: "it should be just like one of those people who
+	# wants to take me home. If I'm around the van or the animal
+	# control person either or, the things should start and the guy
+	# should start chasing me"). Runs in the two states where he can
+	# still be SPOTTED rather than already engaging: "patrol" (he is
+	# riding in the van — proximity to the VAN counts and the meter
+	# shows over the van) and "return" (he is on foot walking back —
+	# proximity to HIM counts and the meter shows over his own head,
+	# mirrored onto his notice var for his own bar rig). The sight
+	# maths are person.gd's own: detect_radius range, house
+	# line-of-sight, a fill rate scaled by closeness, slower against
+	# a sprinting cat, decay when unseen — with detect_radius /
+	# fill_rate read off his own poundworker definition, so he
+	# notices exactly like a grabber person does. (His line-of-sight
+	# check measures from wherever HE stands, and while he rides he
+	# is pinned at the van, so the van's sight lines come free.)
+	# Only a FULL meter starts the old flow: the pull-over (from
+	# patrol) or the re-engage (from return) — and the existing exit
+	# beat then hands him to his own brain for the RUN tell and the
+	# chase. Before v1.0.21 there was NO meter at all: stepping
+	# inside a bare 12 m radius slammed him straight out of the van,
+	# and on foot nothing built up at all.
+	if pound_worker == null or pound_van == null or player == null:
+		return
+	if pound_state != "patrol" and pound_state != "return":
+		return
+	# His notice_cooldown is a real gate (a chase end sets 3 s of
+	# it) — but while MAIN drives him his brain is off, so the
+	# cooldown would never tick down and the gate would stay shut
+	# forever after his first chase. Main ticks it down here,
+	# exactly as his own brain would if it were running.
+	if float(pound_worker.get("notice_cooldown")) > 0.0:
+		pound_worker.set("notice_cooldown", maxf(0.0, float(pound_worker.get("notice_cooldown")) - delta))
+	var gates: bool = _pound_gates_open() and float(pound_worker.get("notice_cooldown")) <= 0.0
+	var anchor: Vector3 = pound_van.global_position if pound_state == "patrol" else (pound_worker as Node3D).global_position
+	var d3: Vector3 = player.global_position - anchor
+	d3.y = 0.0
+	var dist: float = d3.length()
+	var sight: float = float(pound_worker.get("detect_radius"))
+	var seen: bool = false
+	if gates and dist < sight and not bool(player.get("is_hidden")):
+		seen = bool(pound_worker.call("_has_line_of_sight")) # person.gd's LOS takes NO argument (it reads his own player_ref) — passing one makes call() fail and return null, which reads as "never seen"
+	if seen:
+		var closeness: float = clampf(1.0 - dist / sight, 0.0, 1.0)
+		var rate: float = float(pound_worker.get("fill_rate")) * (0.35 + closeness * 0.95)
+		if bool(player.get("is_sprinting")): # the cat's var is is_sprinting — a wrong name here returns null, and bool(null) THROWS, aborting the whole update
+			rate *= 0.55
+		pound_notice = minf(1.0, pound_notice + rate * delta)
+	else:
+		pound_notice = maxf(0.0, pound_notice - 0.55 * delta)
+	if pound_state == "return":
+		pound_worker.set("notice", pound_notice) # his own bar draws from this...
+		pound_worker.call("_update_labels") # ...but his brain is OFF while main drives him (active=false freezes person.gd whole, labels included), so main refreshes his label rig directly
+	_update_pound_van_bar()
+	if pound_notice >= 1.0:
+		if pound_state == "patrol":
+			pound_heading_home = false # an engagement interrupts the drive home
+			_pound_begin_pullover()
+		else:
+			# The same re-engage the old instant spot produced: he
+			# turns on the cat where he stands.
+			pound_worker.set("active", true)
+			pound_worker.set("notice", 1.0)
+			pound_worker.call("_start_chase") # no argument — see the LOS note above
+			pound_state = "chase"
+			_pound_reset_return_watch()
+			pound_notice = 0.0
 
 func _pound_begin_pullover() -> void:
 	# Pull to the kerb on HIS side of the road he is on, rolling a
@@ -6977,20 +7268,28 @@ func _update_pound(delta: float) -> void:
 		if pound_state == "patrol":
 			_pound_drive_route(delta, POUND_VAN_SPEED)
 			_pound_pin_worker()
+		elif pound_state == "depot_in" or pound_state == "depot" or pound_state == "depot_out":
+			_update_pound_depot(delta) # v1.0.21: the garage legs run behind the title too
 		return
 	if state != "play":
 		return # cutscene / escape / win: he is busy being the captor (or the moment is frozen)
 	if pound_engage_cd > 0.0:
 		pound_engage_cd -= delta
+	_pound_update_notice(delta) # v1.0.21: the officer's grabber notice meter (patrol + return states; self-gated)
 	match pound_state:
 		"patrol":
-			_pound_drive_route(delta, POUND_VAN_SPEED)
-			_pound_pin_worker()
-			if _pound_gates_open():
-				var d: Vector3 = player.global_position - pound_van.position
-				d.y = 0.0
-				if d.length() <= POUND_SPOT_RADIUS:
-					_pound_begin_pullover()
+			if pound_heading_home and pound_route_idx == 0 and pound_van.position.x <= -109.0 and pound_van.position.z > 8.0:
+				# v1.0.21: the west end of the round, level with the
+				# depot — turn in and park in the garage (the depot
+				# arms below drive it from the next frame).
+				pound_heading_home = false
+				pound_notice = 0.0
+				pound_state = "depot_in"
+				pound_path = [Vector3(-112, 0, 11.0), Vector3(-112, 0, 5.0), POUND_HOME_POS]
+				pound_path_idx = 0
+			else:
+				_pound_drive_route(delta, POUND_VAN_SPEED)
+				_pound_pin_worker()
 		"pullover":
 			_pound_drive_pullover(delta)
 			if pound_state == "pullover":
@@ -7015,83 +7314,159 @@ func _update_pound(delta: float) -> void:
 				# on_cat_taken moves him to "away".)
 				pound_state = "return"
 				pound_worker.set("active", false)
+				pound_notice = 0.0 # v1.0.21: the meter starts empty on the walk back; it can build again from here
+				pound_worker.set("notice", 0.0)
 				_pound_clear_label()
 				_pound_reset_return_watch()
 		"return":
-			var d2: Vector3 = player.global_position - pound_worker.global_position
-			d2.y = 0.0
-			if _pound_gates_open() and d2.length() <= POUND_SPOT_RADIUS:
-				# The cat wandered back into view on his way to the
-				# van — he turns around and comes after him again.
-				pound_state = "chase"
-				pound_worker.set("active", true)
-				pound_worker.set("notice", 1.0)
-				pound_worker.call("_start_chase")
-				_pound_reset_return_watch()
+			# v1.0.21: no instant re-spot on this walk any more — if
+			# the cat comes back into his view, the notice meter
+			# builds over his head and only a FULL meter turns him
+			# around (see _pound_update_notice, which runs before
+			# this match). The walk itself is unchanged.
+			var door: Vector3 = _pound_door_pos()
+			var target: Vector3 = _pound_return_target(door)
+			# POUND RETURN FIX: stuck watch. The waypoints are
+			# the fix; this only fires if scenery the waypoints
+			# don't know about still wedges him in real play.
+			# No progress for ~2.5 s -> a sidestep; ~6 s total
+			# of no progress -> quietly place him at the door.
+			if pound_return_dodge_t > 0.0:
+				pound_return_dodge_t -= delta
+				target = pound_return_dodge
 			else:
-				var door: Vector3 = _pound_door_pos()
-				var target: Vector3 = _pound_return_target(door)
-				# POUND RETURN FIX: stuck watch. The waypoints are
-				# the fix; this only fires if scenery the waypoints
-				# don't know about still wedges him in real play.
-				# No progress for ~2.5 s -> a sidestep; ~6 s total
-				# of no progress -> quietly place him at the door.
-				if pound_return_dodge_t > 0.0:
-					pound_return_dodge_t -= delta
-					target = pound_return_dodge
+				var wpos: Vector3 = pound_worker.global_position
+				var dt2: Vector3 = target - wpos
+				dt2.y = 0.0
+				if not pound_return_has_target or pound_return_last_target.distance_squared_to(target) > 0.04:
+					pound_return_best = INF
+					pound_return_still_t = 0.0
+					pound_return_has_target = true
+				pound_return_last_target = target
+				if dt2.length() < pound_return_best - 0.05:
+					pound_return_best = dt2.length()
+					pound_return_still_t = 0.0
 				else:
-					var wpos: Vector3 = pound_worker.global_position
-					var dt2: Vector3 = target - wpos
-					dt2.y = 0.0
-					if not pound_return_has_target or pound_return_last_target.distance_squared_to(target) > 0.04:
-						pound_return_best = INF
-						pound_return_still_t = 0.0
-						pound_return_has_target = true
-					pound_return_last_target = target
-					if dt2.length() < pound_return_best - 0.05:
-						pound_return_best = dt2.length()
-						pound_return_still_t = 0.0
-					else:
-						pound_return_still_t += delta
-						pound_return_stuck_total += delta
-					if pound_return_stuck_total >= 6.0:
-						# Last resort: he is wedged somewhere the
-						# waypoints can't clear. A tiny pop at the
-						# door after 6 stuck seconds beats a patrol
-						# that never resumes.
-						print("POUND RETURN FAILSAFE: teleported worker to the door after ", snappedf(pound_return_stuck_total, 0.1), "s stuck (target was ", target, ")")
-						pound_worker.global_position = door + pound_kerb_dir * 0.3
-						_pound_reset_return_watch()
-						target = door
-					elif pound_return_still_t >= 2.5:
-						# Sidestep: a brisk step perpendicular to
-						# the blocked line — kerb side first, the
-						# other side if he is still stuck after —
-						# then resume the routed walk.
-						var dirv: Vector3 = dt2.normalized()
-						var perp: Vector3 = Vector3(-dirv.z, 0, dirv.x)
-						if perp.dot(pound_kerb_dir) < 0.0:
-							perp = -perp
-						if pound_return_sidesteps > 0:
-							perp = -perp
-						pound_return_dodge = wpos + perp * 1.3
-						pound_return_dodge_t = 0.9
-						pound_return_sidesteps += 1
-						pound_return_still_t = 0.0
-						print("POUND RETURN FAILSAFE: sidestep #", pound_return_sidesteps, " at ", wpos, " toward ", pound_return_dodge)
-						target = pound_return_dodge
-				if _pound_move_worker(target, POUND_RETURN_SPEED, delta) and target == door:
-					# Back at the van: in he gets, net and all, and
-					# the patrol resumes — he'll be round again.
-					pound_worker.visible = false
-					pound_worker.set("active", false)
-					pound_worker.call("set_net_visible", true)
-					pound_worker.call("set_expression", "neutral")
-					pound_state = "patrol"
-					pound_engage_cd = 6.0
+					pound_return_still_t += delta
+					pound_return_stuck_total += delta
+				if pound_return_stuck_total >= 6.0:
+					# Last resort: he is wedged somewhere the
+					# waypoints can't clear. A tiny pop at the
+					# door after 6 stuck seconds beats a patrol
+					# that never resumes.
+					print("POUND RETURN FAILSAFE: teleported worker to the door after ", snappedf(pound_return_stuck_total, 0.1), "s stuck (target was ", target, ")")
+					pound_worker.global_position = door + pound_kerb_dir * 0.3
 					_pound_reset_return_watch()
+					target = door
+				elif pound_return_still_t >= 2.5:
+					# Sidestep: a brisk step perpendicular to
+					# the blocked line — kerb side first, the
+					# other side if he is still stuck after —
+					# then resume the routed walk.
+					var dirv: Vector3 = dt2.normalized()
+					var perp: Vector3 = Vector3(-dirv.z, 0, dirv.x)
+					if perp.dot(pound_kerb_dir) < 0.0:
+						perp = -perp
+					if pound_return_sidesteps > 0:
+						perp = -perp
+					pound_return_dodge = wpos + perp * 1.3
+					pound_return_dodge_t = 0.9
+					pound_return_sidesteps += 1
+					pound_return_still_t = 0.0
+					print("POUND RETURN FAILSAFE: sidestep #", pound_return_sidesteps, " at ", wpos, " toward ", pound_return_dodge)
+					target = pound_return_dodge
+			if _pound_move_worker(target, POUND_RETURN_SPEED, delta) and target == door:
+				# Back at the van: in he gets, net and all, and
+				# the patrol resumes — he'll be round again.
+				pound_worker.visible = false
+				pound_worker.set("active", false)
+				pound_worker.call("set_net_visible", true)
+				pound_worker.call("set_expression", "neutral")
+				pound_state = "patrol"
+				pound_engage_cd = 6.0
+				pound_heading_home = true # v1.0.21: after an encounter the round ends at the depot — he drives home to the garage (see the patrol arm)
+				_pound_reset_return_watch()
+		"depot_in", "depot", "depot_out":
+			_update_pound_depot(delta) # v1.0.21: the garage legs
 		"away":
 			pass # he is the captor: cutscene, room and pursuit own him until the pursuit drains (see _process)
+	_update_pound_van_bar() # v1.0.21: keep the van meter's visibility honest in every state (full through the pull-over, hidden once he is out)
+	_pound_update_lights(delta) # v1.0.21: the light bar flashes while the encounter is live, dark on patrol
+
+func _pound_drive_path(delta: float, speed: float, snap_end: bool = true) -> bool:
+	# v1.0.21: drive an explicit waypoint list (the depot legs) with
+	# the SAME driving state as the patrol route — pound_van_yaw
+	# tracked exponentially toward the target, speed eased by the
+	# turn gap and accelerated/decelerated through pound_van_speed
+	# exactly as _pound_drive_route does — so the van handles
+	# identically everywhere it drives. Returns true on arrival at
+	# the final waypoint (snapping exactly onto it when asked: the
+	# garage park spot must be precise).
+	if pound_path_idx >= pound_path.size():
+		return true
+	var target: Vector3 = pound_path[pound_path_idx]
+	var to: Vector3 = target - pound_van.position
+	to.y = 0.0
+	var dist: float = to.length()
+	var is_last: bool = pound_path_idx == pound_path.size() - 1
+	var arrive_r: float = (0.6 if snap_end else 2.5) if is_last else 2.5
+	if dist <= arrive_r:
+		if is_last:
+			if snap_end:
+				var prev: Vector3 = pound_path[pound_path_idx - 1] if pound_path_idx > 0 else pound_van.position - _pound_forward()
+				pound_van.position = target
+				pound_van_yaw = atan2(-(target.z - prev.z), target.x - prev.x)
+				pound_van.rotation.y = pound_van_yaw
+				pound_van_speed = 0.0
+			return true
+		pound_path_idx += 1
+		return false
+	var want_yaw: float = atan2(-to.z, to.x)
+	pound_van_yaw = lerp_angle(pound_van_yaw, want_yaw, minf(1.0, 1.15 * delta))
+	var turn_gap: float = absf(angle_difference(pound_van_yaw, want_yaw))
+	var spd: float = speed * clampf(1.15 - turn_gap, 0.45, 1.0)
+	pound_van_speed = move_toward(pound_van_speed, spd, (7.0 if spd < pound_van_speed else 3.5) * delta)
+	pound_van.position += _pound_forward() * pound_van_speed * delta
+	pound_van.rotation.y = pound_van_yaw
+	return false
+
+func _update_pound_depot(delta: float) -> void:
+	# v1.0.21: the garage legs, shared by play and the title screens
+	# (the town stays alive behind the title). The worker rides
+	# throughout — pinned in the van, invisible, exactly as on
+	# patrol — and no notice builds here: he is off duty at home.
+	match pound_state:
+		"depot_in":
+			if _pound_drive_path(delta, 4.5):
+				pound_state = "depot"
+				pound_depot_t = POUND_DEPOT_DWELL
+				pound_van.position = POUND_HOME_POS
+				pound_van_yaw = POUND_HOME_YAW
+				pound_van.rotation.y = POUND_HOME_YAW
+				pound_van_speed = 0.0
+			_pound_pin_worker()
+		"depot":
+			pound_depot_t -= delta
+			_pound_pin_worker()
+			if pound_depot_t <= 0.0:
+				pound_state = "depot_out"
+				pound_backing_out = true
+				pound_path = [Vector3(-104, 0, 16.7)] # back onto the z=15 lane, eastbound
+				pound_path_idx = 0
+		"depot_out":
+			if pound_backing_out:
+				# Reverse straight out of the bay, the way a van
+				# leaves a garage — yaw locked on the park heading.
+				pound_van_yaw = POUND_HOME_YAW
+				pound_van.rotation.y = POUND_HOME_YAW
+				pound_van_speed = 0.0
+				pound_van.position -= _pound_forward() * 2.0 * delta
+				if pound_van.position.z >= 6.5:
+					pound_backing_out = false
+			elif _pound_drive_path(delta, POUND_VAN_SPEED, false):
+				pound_state = "patrol"
+				pound_route_idx = 1 # resume the rounds on the east leg
+			_pound_pin_worker()
 
 # ---------------------------------------------------------------- score
 func _update_score_label() -> void:
@@ -7316,8 +7691,8 @@ func skip_cutscene() -> void:
 # ONE logical exit mechanism per capture — Michael: the v0.6 chains
 # (knock a book / vase, hop the sofa, THEN the real mechanism) felt
 # like the same arbitrary checklist every time. Since v1.1 the
-# working is the escape PANEL combo (prompt -> panel ->
-# down/up/down/up/PAW -> the visible escape); see the panel section
+# working is the escape PANEL combo (prompt -> panel -> the rolled
+# A/B combination -> the visible escape); see the panel section
 # below.
 # v1.4 (Michael's v1.0.6 playtest): the pool is now ONE entry for
 # every captor — the BACK DOOR and its sliding bolt. His rule: the
@@ -7691,9 +8066,22 @@ func _on_escape_prompt_pressed() -> void:
 	if _escape_at_mechanism() and escape_anim_t < 0.0:
 		_open_escape_panel()
 
+func _roll_escape_combo() -> void:
+	# v1.0.21: a fresh A/B combination for THIS start of the puzzle —
+	# five presses, each an even coin flip (Michael's example was
+	# "A B B A A"). Rolled on every panel opening, so an interrupted
+	# try (the captor notices, the panel closes) restarts against a
+	# NEW sequence, never the memorised old one.
+	escape_combo.clear()
+	for i in range(ESCAPE_COMBO_LEN):
+		escape_combo.append("A" if rng.randi_range(0, 1) == 0 else "B")
+	if escape_panel:
+		escape_panel.set_combo_seq(escape_combo)
+
 func _open_escape_panel() -> void:
 	var kind: String = escape_steps[escape_step]["kind"]
 	combo_index = 0
+	_roll_escape_combo() # v1.0.21: every start of the puzzle rolls a fresh A/B combo
 	escape_prog = 0.0
 	notice_t = 0.0 # v1.2: the notice clock starts as the panel opens
 	# (notice_cooldown is NOT cleared: right after an interruption the
@@ -7713,32 +8101,35 @@ func _close_escape_panel() -> void:
 	if player and escape_anim_t < 0.0:
 		player.set("frozen", false)
 
-# One entry point for ALL panel inputs (picture swipes, the panel's
-# PAW button, PC arrow keys + Space, and the automated tests).
+# One entry point for ALL panel inputs (the panel's A / B buttons,
+# the PC hop / paw keys, and the automated tests). v1.0.21: inputs
+# are "A" / "B" presses against the rolled escape_combo.
 func escape_panel_input(inp: String) -> void:
 	if escape_panel == null or not escape_panel.visible:
 		return
 	if state != "escape" or escape_step >= escape_steps.size() or escape_anim_t >= 0.0:
 		return
+	if escape_combo.size() != ESCAPE_COMBO_LEN:
+		_roll_escape_combo() # belt and braces: a panel never runs without a rolled combo
 	var kind: String = escape_steps[escape_step]["kind"]
-	var expected: String = str(ESCAPE_COMBO[combo_index])
+	var expected: String = str(escape_combo[combo_index])
 	if inp == expected:
 		combo_index += 1
-		escape_prog = float(combo_index) / float(ESCAPE_COMBO.size())
+		escape_prog = float(combo_index) / float(ESCAPE_COMBO_LEN)
 		_update_mechanism_visuals(kind)
 		if kind == "carrier":
 			carrier_shake = 0.25 # the carrier rattles as you wriggle its door
 		escape_panel.set_combo(combo_index)
-		if combo_index >= ESCAPE_COMBO.size():
+		if combo_index >= ESCAPE_COMBO_LEN:
 			_panel_combo_success()
 	else:
-		# Gentle reset — and forgiving: a DOWN swipe counts as the
-		# first step of the new try, since the combo starts with one.
-		combo_index = 1 if inp == str(ESCAPE_COMBO[0]) else 0
-		escape_prog = float(combo_index) / float(ESCAPE_COMBO.size())
+		# Gentle reset — and forgiving: a press matching the combo's
+		# FIRST step counts as the first step of the new try.
+		combo_index = 1 if inp == str(escape_combo[0]) else 0
+		escape_prog = float(combo_index) / float(ESCAPE_COMBO_LEN)
 		_update_mechanism_visuals(kind)
 		escape_panel.set_combo(combo_index)
-		escape_panel.show_slip("Oops — it slipped back! Start again: ↓ ↑ ↓ ↑ then PAW 🐾")
+		escape_panel.show_slip("Oops — it slipped back! Start again: " + " ".join(escape_combo) + " 🐾")
 
 func _panel_combo_success() -> void:
 	var kind: String = escape_steps[escape_step]["kind"]
@@ -8561,6 +8952,8 @@ func _process(delta: float) -> void:
 			if npc == pound_worker:
 				pound_state = "return" # POUND VAN: his lookout is over — back to the van, back on patrol
 				pound_worker.set("active", false) # main drives the walk back; his brain must not wander him off it
+				pound_notice = 0.0 # v1.0.21: the meter starts empty on the walk back
+				pound_worker.set("notice", 0.0)
 				_pound_clear_label()
 				_pound_reset_return_watch()
 			show_message("Phew — they gave up looking and went back to their day. 💛", 2.5)
@@ -8590,13 +8983,13 @@ func _unhandled_input(event: InputEvent) -> void:
 			start_game()
 		elif state == "play" or state == "escape":
 			if escape_panel != null and escape_panel.visible:
-				# v1.1 panel on PC: arrow keys swipe, Space/E is the PAW, Esc steps away.
-				if k == KEY_DOWN:
-					escape_panel_input("down")
-				elif k == KEY_UP:
-					escape_panel_input("up")
-				elif k == KEY_SPACE or k == KEY_E:
-					escape_panel_input("paw")
+				# v1.0.21 panel on PC: the combination is entered with
+				# the HOP and PAW keys themselves — Space (hop) is the
+				# A press, E (paw) is the B press. Esc steps away.
+				if k == KEY_SPACE:
+					escape_panel_input("A")
+				elif k == KEY_E:
+					escape_panel_input("B")
 				elif k == KEY_ESCAPE:
 					_close_escape_panel()
 			elif k == KEY_E:
