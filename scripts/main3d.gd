@@ -250,6 +250,9 @@ var purr_player: AudioStreamPlayer = null
 var purr_active: bool = false
 var street_signs: Array = [] # {street, text} for every sign built
 var content_points: Array = [] # v0.9: Vector3 of every house/tree/bush/prop/feature — the empty-area audit measures coverage from this
+var tree_registry: Array = [] # v1.0.27: {node, r} for every tree/pine planted — audited against driveways + parked cars at build end (see _audit_tree_clearance)
+var parked_car_spots: Array = [] # v1.0.27: Vector3 of every STATIC car (driveway, parking lot, diorama) — traffic and the pound van are NOT here
+var driveway_pads: Array = [] # v1.0.27: {cx, cz, hx, hz} per driveway pad — computed once from _driveway_data(); gates ground scatter (_paved_spot) and the tree audit
 # v0.7: the mini-map is GONE entirely (Michael: no real use, and he
 # does not want any aid that shows the way home). Signs only.
 var cutscene_t: float = 0.0
@@ -898,6 +901,13 @@ func _paved_spot(p: Vector3) -> bool:
 			return true
 		if Vector2(p.x - pc.x, p.z - pc.y).length() < 2.9:
 			return true
+	# v1.0.27: driveway pads — the last paved surface the scatter
+	# gate didn't know (Michael's v1.0.26 shots: tufts sprouting
+	# along driveway/sidewalk edges). Rects are precomputed from
+	# the driveway table before anything scatters.
+	for dp in driveway_pads:
+		if absf(p.x - float(dp["cx"])) <= float(dp["hx"]) + 0.35 and absf(p.z - float(dp["cz"])) <= float(dp["hz"]) + 0.35:
+			return true
 	return false
 
 func _ground_spot_blocked(p: Vector3) -> bool:
@@ -1452,6 +1462,7 @@ func _warm_up_gpu() -> void:
 func _build_world_async() -> void:
 	_chunk_t0 = Time.get_ticks_msec()
 	_resume_ms = _chunk_t0
+	_compute_driveway_pads() # v1.0.27: pad rects must exist before the first scatter/planting reads them
 	await _set_boot_stage("Starting…", 5)
 	_spawn_player()
 	_build_camera()
@@ -1484,6 +1495,7 @@ func _build_world_async() -> void:
 	await _warmup_models() # v1.0.25 PERF: draw every model once behind the splash so nothing first-loads mid-play
 	await _staged_reveal()
 	await _set_boot_stage("Warming up the graphics", 97)
+	_audit_tree_clearance() # v1.0.27: every tree + parked car exists by now — enforce canopy clearance before play
 	await _warm_up_gpu() # v1.0.26: last pass — every unique scene presented in sun + shelter before play
 	_log_stage_profile()
 	_stage_name = ""
@@ -2514,30 +2526,7 @@ func _build_world() -> void:
 	var house_by_addr: Dictionary = {}
 	for hh in houses:
 		house_by_addr[str(hh["address"])] = hh
-	var driveway_data: Array = [
-		# [address, side of the front path (+1/-1), road z, colour, type] — the v0.6 cars, relocated
-		["27 Maple Street", 1.0, -11.0, Color(0.8, 0.25, 0.22), "sedan"],
-		["39 Maple Street", -1.0, -11.0, Color(0.25, 0.45, 0.85), "sedan"],
-		["21 Maple Street", 1.0, -11.0, Color(0.3, 0.6, 0.5), "hatchback"],
-		["33 Maple Street", 1.0, -11.0, Color(0.9, 0.88, 0.85), "van"],
-		["45 Maple Street", -1.0, -11.0, Color(0.5, 0.5, 0.55), "pickup"],
-		["15 Maple Street", 1.0, -11.0, Color(0.2, 0.55, 0.6), "hatchback"],
-		["9 Maple Street", -1.0, -11.0, Color(0.6, 0.35, 0.75), "convertible"],
-		["3 Maple Street", 1.0, -11.0, Color(0.2, 0.3, 0.55), "van"],
-		["28 Oak Avenue", 1.0, 15.0, Color(0.82, 0.85, 0.9), "van"],
-		["16 Oak Avenue", -1.0, 15.0, Color(0.35, 0.55, 0.3), "pickup"],
-		["34 Oak Avenue, Apartment 4A", 1.0, 15.0, Color(0.75, 0.76, 0.8), "sedan"],
-		["40 Oak Avenue", -1.0, 15.0, Color(0.9, 0.55, 0.2), "hatchback"],
-		["10 Oak Avenue", 1.0, 15.0, Color(0.55, 0.25, 0.3), "pickup"],
-	]
-	# MAP DOUBLING: three of the new east houses get driveway cars too
-	# BISECT (v1.0.12): skipped in legacy mode — those houses don't exist there.
-	if not LEGACY_TOWN_ONLY:
-		driveway_data += [
-			["53 Maple Street", -1.0, -11.0, Color(0.35, 0.5, 0.8), "sedan"],
-			["89 Maple Street", 1.0, -11.0, Color(0.85, 0.6, 0.25), "hatchback"],
-			["82 Oak Avenue", 1.0, 15.0, Color(0.3, 0.6, 0.5), "sedan"],
-		]
+	var driveway_data: Array = _driveway_data() # v1.0.27: shared with _compute_driveway_pads (see _park_in_driveway)
 	for dd in driveway_data:
 		var dh: Dictionary = house_by_addr[dd[0]]
 		var dpos: Vector3 = _park_in_driveway(world, dh["pos"], float(dh["facing"]), float(dd[2]), float(dd[1]), dd[3], dd[4])
@@ -3282,6 +3271,7 @@ func _fill_parking(world: Node3D, pos: Vector3, w: float, d: float, car_cols: Ar
 		if i == 1:
 			cx = pos.x + w * 0.25
 		_build_car(world, Vector3(cx, 0, pos.z), car_cols[i], true, car_type)
+		parked_car_spots.append(Vector3(cx, 0, pos.z)) # v1.0.27: static car — the tree audit keeps canopies off it
 		await _build_tick() # v1.0.11 chunking: a whole car build between every breath
 	content_points.append(pos)
 
@@ -3972,6 +3962,7 @@ func _build_tree(parent: Node, pos: Vector3, track: bool = true) -> void:
 	var g := Node3D.new()
 	g.position = pos
 	parent.add_child(g)
+	tree_registry.append({"node": g, "r": 2.4}) # v1.0.27: canopy reach (blobs to 1.35 + puff radius) for the clearance audit
 	var bark := Color(0.5, 0.36, 0.22) if ttype == 0 else Color(0.85, 0.82, 0.76)
 	var trunk := _cyl(g, Vector3(0, 1.25, 0), 0.13, 0.3, 2.5, Color.WHITE, true)
 	trunk.material_override = _mat_tex(TEX_BARK, bark, Vector3(1, 2, 1)) # v0.8: real bark grain, not floor planks
@@ -4041,6 +4032,154 @@ func _build_bush(parent: Node, pos: Vector3) -> void:
 		for fi in range(4):
 			_sphere(g, Vector3(br.randf_range(-0.7, 0.7), br.randf_range(0.5, 0.95), br.randf_range(-0.7, 0.7)), Vector3(0.09, 0.09, 0.09), Color(0.95, 0.45, 0.55) if fi % 2 == 0 else Color(0.98, 0.85, 0.4))
 
+# v1.0.27: the driveway-car table — [address, side of the front
+# path (+1/-1), road z, colour, type] — shared by the town build
+# (which parks the cars below) and _compute_driveway_pads (which
+# derives the pad rects the scatter gate and tree audit read), so
+# the three can never drift apart.
+func _driveway_data() -> Array:
+	var data: Array = [
+		["27 Maple Street", 1.0, -11.0, Color(0.8, 0.25, 0.22), "sedan"],
+		["39 Maple Street", -1.0, -11.0, Color(0.25, 0.45, 0.85), "sedan"],
+		["21 Maple Street", 1.0, -11.0, Color(0.3, 0.6, 0.5), "hatchback"],
+		["33 Maple Street", 1.0, -11.0, Color(0.9, 0.88, 0.85), "van"],
+		["45 Maple Street", -1.0, -11.0, Color(0.5, 0.5, 0.55), "pickup"],
+		["15 Maple Street", 1.0, -11.0, Color(0.2, 0.55, 0.6), "hatchback"],
+		["9 Maple Street", -1.0, -11.0, Color(0.6, 0.35, 0.75), "convertible"],
+		["3 Maple Street", 1.0, -11.0, Color(0.2, 0.3, 0.55), "van"],
+		["28 Oak Avenue", 1.0, 15.0, Color(0.82, 0.85, 0.9), "van"],
+		["16 Oak Avenue", -1.0, 15.0, Color(0.35, 0.55, 0.3), "pickup"],
+		["34 Oak Avenue, Apartment 4A", 1.0, 15.0, Color(0.75, 0.76, 0.8), "sedan"],
+		["40 Oak Avenue", -1.0, 15.0, Color(0.9, 0.55, 0.2), "hatchback"],
+		["10 Oak Avenue", 1.0, 15.0, Color(0.55, 0.25, 0.3), "pickup"],
+	]
+	# MAP DOUBLING: three of the new east houses get driveway cars
+	# too. BISECT (v1.0.12): skipped in legacy mode — those houses
+	# don't exist there.
+	if not LEGACY_TOWN_ONLY:
+		data += [
+			["53 Maple Street", -1.0, -11.0, Color(0.35, 0.5, 0.8), "sedan"],
+			["89 Maple Street", 1.0, -11.0, Color(0.85, 0.6, 0.25), "hatchback"],
+			["82 Oak Avenue", 1.0, 15.0, Color(0.3, 0.6, 0.5), "sedan"],
+		]
+	return data
+
+
+# v1.0.27: derive every driveway pad's rect from the house data,
+# using _park_in_driveway's own formula. Runs at the very top of
+# the world build: ground scatter (which reads the rects through
+# _paved_spot) is planted long before the cars are parked.
+func _compute_driveway_pads() -> void:
+	driveway_pads.clear()
+	var by_addr: Dictionary = {}
+	for hh in houses:
+		by_addr[str(hh["address"])] = hh
+	for dd in _driveway_data():
+		if not by_addr.has(str(dd[0])):
+			continue
+		var dh: Dictionary = by_addr[str(dd[0])]
+		var hp: Vector3 = dh["pos"]
+		var facing: float = float(dh["facing"])
+		var pad_near: float = hp.z + facing * 3.7
+		var pad_far: float = float(dd[2]) - facing * 5.1
+		driveway_pads.append({
+			"cx": hp.x + float(dd[1]) * 4.6, "cz": (pad_near + pad_far) * 0.5,
+			"hx": 1.4, "hz": absf(pad_far - pad_near) * 0.5})
+
+
+# v1.0.27 TREE CLEARANCE (Michael's v1.0.26 play photos): a pine
+# planted at a lot corner hung its whole lowest tier over the
+# driveway, swallowing the parked car; another trunk stood in
+# the promenade slab. Trees are planted from half a dozen places
+# (street gaps, fixed dressing, the seeded scatter, parks, the
+# backdrop rows, the escape diorama) and NONE of them knew where
+# the driveways and parked cars would be — the scatter even
+# predates the parking. So clearance is enforced HERE, once, at
+# the end of the build, over every registered tree: a tree whose
+# canopy circle reaches a driveway pad or a parked car, or whose
+# trunk stands on pavement / in a road band / against a house,
+# is moved to the nearest spot that passes every test (widening
+# rings, scatter-grade validity); a tree with nowhere to go is
+# culled rather than left intersecting.
+func _tree_spot_clear(p: Vector3, r: float) -> bool:
+	for dp in driveway_pads:
+		var dx: float = maxf(absf(p.x - float(dp["cx"])) - float(dp["hx"]), 0.0)
+		var dz: float = maxf(absf(p.z - float(dp["cz"])) - float(dp["hz"]), 0.0)
+		if Vector2(dx, dz).length() < r + 0.25:
+			return false
+	for cp in parked_car_spots:
+		if Vector2(p.x - (cp as Vector3).x, p.z - (cp as Vector3).z).length() < r + 2.5:
+			return false
+	if _paved_spot(p):
+		return false
+	# Road bands (same centrelines the scatter gate uses; trunk +
+	# a margin inside the sidewalk's outer edge). The bands are
+	# FINITE — a road only exists along its real extent, so the
+	# shore pines, the far-bank backdrop and the escape-room
+	# diorama (all far outside the road grid) are not flagged by
+	# a centreline's infinite extension.
+	var bands_z: Array = [-55.0, -11.0, 15.0, 55.0]
+	var bands_x: Array = [-70.0, -20.0, 24.0, 72.0]
+	var road_x_extent: float = 132.0
+	if not LEGACY_TOWN_ONLY:
+		bands_x += [128.0, 176.0, 224.0, 272.0, 320.0]
+		road_x_extent = 388.0
+	if p.x >= -132.0 and p.x <= road_x_extent:
+		for rz in bands_z:
+			if absf(p.z - float(rz)) < 5.3:
+				return false
+	if absf(p.z) <= 97.0:
+		for rx in bands_x:
+			if absf(p.x - float(rx)) < 5.3:
+				return false
+	for hh in houses:
+		if p.distance_to(hh["pos"]) < 6.0:
+			return false
+	return true
+
+
+func _audit_tree_clearance() -> void:
+	var moved: int = 0
+	var culled: int = 0
+	for te in tree_registry:
+		var node := te["node"] as Node3D
+		if node == null or not is_instance_valid(node):
+			continue
+		var r: float = float(te["r"])
+		if _tree_spot_clear(node.position, r):
+			continue
+		var placed_ok := false
+		for rad in [2.0, 3.5, 5.0, 7.0, 9.0, 11.0, 13.0, 16.0]:
+			if placed_ok:
+				break
+			for k in range(12):
+				var ang: float = TAU * float(k) / 12.0 + rad * 0.7
+				var cand := Vector3(node.position.x + cos(ang) * rad, 0, node.position.z + sin(ang) * rad)
+				if cand.x < -118.0 or cand.x > 370.0 or cand.z < -88.0 or cand.z > 88.0:
+					continue
+				if _ground_spot_blocked(cand):
+					continue
+				if not _tree_spot_clear(cand, r):
+					continue
+				var clash := false
+				for te2 in tree_registry:
+					var n2 := te2["node"] as Node3D
+					if n2 != null and n2 != node and is_instance_valid(n2) and n2.visible:
+						if Vector2(cand.x - n2.position.x, cand.z - n2.position.z).length() < r + float(te2["r"]) + 0.5:
+							clash = true
+							break
+				if clash:
+					continue
+				node.position = cand
+				placed_ok = true
+				moved += 1
+				break
+		if not placed_ok:
+			node.visible = false
+			culled += 1
+	_boot_log("tree clearance audit: moved=%d culled=%d of %d trees" % [moved, culled, tree_registry.size()])
+
+
 func _park_in_driveway(world: Node3D, house_pos: Vector3, facing: float, road_z: float, side: float, col: Color, car_type: String) -> Vector3:
 	# STREETS (Michael, 2026-11-16): a parked car belongs in a
 	# DRIVEWAY. Lays a concrete pad from the house's front wall to
@@ -4059,6 +4198,7 @@ func _park_in_driveway(world: Node3D, house_pos: Vector3, facing: float, road_z:
 	pad.material_override = _mat_tex(TEX_SIDEWALK, Color(0.94, 0.94, 0.96), Vector3(1, 3, 1))
 	var car_pos := Vector3(cx, 0.06, pad_cz) # wheels rest ON the pad, not sunk in it
 	_build_car(world, car_pos, col, false, car_type)
+	parked_car_spots.append(car_pos) # v1.0.27: static car — the tree audit keeps canopies off it
 	return car_pos
 
 func _vehicle_scene(car_type: String) -> PackedScene:
@@ -4145,6 +4285,7 @@ func _build_pine(parent: Node, pos: Vector3, s: float = 1.0) -> void:
 	var g := Node3D.new()
 	g.position = pos
 	parent.add_child(g)
+	tree_registry.append({"node": g, "r": 1.85 * s + 0.35}) # v1.0.27: lowest tier radius 1.75*s + margin, for the clearance audit
 	var pr := RandomNumberGenerator.new()
 	pr.seed = absi(int(pos.x * 71.0 + pos.z * 113.0)) + 3
 	var ptrunk := _cyl(g, Vector3(0, 0.9 * s, 0), 0.13 * s, 0.22 * s, 1.8 * s, Color.WHITE, true)
@@ -4960,6 +5101,7 @@ func _build_escape_exterior() -> void:
 	_diorama_house(ext, o + Vector3(33.5, 0, 4), -90.0, Color(0.55, 0.65, 0.78), Color(0.5, 0.35, 0.55))
 	# A parked Meshy car on the north road, street lamps, pines.
 	_build_car(ext, o + Vector3(-4, 0, -21.6), Color(0.7, 0.75, 0.8), true, "compact", true)
+	parked_car_spots.append(o + Vector3(-4, 0, -21.6)) # v1.0.27: static car (the flag above only skips the census) — the tree audit keeps canopies off it
 	_fill_lamp(ext, o + Vector3(-6, 0, -18.6))
 	_fill_lamp(ext, o + Vector3(18.6, 0, -6))
 	_build_pine(ext, o + Vector3(-16, 0, -14), 1.0)
@@ -7009,7 +7151,7 @@ func _build_hud() -> void:
 	title_panel.add_child(start_btn)
 	# v1.0.10: subtle build tag so Michael can confirm which build
 	# he is running from the title screen itself.
-	var ver := _hud_label(title_panel, "v1.0.26", Vector2(706, 522), 16)
+	var ver := _hud_label(title_panel, "v1.0.27", Vector2(706, 522), 16)
 	ver.label_settings.font_color = Color(0.78, 0.83, 0.95)
 	win_panel = _make_panel(hud_layer, Vector2(290, 130), Vector2(700, 460), Color(0.12, 0.2, 0.12, 0.97))
 	win_panel.set_anchors_preset(Control.PRESET_CENTER)

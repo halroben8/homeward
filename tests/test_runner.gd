@@ -2316,7 +2316,7 @@ func run_tests() -> void:
 				v23_start_ok = true
 			if tc is Label:
 				var lt: String = (tc as Label).text
-				if lt == "v1.0.26":
+				if lt == "v1.0.27":
 					v23_ver_ok = true
 				if lt.contains("Crescent") or lt.contains("Avenue") or lt.contains("Street") or lt.contains("Drive"):
 					v23_addr_leak = true
@@ -2341,7 +2341,7 @@ func run_tests() -> void:
 		if str(p).ends_with("start_btn.png"):
 			v23_has_pill = true
 	check("v1.0.23 title: START wears the gradient pill", v23_start_ok and v23_has_pill, str(v23_tex_paths))
-	check("v1.0.23 title: version tag reads v1.0.26 and NO address is shown", v23_ver_ok and not v23_addr_leak)
+	check("v1.0.23 title: version tag reads v1.0.27 and NO address is shown", v23_ver_ok and not v23_addr_leak)
 
 	# ---------- v1.0.24: ONE TAP = ONE COMBO STEP (Michael's v1.0.22 play report) ----------
 	# "I hit B once and multiple Bs were hit… then when I hit A it
@@ -2688,12 +2688,56 @@ func run_tests() -> void:
 	await wait_sec(3.6)
 	check("idle purr starts after ~3s still", bool(main.get("purr_active")))
 
+	# ---------- v1.0.27: trees clear of driveways + parked cars ----------
+	# Michael's v1.0.26 play photos: a pine's canopy swallowed the
+	# car parked on a driveway, and a trunk stood in the promenade
+	# slab. The build audits every registered tree at build end
+	# (see _audit_tree_clearance in main3d.gd); assert the outcome
+	# directly — for every VISIBLE tree: its canopy circle must not
+	# reach a driveway pad or a parked car, and its trunk must not
+	# stand on paved ground.
+	var pads27: Array = main.get("driveway_pads")
+	var cars27: Array = main.get("parked_car_spots")
+	var trees27: Array = main.get("tree_registry")
+	var tree_bad27: Array = []
+	for te27 in trees27:
+		var tn27 := te27["node"] as Node3D
+		if tn27 == null or not is_instance_valid(tn27) or not tn27.visible:
+			continue
+		var tp27: Vector3 = tn27.global_position
+		var tr27: float = float(te27["r"])
+		for dp27 in pads27:
+			var ddx27: float = maxf(absf(tp27.x - float(dp27["cx"])) - float(dp27["hx"]), 0.0)
+			var ddz27: float = maxf(absf(tp27.z - float(dp27["cz"])) - float(dp27["hz"]), 0.0)
+			if Vector2(ddx27, ddz27).length() < tr27 + 0.25:
+				tree_bad27.append("pad@" + str(tp27))
+		for cp27 in cars27:
+			if Vector2(tp27.x - (cp27 as Vector3).x, tp27.z - (cp27 as Vector3).z).length() < tr27 + 2.5:
+				tree_bad27.append("car@" + str(tp27))
+		if bool(main.call("_paved_spot", tp27)):
+			tree_bad27.append("paved@" + str(tp27))
+	check("v1.0.27 trees: no canopy over a driveway or parked car, no trunk on pavement (violations=0)", tree_bad27.is_empty(), str(tree_bad27))
+	# The ground-scatter gate now knows the driveway pads too:
+	# sample every pad's centre and corners — all must be blocked
+	# ground, so tufts/flowers can never sprout on a driveway.
+	var pad_open27: int = 0
+	for dp27b in pads27:
+		var pcx27: float = float(dp27b["cx"])
+		var pcz27: float = float(dp27b["cz"])
+		var phx27: float = float(dp27b["hx"]) - 0.3
+		var phz27: float = float(dp27b["hz"]) - 0.3
+		for off27 in [Vector2(0, 0), Vector2(phx27, phz27), Vector2(-phx27, phz27), Vector2(phx27, -phz27), Vector2(-phx27, -phz27), Vector2(phx27, 0), Vector2(-phx27, 0), Vector2(0, phz27), Vector2(0, -phz27)]:
+			if not bool(main.call("_ground_spot_blocked", Vector3(pcx27 + off27.x, 0, pcz27 + off27.y))):
+				pad_open27 += 1
+	check("v1.0.27 ground scatter: every driveway pad is blocked ground (no tufts on driveways)", pad_open27 == 0 and pads27.size() >= 13, "open=" + str(pad_open27) + " pads=" + str(pads27.size()))
+
 	# ---------- v1.0.25 ITEM 6: the opening must survive the START tap ----------
 	# The real flow: start_game() (what the button calls), then the
 	# tap's second half — its emulated-mouse echo — arrives through
 	# the real dispatcher while the state has just become
 	# "opening". On v1.0.13–v1.0.24 that echo skipped the whole
-	# opening. A deliberate tap after the grace must still skip.
+	# opening. (v1.0.27 extends this block below: after the grace,
+	# NO press may skip — the skip lives on its own button.)
 	var story25: Node = main.get("story")
 	main.call("start_game")
 	check("v1.0.25 opening: START begins the opening cutscene", str(main.get("state")) == "opening", str(main.get("state")))
@@ -2704,14 +2748,51 @@ func run_tests() -> void:
 	get_viewport().push_input(echo25)
 	await wait_sec(0.3)
 	check("v1.0.25 opening: the START tap's own echo does NOT skip the opening", str(main.get("state")) == "opening" and not bool(story25.get("finished")), str(main.get("state")) + " finished=" + str(story25.get("finished")))
-	await wait_sec(1.2)
-	var tap25 := InputEventMouseButton.new()
-	tap25.button_index = MOUSE_BUTTON_LEFT
-	tap25.pressed = true
-	tap25.position = Vector2(640, 360)
-	get_viewport().push_input(tap25)
+	await wait_sec(1.5)
+	# ---------- v1.0.27: the skip must not live on the controls ----------
+	# Michael's v1.0.26 report ("Where is the cut scene at the
+	# start?"): the v1.0.25 grace only moved the tripwire — after
+	# 1.2 s ANY press still skipped, and on a phone the whole
+	# screen is controls, so the player's first steering touch
+	# killed the cutscene (reproduced headless: a joystick-zone
+	# touch at dt=3173 ms fired the skip). Now arbitrary presses
+	# never skip; only the dedicated SKIP button (or a PC key)
+	# does. These checks drive the player's actual inputs through
+	# the real dispatcher, past the old grace, mid-beats.
+	var vp27: Vector2 = get_viewport().get_visible_rect().size
+	var joy27 := InputEventScreenTouch.new()
+	joy27.index = 3
+	joy27.position = vp27 * Vector2(0.14, 0.72) # the joystick zone
+	joy27.pressed = true
+	get_viewport().push_input(joy27)
+	var joy27up := InputEventScreenTouch.new()
+	joy27up.index = 3
+	joy27up.position = vp27 * Vector2(0.14, 0.72)
+	joy27up.pressed = false
+	get_viewport().push_input(joy27up)
+	var look27 := InputEventScreenTouch.new()
+	look27.index = 4
+	look27.position = vp27 * Vector2(0.68, 0.35) # the look-drag zone
+	look27.pressed = true
+	get_viewport().push_input(look27)
+	var look27up := InputEventScreenTouch.new()
+	look27up.index = 4
+	look27up.position = vp27 * Vector2(0.68, 0.35)
+	look27up.pressed = false
+	get_viewport().push_input(look27up)
+	var click27 := InputEventMouseButton.new()
+	click27.button_index = MOUSE_BUTTON_LEFT
+	click27.pressed = true
+	click27.position = vp27 * Vector2(0.5, 0.5)
+	get_viewport().push_input(click27)
 	await wait_sec(0.3)
-	check("v1.0.25 opening: a deliberate tap after the grace period still skips to the pound", bool(story25.get("finished")) or str(main.get("state")) != "opening", str(main.get("state")) + " finished=" + str(story25.get("finished")))
+	check("v1.0.27 opening: control touches after the grace do NOT skip the opening", str(main.get("state")) == "opening" and not bool(story25.get("finished")), str(main.get("state")) + " finished=" + str(story25.get("finished")))
+	var skip27: Object = story25.get("skip_btn")
+	check("v1.0.27 opening: a SKIP button is offered during the beats", skip27 != null and (skip27 as Button).visible)
+	if skip27 != null:
+		(skip27 as Button).pressed.emit()
+		await wait_sec(0.3)
+		check("v1.0.27 opening: the SKIP button still skips to the pound", bool(story25.get("finished")) or str(main.get("state")) != "opening", str(main.get("state")) + " finished=" + str(story25.get("finished")))
 
 	print("TESTS: %d/%d passed" % [passed, passed + failed])
 	get_tree().quit(0 if failed == 0 else 1)

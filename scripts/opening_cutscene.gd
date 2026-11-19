@@ -19,8 +19,11 @@ extends Node
 ## start_game(), ticks it from _process, and lets it consume a PAW
 ## at the cage gate in _escape_interact(). The pickup itself is the
 ## game's ordinary capture (on_cat_taken -> scoop cutscene -> escape
-## room); poses, timings and the escape flow are untouched. A tap
-## during the street beats skips straight to the pound room.
+## room); poses, timings and the escape flow are untouched. The
+## on-screen SKIP button (or a PC key) skips the street beats
+## straight to the pound room — v1.0.27: a tap ANYWHERE used to
+## skip, which on a phone means the player's first steering touch
+## killed the cutscene (see _unhandled_input).
 ## =====================================================================
 
 # The kind worker's line (two short lines — the speech bubble is a
@@ -68,6 +71,7 @@ var cage_blocker: CollisionShape3D = null
 var cage_closed: bool = false
 var gate_anim_t: float = -1.0 # >= 0 while the gate swings open
 var cage_prompt_btn: Button = null
+var skip_btn: Button = null # v1.0.27: the ONLY touch skip — a deliberate button
 var gate_opened: bool = false # the cage gate has been opened (once)
 var opening_hint_shown: bool = false # the controls hint has had its turn
 
@@ -101,6 +105,33 @@ func setup(main_ref: Node) -> void:
 	cage_prompt_btn.pressed.connect(_on_cage_prompt_pressed)
 	cage_prompt_btn.visible = false
 	(main.get("escape_ui_layer") as CanvasLayer).add_child(cage_prompt_btn)
+	# v1.0.27: the SKIP button — top-right, clear of the score band
+	# and of every game control. Shown only while the street beats
+	# run (tick() owns its visibility); pressing it is the one
+	# deliberate touch skip.
+	skip_btn = Button.new()
+	skip_btn.focus_mode = Control.FOCUS_NONE
+	skip_btn.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	skip_btn.text = "Skip ▸▸"
+	skip_btn.anchor_left = 1.0
+	skip_btn.anchor_right = 1.0
+	skip_btn.anchor_top = 0.0
+	skip_btn.anchor_bottom = 0.0
+	skip_btn.offset_left = -176.0
+	skip_btn.offset_right = -16.0
+	skip_btn.offset_top = 64.0
+	skip_btn.offset_bottom = 118.0
+	skip_btn.add_theme_font_size_override("font_size", 24)
+	skip_btn.add_theme_color_override("font_color", Color(0.98, 0.95, 0.88))
+	skip_btn.add_theme_color_override("font_hover_color", Color(0.98, 0.95, 0.88))
+	skip_btn.add_theme_color_override("font_pressed_color", Color(0.98, 0.95, 0.88))
+	var skip_col := Color(0.16, 0.13, 0.20, 0.72)
+	skip_btn.add_theme_stylebox_override("normal", main.call("_prompt_style", skip_col))
+	skip_btn.add_theme_stylebox_override("pressed", main.call("_prompt_style", skip_col.lightened(0.25)))
+	skip_btn.add_theme_stylebox_override("hover", main.call("_prompt_style", skip_col))
+	skip_btn.pressed.connect(skip_opening)
+	skip_btn.visible = false
+	(main.get("escape_ui_layer") as CanvasLayer).add_child(skip_btn)
 
 
 # ---------------------------------------------------------------------
@@ -180,6 +211,10 @@ func tick(delta: float) -> void:
 		if k >= 1.0:
 			gate_anim_t = -1.0
 	var st: String = str(main.get("state"))
+	# v1.0.27: the Skip button lives exactly as long as the street
+	# beats do — it is the only touch skip there is.
+	if skip_btn:
+		skip_btn.visible = active and not finished and st == "opening"
 	if st == "escape":
 		if pound_entry_pending:
 			_on_pound_entry()
@@ -453,9 +488,10 @@ func _trigger_scoop() -> void:
 	main.call("show_message", "🚐 The pound — " + hell + " help you find your way home. First: the little cage…", 4.5)
 
 
-# A tap during the street beats: land every beat instantly, exactly
-# where the played-out version leaves things, then ride the
-# ordinary capture straight into the pound room.
+# A skip during the street beats (the SKIP button, or a PC key):
+# land every beat instantly, exactly where the played-out version
+# leaves things, then ride the ordinary capture straight into the
+# pound room.
 func skip_opening() -> void:
 	if main == null or finished:
 		return
@@ -489,20 +525,25 @@ func skip_opening() -> void:
 # is the guard main's own cutscene skip always had: no skip input
 # is honoured for the first 1.2 s of the opening. A deliberate
 # tap after that still skips, exactly as designed.
+#
+# v1.0.27 — AND WHY IT STILL DIDN'T PLAY in v1.0.26 (Michael,
+# again: "Where is the cut scene at the start?"): the 1.2 s grace
+# only moved the tripwire. On a phone the WHOLE screen is game
+# controls — left thumb = joystick, right side = look drag — so
+# the player's first instinctive steering touch, a second or two
+# into a ~20 s sequence, was still read as "tap to skip" and the
+# run jumped straight to the cage. Reproduced headlessly through
+# the real dispatcher: a joystick-zone touch press at dt=3173 ms
+# after begin_opening fired the skip (hands-off, the opening
+# plays end to end — which is why the suite, whose only post-
+# START inputs were the echo and one deliberate tap, and the
+# screenshot runners, which send no input at all, never saw it).
+# THE FIX: arbitrary presses no longer skip, at all. Skipping is
+# a deliberate act on a dedicated control — the on-screen SKIP
+# button (setup/tick above) — plus the PC key path below, which
+# keeps the grace because a key can't be a START-tap echo.
 func _skip_input_allowed() -> bool:
 	return Time.get_ticks_msec() - began_msec >= 1200
-
-func _input(event: InputEvent) -> void:
-	if main == null or finished:
-		return
-	if str(main.get("state")) != "opening":
-		return
-	if not _skip_input_allowed():
-		return
-	if event is InputEventMouseButton and (event as InputEventMouseButton).pressed:
-		skip_opening()
-	elif event is InputEventScreenTouch and (event as InputEventScreenTouch).pressed:
-		skip_opening()
 
 
 func _unhandled_input(event: InputEvent) -> void:
