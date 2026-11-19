@@ -2327,7 +2327,7 @@ func run_tests() -> void:
 				v23_start_ok = true
 			if tc is Label:
 				var lt: String = (tc as Label).text
-				if lt == "v1.0.23":
+				if lt == "v1.0.24":
 					v23_ver_ok = true
 				if lt.contains("Crescent") or lt.contains("Avenue") or lt.contains("Street") or lt.contains("Drive"):
 					v23_addr_leak = true
@@ -2352,7 +2352,122 @@ func run_tests() -> void:
 		if str(p).ends_with("start_btn.png"):
 			v23_has_pill = true
 	check("v1.0.23 title: START wears the gradient pill", v23_start_ok and v23_has_pill, str(v23_tex_paths))
-	check("v1.0.23 title: version tag reads v1.0.23 and NO address is shown", v23_ver_ok and not v23_addr_leak)
+	check("v1.0.23 title: version tag reads v1.0.24 and NO address is shown", v23_ver_ok and not v23_addr_leak)
+
+	# ---------- v1.0.24: ONE TAP = ONE COMBO STEP (Michael's v1.0.22 play report) ----------
+	# "I hit B once and multiple Bs were hit… then when I hit A it
+	# wouldn't work." Diagnosis: with the panel open, main's _input
+	# claimed the press from BOTH event generations — the raw
+	# InputEventScreenTouch AND the InputEventMouseButton the engine
+	# synthesizes from the same tap (emulate_mouse_from_touch) — each
+	# as its own _input call, with NO dedupe on that path, so one tap
+	# registered two steps. The v1.0.21-era suite missed it because
+	# it called escape_panel_input directly. THIS section drives the
+	# real event sequence through _input: touch press, emulated
+	# mouse press (twice, paranoid), a second finger on the same
+	# button while the first is held, then the releases — and asserts
+	# exactly one step per tap. (The HUD Buttons' pressed signals are
+	# not part of the sequence with the panel open: the panel is a
+	# full-screen MOUSE_FILTER_STOP Control that accepts every GUI
+	# event, so they never fire — verified by the diagnosis read of
+	# escape_panel._gui_input.)
+	# Closed path first (state: play): the same double path exists
+	# there (raw claim + the Button's pressed echo, delivered on
+	# release). v1.0.24's latch is state-based: even a SLOW tap's
+	# echo stands down (the old 150 ms timer let it through).
+	park_npcs_far()
+	(player as Node3D).global_position = Vector3(110, 0.2, 84)
+	await wait_sec(0.2)
+	var paw_pos24: Vector2 = (main.get("paw_btn") as Button).get_global_rect().get_center()
+	player.set("paw_t", 0.0)
+	var tp24 := InputEventScreenTouch.new()
+	tp24.index = 7
+	tp24.pressed = true
+	tp24.position = paw_pos24
+	main.call("_input", tp24)
+	check("v1.0.24 closed path: a raw tap on PAW fires the swipe at once", float(player.get("paw_t")) > 0.0, str(player.get("paw_t")))
+	check("v1.0.24 closed path: the tap latches PAW for its Button echo", bool((main.get("_action_echo_latch") as Dictionary).get("paw", false)))
+	await wait_sec(0.35) # a SLOW tap: the old 150 ms timer would have expired by now
+	player.set("paw_t", 0.0)
+	(main.get("paw_btn") as Button).pressed.emit()
+	check("v1.0.24 closed path: the Button echo of the same tap stands down (no second swipe), however slow the tap", float(player.get("paw_t")) == 0.0, str(player.get("paw_t")))
+	player.set("paw_t", 0.0)
+	(main.get("paw_btn") as Button).pressed.emit()
+	check("v1.0.24 closed path: a press with no raw claim behind it (a genuine click) still fires", float(player.get("paw_t")) > 0.0, str(player.get("paw_t")))
+	# Panel path: enter the house escape and open the bolt panel.
+	main.set("captor", woman)
+	main.call("_enter_escape")
+	distract_captor()
+	(player as Node3D).global_position = Vector3(573.4, 0.3, 3.4)
+	main.call("_on_escape_prompt_pressed")
+	check("v1.0.24 panel: the escape panel is open (setup)", bool((main.get("escape_panel") as Control).visible))
+	main.set("escape_combo", ["B", "B", "A", "B", "A"]) # a known roll: repeats up front, like Michael's B B B A
+	(main.get("escape_panel") as Control).call("set_combo_seq", ["B", "B", "A", "B", "A"])
+	main.set("combo_index", 0)
+	var hop_pos24: Vector2 = (main.get("hop_btn") as Button).get_global_rect().get_center()
+	var mk_touch24 := func(idx: int, pr: bool, pos: Vector2) -> InputEventScreenTouch:
+		var e := InputEventScreenTouch.new()
+		e.index = idx
+		e.pressed = pr
+		e.position = pos
+		return e
+	var mk_mouse24 := func(pr: bool, pos: Vector2) -> InputEventMouseButton:
+		var e := InputEventMouseButton.new()
+		e.button_index = MOUSE_BUTTON_LEFT
+		e.pressed = pr
+		e.position = pos
+		return e
+	# TAP 1 on B — the full event storm of one physical tap.
+	main.call("_input", mk_touch24.call(7, true, paw_pos24))
+	check("v1.0.24 panel: tap 1 (B) — the raw touch registers step 1", int(main.get("combo_index")) == 1, str(main.get("combo_index")))
+	main.call("_input", mk_mouse24.call(true, paw_pos24))
+	check("v1.0.24 panel: tap 1 — the emulated-mouse echo registers NOTHING (was: a second step)", int(main.get("combo_index")) == 1, str(main.get("combo_index")))
+	main.call("_input", mk_mouse24.call(true, paw_pos24))
+	main.call("_input", mk_touch24.call(8, true, paw_pos24))
+	check("v1.0.24 panel: tap 1 — a repeated echo and a second finger on the held button still register nothing", int(main.get("combo_index")) == 1, str(main.get("combo_index")))
+	main.call("_input", mk_touch24.call(8, false, paw_pos24))
+	main.call("_input", mk_touch24.call(7, false, paw_pos24))
+	main.call("_input", mk_mouse24.call(false, paw_pos24))
+	check("v1.0.24 panel: tap 1 — the releases register nothing and re-arm the button", int(main.get("combo_index")) == 1 and (main.get("_panel_press_owner") as Dictionary).is_empty(), str(main.get("combo_index")) + " " + str(main.get("_panel_press_owner")))
+	# TAP 2 on B (after a real release, the next step must register).
+	main.call("_input", mk_touch24.call(7, true, paw_pos24))
+	main.call("_input", mk_mouse24.call(true, paw_pos24))
+	main.call("_input", mk_touch24.call(7, false, paw_pos24))
+	main.call("_input", mk_mouse24.call(false, paw_pos24))
+	check("v1.0.24 panel: tap 2 (B) registers step 2 — exactly one step per tap", int(main.get("combo_index")) == 2, str(main.get("combo_index")))
+	# TAP 3 on A.
+	main.call("_input", mk_touch24.call(7, true, hop_pos24))
+	main.call("_input", mk_mouse24.call(true, hop_pos24))
+	main.call("_input", mk_touch24.call(7, false, hop_pos24))
+	main.call("_input", mk_mouse24.call(false, hop_pos24))
+	check("v1.0.24 panel: tap 3 (A) registers step 3", int(main.get("combo_index")) == 3, str(main.get("combo_index")))
+	# STEP 4 by keyboard: a held key's ECHO must not register; the
+	# real press must (E = B, the combo's fourth step).
+	var ke_echo := InputEventKey.new()
+	ke_echo.keycode = KEY_E
+	ke_echo.pressed = true
+	ke_echo.echo = true
+	main.call("_unhandled_input", ke_echo)
+	check("v1.0.24 panel: a key-echo (held-key repeat) registers nothing", int(main.get("combo_index")) == 3, str(main.get("combo_index")))
+	var ke_real := InputEventKey.new()
+	ke_real.keycode = KEY_E
+	ke_real.pressed = true
+	ke_real.echo = false
+	main.call("_unhandled_input", ke_real)
+	check("v1.0.24 panel: one real E press registers step 4 (B)", int(main.get("combo_index")) == 4, str(main.get("combo_index")))
+	# TAP 5 on A completes the known combo.
+	main.call("_input", mk_touch24.call(7, true, hop_pos24))
+	main.call("_input", mk_mouse24.call(true, hop_pos24))
+	check("v1.0.24 panel: the full known combo, tapped tap-by-tap with echoes, is ACCEPTED (door opens)", bool(main.get("exit_open")) and not bool((main.get("escape_panel") as Control).visible), "exit_open=" + str(main.get("exit_open")))
+	main.call("_input", mk_touch24.call(7, false, hop_pos24))
+	main.call("_input", mk_mouse24.call(false, hop_pos24))
+	walk_cat_out()
+	check("v1.0.24 panel: the escape still completes back into play", str(main.get("state")) == "play", str(main.get("state")))
+	# Run the post-escape pursuit out (the v1.4 section's pattern)
+	# so the idle-purr section below starts with no chase active.
+	main.call("_process", 29.95)
+	main.call("_process", 0.1)
+	check("v1.0.24 panel: the post-escape pursuit is run out (cleanup for the next section)", not (main.get("pursuers") as Dictionary).has(woman), str(main.get("pursuers")))
 
 	# ---------- idle purr retained (v0.6) ----------
 	park_npcs_far()

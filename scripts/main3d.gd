@@ -410,7 +410,8 @@ var run_touch_id: int = -999 # v1.0.18: touch index currently holding RUN (-999 
 var hop_btn: Button = null # v1.0.21: the A / HOP button — claimed on the raw touch channel in _input (see the v1.0.21 note there)
 var paw_btn: Button = null # v1.0.21: the B / PAW button — same raw-channel claim
 var meow_btn: Button = null # v1.0.21: the MEOW button — same raw-channel claim
-var _action_claim_msec: Dictionary = {} # v1.0.21: action name -> Time ticks of its last raw-touch claim; the Button handler ignores the emulated-mouse echo of the same tap inside the window
+var _action_echo_latch: Dictionary = {} # v1.0.24: action name -> true while the Button-signal echo of a raw-touch-claimed tap is still expected; the Button handler consumes the latch and stands down — STATE-based, not a timer (v1.0.21's 150 ms window let a slow tap's echo through). See _fire_action / _action_claimed_recently.
+var _panel_press_owner: Dictionary = {} # v1.0.24: combo letter ("A"/"B") -> the press that owns it ("touch:<index>" / "mouse"); while the escape panel is open a letter registers ONE step per physical press and further presses are ignored until that owner's release is seen. See the panel branch of _input.
 var shelf_zone := Rect2(546, -9, 6, 5) # XZ rect (MAP DOUBLING: +360 with escape_origin)
 var sofa_zone := Rect2(556, 3, 7, 3)
 var window_zone := Rect2(557, -9.5, 6, 3)
@@ -5703,17 +5704,50 @@ func _input(event: InputEvent) -> void:
 		# whole screen, so the Buttons' own signals never fire; the
 		# presses are claimed HERE, on the raw channels, exactly like
 		# the v1.0.18/v1.0.21 action claims, and routed to the panel.
-		var pp2 := Vector2(-9999, -9999)
-		if event is InputEventScreenTouch and event.pressed:
-			pp2 = (event as InputEventScreenTouch).position
-		elif event is InputEventMouseButton and event.pressed and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
-			pp2 = (event as InputEventMouseButton).position
-		if pp2.x > -9000.0:
-			var act2: String = _claim_action_touch(pp2)
-			if act2 == "hop":
-				escape_panel_input("A")
-			elif act2 == "paw":
-				escape_panel_input("B")
+		# v1.0.24 (Michael's v1.0.22 play report: "I hit B once and
+		# multiple Bs were hit… then when I hit A it wouldn't work" —
+		# escaping was effectively impossible): the v1.0.22 branch
+		# claimed a press from BOTH event generations — the raw
+		# InputEventScreenTouch AND the InputEventMouseButton the
+		# engine synthesizes from the same tap (emulate_mouse_from_
+		# touch is on) — each arriving as its own _input call, with
+		# NO dedupe of any kind on this path, so one physical tap
+		# registered TWO combo steps. (The HUD Buttons' pressed
+		# signals are NOT a third path: the panel is a full-screen
+		# MOUSE_FILTER_STOP Control that accepts every GUI event, so
+		# they never fire while it is open.) The fix is a state-based
+		# latch, not a timer: a combo letter registers exactly once
+		# per physical press, owned by that press's source
+		# (_panel_press_owner) until the matching release is seen;
+		# every echo press in between is ignored, however long the
+		# tap is held. A mouse press arriving while any touch owns a
+		# letter IS the touch's emulated echo and is ignored whole.
+		if event is InputEventScreenTouch:
+			var pt := event as InputEventScreenTouch
+			if pt.pressed:
+				var act2: String = _claim_action_touch(pt.position)
+				var letter2: String = "A" if act2 == "hop" else ("B" if act2 == "paw" else "")
+				if letter2 != "" and not _panel_press_owner.has(letter2):
+					_panel_press_owner[letter2] = "touch:" + str(pt.index)
+					escape_panel_input(letter2)
+			else:
+				var owner2: String = "touch:" + str(pt.index)
+				for letter3 in _panel_press_owner.keys():
+					if str(_panel_press_owner[letter3]) == owner2:
+						_panel_press_owner.erase(letter3)
+		elif event is InputEventMouseButton and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
+			var pm := event as InputEventMouseButton
+			if pm.pressed:
+				if _panel_press_owner.is_empty():
+					var act3: String = _claim_action_touch(pm.position)
+					var letter4: String = "A" if act3 == "hop" else ("B" if act3 == "paw" else "")
+					if letter4 != "" and not _panel_press_owner.has(letter4):
+						_panel_press_owner[letter4] = "mouse"
+						escape_panel_input(letter4)
+			else:
+				for letter5 in _panel_press_owner.keys():
+					if str(_panel_press_owner[letter5]) == "mouse":
+						_panel_press_owner.erase(letter5)
 		return
 	if state == "escape" and ((escape_prompt_btn != null and escape_prompt_btn.visible) or (prop_prompt_btn != null and prop_prompt_btn.visible)):
 		# A press ON either escape prompt button is the button's own —
@@ -6264,7 +6298,7 @@ func _build_hud() -> void:
 	title_panel.add_child(start_btn)
 	# v1.0.10: subtle build tag so Michael can confirm which build
 	# he is running from the title screen itself.
-	var ver := _hud_label(title_panel, "v1.0.23", Vector2(706, 522), 16)
+	var ver := _hud_label(title_panel, "v1.0.24", Vector2(706, 522), 16)
 	ver.label_settings.font_color = Color(0.78, 0.83, 0.95)
 	win_panel = _make_panel(hud_layer, Vector2(290, 130), Vector2(700, 460), Color(0.12, 0.2, 0.12, 0.97))
 	win_panel.set_anchors_preset(Control.PRESET_CENTER)
@@ -6666,17 +6700,25 @@ func _claim_action_touch(pos: Vector2) -> String:
 	return ""
 
 func _fire_action(action: String) -> void:
-	_action_claim_msec[action] = Time.get_ticks_msec()
+	_action_echo_latch[action] = true # v1.0.24: this tap's Button-signal echo is still to come — the handler will consume the latch and stand down (see _action_claimed_recently)
 	match action:
 		"hop": _on_hop_pressed()
 		"paw": _on_interact()
 		"meow": _on_meow()
 
 func _action_claimed_recently(action: String) -> bool:
-	# True while the emulated-mouse echo of a raw-claimed tap may
-	# still be in flight — the Button's own handler stands down so
-	# the action fires exactly once per tap.
-	return Time.get_ticks_msec() - int(_action_claim_msec.get(action, -1000000)) < 150
+	# v1.0.24: STATE-based (was v1.0.21's 150 ms timer). The raw
+	# touch claim latches the action in _fire_action; the Button's
+	# own pressed handler — the emulated-mouse echo of the same tap,
+	# which Godot delivers on RELEASE — consumes the latch and
+	# stands down, so one physical tap fires the action exactly once
+	# however long it was held (a slow tap outlasted the old timer
+	# and its echo fired the action a second time). A handler call
+	# with no latch set is a genuine mouse click and fires normally.
+	if bool(_action_echo_latch.get(action, false)):
+		_action_echo_latch.erase(action)
+		return true
+	return false
 
 func _on_sprint_hold(p: bool) -> void:
 	# Legacy hold-style setter (pre-v1.0.13 Sprint button remnant).
@@ -8107,6 +8149,7 @@ func _reset_escape_props() -> void:
 	escape_anim_t = -1.0
 	combo_index = 0
 	carrier_shake = 0.0
+	_panel_press_owner.clear() # v1.0.24
 	if escape_panel:
 		escape_panel.hide_panel()
 	if escape_prompt_btn:
@@ -8396,6 +8439,7 @@ func _roll_escape_combo() -> void:
 
 func _open_escape_panel() -> void:
 	var kind: String = escape_steps[escape_step]["kind"]
+	_panel_press_owner.clear() # v1.0.24: no press can be mid-hold as the panel opens
 	combo_index = 0
 	_roll_escape_combo() # v1.0.21: every start of the puzzle rolls a fresh A/B combo
 	escape_prog = 0.0
@@ -8412,6 +8456,7 @@ func _open_escape_panel() -> void:
 		escape_prompt_btn.visible = false
 
 func _close_escape_panel() -> void:
+	_panel_press_owner.clear() # v1.0.24: a finger still down as the panel closes must not leave a stale owner behind
 	if escape_panel:
 		escape_panel.hide_panel()
 	if player and escape_anim_t < 0.0:
@@ -8450,6 +8495,7 @@ func escape_panel_input(inp: String) -> void:
 
 func _panel_combo_success() -> void:
 	var kind: String = escape_steps[escape_step]["kind"]
+	_panel_press_owner.clear() # v1.0.24: the completing press may still be held as the panel hides
 	if escape_panel:
 		escape_panel.hide_panel()
 	if escape_step < escape_steps.size() - 1:
@@ -8737,6 +8783,7 @@ func _interrupt_escape() -> void:
 		captor.call("set_expression", "worried") # v1.4: the captor spotted him at the latch
 		captor.set("expr_timer", 2.0)
 	var kind: String = escape_steps[escape_step]["kind"]
+	_panel_press_owner.clear() # v1.0.24: watched-close — a held press must not leak into the next opening
 	if escape_panel:
 		escape_panel.hide_panel()
 	combo_index = 0
@@ -9083,6 +9130,7 @@ func _complete_escape() -> void:
 			(cm3 as Node3D).rotation.x = 0.0
 	if escape_prompt_btn:
 		escape_prompt_btn.visible = false
+	_panel_press_owner.clear() # v1.0.24
 	if escape_panel:
 		escape_panel.hide_panel()
 	if player:
