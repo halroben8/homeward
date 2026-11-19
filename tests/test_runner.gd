@@ -1545,18 +1545,28 @@ func run_tests() -> void:
 	check("v1.0.19: the woman's escape text uses she/her", woman_joined.contains("so is she") and woman_joined.contains("distract her"), woman_joined)
 	check("v1.0.19: the woman's escape text has NO he/him", rx_masc.search(woman_joined) == null, woman_joined)
 	# (3) every other captor the suite can instantiate: the
-	# shopkeeper is he/him (moustache); the kid, the dog walker and
-	# the pedestrian neighbours have NO established gender, so their
+	# shopkeeper is he/him (moustache); the kid and the dog walker
+	# have NO established gender, so their
 	# text must carry no gendered pronoun at all and use the name.
 	var keeper_texts: Array = collect_captor_texts(npc_by_type("shopkeeper"))
 	var keeper_joined: String = "\n".join(PackedStringArray(keeper_texts))
 	check("v1.0.19: the shopkeeper's escape text uses he/him with NO she/her", keeper_joined.contains("distract him") and rx_fem.search(keeper_joined) == null, keeper_joined)
-	for t19 in ["kid", "dogwalker", "pedestrian"]:
+	# v1.0.22: "pedestrian" is GONE from the town (the generic
+	# code-built neighbour was the last non-Meshy person; Michael's
+	# all-Meshy rule removed the type entirely) — the name-only
+	# coverage stays with the kid and the dog walker, and the NEW
+	# cast's pronoun sets are checked below instead.
+	for t19 in ["kid", "dogwalker"]:
 		var cap19: Node = npc_by_type(t19)
 		var n_texts: Array = collect_captor_texts(cap19)
 		var n_joined: String = "\n".join(PackedStringArray(n_texts))
 		check("v1.0.19: the " + t19 + " (no established gender) gets NO gendered pronouns", rx_fem.search(n_joined) == null and rx_masc.search(n_joined) == null, n_joined)
 		check("v1.0.19: the " + t19 + "'s text refers by name instead", n_joined.contains(str(cap19.get("display_name"))), n_joined)
+	# (4) v1.0.22: a NEW cast member's pronouns — the baker is
+	# she/her (her reference sheet), in her text with NO he/him.
+	var baker_texts: Array = collect_captor_texts(npc_by_type("baker"))
+	var baker_joined: String = "\n".join(PackedStringArray(baker_texts))
+	check("v1.0.22: the baker's escape text uses she/her with NO he/him", baker_joined.contains("distract her") and rx_masc.search(baker_joined) == null, baker_joined)
 	# Leave the room the intended way so later sections start clean.
 	main.set("captor", woman19)
 	main.call("_enter_escape")
@@ -1836,6 +1846,7 @@ func run_tests() -> void:
 	var lamp_r: MeshInstance3D = main.get("pound_light_lamp_r")
 	check("v1.0.21 lights: the van carries the flashing light rig", lamp_l != null and lamp_r != null)
 	main.set("pound_state", "patrol")
+	main.set("pound_notice", 0.0) # v1.0.22: an empty meter is part of "on patrol" now (a building meter lights the bar)
 	main.call("_pound_update_lights", 0.1)
 	check("v1.0.21 lights: DARK on patrol", not lamp_l.visible and not lamp_r.visible)
 	main.set("pound_state", "chase")
@@ -1848,6 +1859,50 @@ func run_tests() -> void:
 	main.set("pound_state", "patrol")
 	main.call("_pound_update_lights", 0.1)
 	check("v1.0.21 lights: dark again when the patrol resumes", not lamp_l.visible and not lamp_r.visible)
+	# ---------- v1.0.22: cars drive NOSE-FIRST ----------
+	# The gap that shipped v1.0.21's backwards cars: no check ever
+	# compared a car's facing with its motion. Sample the REAL
+	# spawner (seeded, so the sample is stable): every car it
+	# makes must point its nose along its velocity.
+	(main.get("rng") as RandomNumberGenerator).seed = 20261119
+	var nose_bad := 0
+	var nose_dirs := {}
+	for si in range(14):
+		var sc: Node3D = main.call("spawn_traffic_car")
+		if sc == null:
+			continue
+		await get_tree().process_frame
+		var sarr: Array = main.get("traffic_cars")
+		var svel: Vector3 = Vector3.ZERO
+		for te2 in sarr:
+			if te2["node"] == sc:
+				svel = te2["vel"]
+		var nd: Vector3 = main.call("_car_nose_dir", sc)
+		if svel.length() < 0.5 or nd.dot(svel.normalized()) < 0.9:
+			nose_bad += 1
+		nose_dirs[str(svel.normalized())] = true
+		for te3 in sarr.duplicate():
+			if te3["node"] == sc:
+				sarr.erase(te3)
+		sc.queue_free()
+	check("v1.0.22: every spawned traffic car points its nose along its travel direction", nose_bad == 0, "bad=" + str(nose_bad))
+	check("v1.0.22: the nose sample covered several travel directions", nose_dirs.size() >= 3, str(nose_dirs.keys()))
+	# ---------- v1.0.22: lights start WITH the meter + the siren ----------
+	# Michael: the bar lights as soon as the meter starts building
+	# (proximity), not only once it fills — and a soft two-tone
+	# whoop sounds while the bar is live, stopping with it.
+	main.set("pound_state", "patrol")
+	main.set("pound_notice", 0.3) # building, nowhere near full
+	main.call("_pound_update_lights", 0.1)
+	check("v1.0.22 lights: lit while the notice meter is still BUILDING (patrol, notice 0.3)", lamp_l.visible != lamp_r.visible, str(lamp_l.visible) + "/" + str(lamp_r.visible))
+	var siren: AudioStreamPlayer = main.get("sfx_siren")
+	check("v1.0.22 siren: the van has its siren player", siren != null and siren.stream != null)
+	check("v1.0.22 siren: playing while the lights are active", siren != null and siren.playing)
+	main.set("pound_notice", 0.0)
+	main.set("pound_state", "patrol")
+	main.call("_pound_update_lights", 0.1)
+	check("v1.0.22 lights: dark again once the meter empties on patrol", not lamp_l.visible and not lamp_r.visible)
+	check("v1.0.22 siren: stopped when the lights go out", siren != null and not siren.playing)
 	# patrol: he drives the loop, on the lanes, worker riding inside
 	main.set("pound_state", "patrol")
 	pvan.position = Vector3(-60, 0, 16.8)
@@ -1859,6 +1914,9 @@ func run_tests() -> void:
 	for i in range(10):
 		main.call("_update_pound", 0.5)
 	check("pound van: the patrol drives on (moved > 15m over 5s of patrol)", pvan.position.distance_to(ppos0) > 15.0, str(pvan.position.distance_to(ppos0)))
+	var patrol_disp: Vector3 = pvan.position - ppos0
+	patrol_disp.y = 0.0
+	check("v1.0.22: the patrolling pound van drives NOSE-first (nose along its motion)", patrol_disp.length() > 1.0 and (main.call("_car_nose_dir", pvan) as Vector3).dot(patrol_disp.normalized()) > 0.9, "nose=" + str(main.call("_car_nose_dir", pvan)) + " disp=" + str(patrol_disp))
 	check("pound van: the patrol stays on the road lane", absf(pvan.position.z - 16.8) < 1.5, str(pvan.position))
 	check("pound van: the worker rides inside (invisible, travelling with the van)", not pworker.visible and (pworker as Node3D).global_position.distance_to(pvan.position) < 1.0)
 	# v1.0.21 ROUTE AUDIT: three full patrol loops, stepped
@@ -2043,6 +2101,7 @@ func run_tests() -> void:
 		guard_p += 0.25
 	check("v1.0.21: heading home, the van drives into the GARAGE and stops inside", str(main.get("pound_state")) == "depot", str(main.get("pound_state")) + " after " + str(guard_p) + "s at " + str(pvan.position))
 	check("v1.0.21: parked at the depot home spot, inside the bay walls", pvan.position.distance_to(Vector3(-112, 0, -1.9)) < 1.5 and pvan.position.x > -114.6 and pvan.position.x < -109.4 and pvan.position.z > -5.4 and pvan.position.z < 1.6, str(pvan.position))
+	check("v1.0.22: parked in the bay NOSE-in (facing north, into the garage — he reverses OUT, not in)", (main.call("_car_nose_dir", pvan) as Vector3).dot(Vector3(0, 0, -1)) > 0.9, "nose=" + str(main.call("_car_nose_dir", pvan)))
 	check("v1.0.21: parked still (no creeping in the bay)", float(main.get("pound_van_speed")) == 0.0, str(main.get("pound_van_speed")))
 	guard_p = 0.0
 	while str(main.get("pound_state")) != "patrol" and guard_p < 45.0:
@@ -2051,6 +2110,49 @@ func run_tests() -> void:
 	check("v1.0.21: after the dwell he reverses out and resumes patrol on the road", str(main.get("pound_state")) == "patrol" and pvan.position.z > 10.0, str(main.get("pound_state")) + " at " + str(pvan.position) + " after " + str(guard_p) + "s")
 	main.set("pound_engage_cd", 0.0)
 	main.set("pound_heading_home", false)
+
+	# ---------- v1.0.22: the new cast, town cats, intake card, panel ----------
+	var type_seen: Dictionary = {}
+	var npcs_all_meshy := true
+	for n in main.get("npcs"):
+		type_seen[str(n.get("npc_type"))] = true
+		if _subtree_vehicle_path(n) == "":
+			npcs_all_meshy = false
+	check("v1.0.22 cast: every street inhabitant renders a Meshy model (no code-built people left)", npcs_all_meshy)
+	var new_types_ok := true
+	for t in ["mailcarrier", "gardener", "skateboarder", "baker", "construction", "coffeeowner", "jogger", "musician"]:
+		if not type_seen.has(t):
+			new_types_ok = false
+	check("v1.0.22 cast: all 8 new Meshy townsfolk types are in town", new_types_ok, str(type_seen.keys()))
+	check("v1.0.22 cast: the pound worker is Meshy too", _subtree_vehicle_path(main.get("pound_worker")) == "res://assets/models/officer.glb", _subtree_vehicle_path(main.get("pound_worker")))
+	var tcats: Array = main.get("town_cats")
+	var cats_ok: bool = tcats.size() == 8
+	var cat_paths: Dictionary = {}
+	for c in tcats:
+		var cp: String = _subtree_vehicle_path(c)
+		if cp == "":
+			cats_ok = false
+		cat_paths[cp] = true
+		if (c.get("_legs") as Array).size() != 4:
+			cats_ok = false
+	check("v1.0.22 town cats: 8 Meshy cats wander, each with 4 classified legs for the trot", cats_ok, str(cat_paths.keys()))
+	check("v1.0.22 town cats: 8 distinct cat models", cat_paths.size() == 8, str(cat_paths.size()))
+	var card_label: Label3D = main.get_node_or_null("EscapeRoom/IntakeCardText") as Label3D
+	check("v1.0.22 intake card: a card hangs on Zander's cage front in the ward", card_label != null)
+	check("v1.0.22 intake card: street lookup names the road a spot is on", str(main.call("street_name_at", Vector3(0, 0, -11))) == "Maple Street" and str(main.call("street_name_at", Vector3(-70, 0, 20))) == "Pine Street", str(main.call("street_name_at", Vector3(0, 0, -11))) + "/" + str(main.call("street_name_at", Vector3(-70, 0, 20))))
+	main.set("pickup_street", "Maple Street")
+	main.call("_refresh_intake_card")
+	check("v1.0.22 intake card: the card names the street he was picked up on", card_label != null and "Maple Street" in card_label.text, card_label.text if card_label != null else "none")
+	var panel: Control = main.get("escape_panel")
+	var panel_ab := false
+	for ch in panel.get_children():
+		if ch is Button and ((ch as Button).text == "A" or (ch as Button).text == "B"):
+			panel_ab = true
+	check("v1.0.22 panel: NO duplicate A/B buttons on the escape panel (combo rides the game's own buttons)", not panel_ab)
+	var hop_b: Button = main.get("hop_btn")
+	var paw_b: Button = main.get("paw_btn")
+	check("v1.0.22 buttons: B (PAW) sits LEFT of A (HOP) in the cluster, as it was", paw_b.get_global_rect().position.x < hop_b.get_global_rect().position.x, str(paw_b.get_global_rect().position) + " vs " + str(hop_b.get_global_rect().position))
+	check("v1.0.22 buttons: no focus square — every touch button is FOCUS_NONE", hop_b.focus_mode == Control.FOCUS_NONE and paw_b.focus_mode == Control.FOCUS_NONE and (main.get("meow_btn") as Button).focus_mode == Control.FOCUS_NONE and (main.get("run_btn") as Button).focus_mode == Control.FOCUS_NONE)
 
 	# ---------- idle purr retained (v0.6) ----------
 	park_npcs_far()

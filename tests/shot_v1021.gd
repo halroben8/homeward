@@ -115,9 +115,12 @@ func _ready() -> void:
 		await wait_sec(0.25)
 		guard += 0.25
 	print("V1021: chase mode after ", guard, "s; worker at ", (worker as Node3D).global_position, " van at ", pvan.position)
-	# Let him close on the (still) cat so the action is in frame.
+	# Move the cat into the open road east of the van so the
+	# officer chases OUT from behind it, in plain view.
+	(player as Node3D).global_position = pvan.position + Vector3(9.0, 0.2, -1.0)
+	player.set("velocity", Vector3.ZERO)
 	var guard2: float = 0.0
-	while (worker as Node3D).global_position.distance_to((player as Node3D).global_position) > 3.5 and guard2 < 6.0:
+	while (worker as Node3D).global_position.distance_to((player as Node3D).global_position) > 3.8 and guard2 < 6.0:
 		await wait_sec(0.1)
 		guard2 += 0.1
 	await wait_sec(0.2)
@@ -133,7 +136,9 @@ func _ready() -> void:
 	main.set("pound_engage_cd", 99999.0)
 	main.set("pound_state", "patrol")
 	pvan.position = Vector3(-116, 0, 16.8)
-	(player as Node3D).global_position = Vector3(30, 0.2, 40)
+	# On the open road (no bench/furniture to read against): the
+	# hop must read as a hop — cat over asphalt, shadow below him.
+	(player as Node3D).global_position = Vector3(30, 0.2, 16.8)
 	player.set("stamina", 100.0)
 	player.set("winded", false)
 	await wait_sec(0.3)
@@ -157,14 +162,24 @@ func _ready() -> void:
 	tr.pressed = true
 	tr.position = run_pos
 	get_viewport().push_input(tr, true)
-	await wait_sec(0.6)
-	print("V1021: sprinting=", bool(player.get("is_sprinting")), " speed=", Vector2((player as CharacterBody3D).velocity.x, (player as CharacterBody3D).velocity.z).length())
+	# Gate the hop on REAL speed AND real travel: a cat wedged
+	# against a post also reports is_sprinting (seen in run B).
+	var start_xz := Vector2((player as Node3D).global_position.x, (player as Node3D).global_position.z)
+	var guard3: float = 0.0
+	while guard3 < 8.0:
+		var spd: float = Vector2((player as CharacterBody3D).velocity.x, (player as CharacterBody3D).velocity.z).length()
+		var moved: float = Vector2((player as Node3D).global_position.x, (player as Node3D).global_position.z).distance_to(start_xz)
+		if bool(player.get("is_sprinting")) and spd > 9.5 and moved > 5.0:
+			break
+		await wait_sec(0.1)
+		guard3 += 0.1
+	print("V1021: sprinting=", bool(player.get("is_sprinting")), " speed=", Vector2((player as CharacterBody3D).velocity.x, (player as CharacterBody3D).velocity.z).length(), " vel=", (player as CharacterBody3D).velocity)
 	var th := InputEventScreenTouch.new()
 	th.index = 2
 	th.pressed = true
 	th.position = hop_pos
 	get_viewport().push_input(th, true)
-	await wait_sec(0.3) # rising, near the top of the arc
+	await wait_sec(0.24) # rising fast, clearly off the road surface
 	print("V1021: at snap — on_floor=", (player as CharacterBody3D).is_on_floor(), " vy=", (player as CharacterBody3D).velocity.y, " y=", (player as Node3D).global_position.y)
 	await snap("sprint_hop.png")
 	print("V1021: done")

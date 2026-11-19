@@ -290,6 +290,55 @@ func _apply_type() -> void:
 			# his sheet design and his model (see _build_model).
 			pron_subj = "he"; pron_obj = "him"; pron_poss = "his"; gendered = true
 			walk_speed = 2.1; chase_speed = 6.0; detect_radius = 6.5; fill_rate = 0.22
+		"mailcarrier":
+			# v1.0.22 MESHY BATCH 2: the dark-blue uniform woman
+			# from Michael's sheet (cap, messenger bag, letters).
+			display_name = "Mail Carrier"
+			pron_subj = "she"; pron_obj = "her"; pron_poss = "her"; gendered = true
+			walk_speed = 2.6; chase_speed = 6.2; detect_radius = 7.0; fill_rate = 0.20
+		"gardener":
+			# v1.0.22: the garden-hat girl from Michael's sheet.
+			display_name = "Gardener"
+			pron_subj = "she"; pron_obj = "her"; pron_poss = "her"; gendered = true
+			walk_speed = 2.2; chase_speed = 6.0; detect_radius = 6.5; fill_rate = 0.20
+		"skateboarder":
+			# v1.0.22: the skateboarder teen (a boy — the model's
+			# own description in the Meshy library).
+			display_name = "Skateboarder Teen"
+			pron_subj = "he"; pron_obj = "him"; pron_poss = "his"; gendered = true
+			walk_speed = 3.6; chase_speed = 6.9; detect_radius = 7.0; fill_rate = 0.28; body_h = 1.55
+		"baker":
+			# v1.0.22: the baker from Michael's sheet (bun,
+			# blouse, apron skirt) — she/her.
+			display_name = "Baker"
+			pron_subj = "she"; pron_obj = "her"; pron_poss = "her"; gendered = true
+			walk_speed = 2.2; chase_speed = 5.9; detect_radius = 6.5; fill_rate = 0.21
+		"construction":
+			# v1.0.22: the construction worker from Michael's
+			# sheet (hard hat, beard, hi-vis braces) — he/him.
+			display_name = "Construction Worker"
+			pron_subj = "he"; pron_obj = "him"; pron_poss = "his"; gendered = true
+			walk_speed = 2.4; chase_speed = 6.2; detect_radius = 7.0; fill_rate = 0.22
+		"coffeeowner":
+			# v1.0.22: the coffee shop owner from Michael's sheet
+			# (olive shirt, hands in pockets) — he/him.
+			display_name = "Coffee Shop Owner"
+			pron_subj = "he"; pron_obj = "him"; pron_poss = "his"; gendered = true
+			walk_speed = 2.3; chase_speed = 6.0; detect_radius = 6.5; fill_rate = 0.22
+		"jogger":
+			# v1.0.22: the jogger — a curly-haired boy in running
+			# gear (verified against Michael's reference sheet);
+			# his library model even runs. Quick on his feet.
+			display_name = "Jogger"
+			pron_subj = "he"; pron_obj = "him"; pron_poss = "his"; gendered = true
+			walk_speed = 3.8; chase_speed = 7.0; detect_radius = 7.5; fill_rate = 0.27; body_h = 1.35
+		"musician":
+			# v1.0.22: the street musician (beanie, goatee —
+			# Meshy left his guitar off both generations; Michael
+			# accepted him without it).
+			display_name = "Street Musician"
+			pron_subj = "he"; pron_obj = "him"; pron_poss = "his"; gendered = true
+			walk_speed = 2.2; chase_speed = 5.9; detect_radius = 6.5; fill_rate = 0.20
 		"poundworker":
 			# POUND VAN (Michael, 2026-11-17): the animal-control
 			# worker from the white van. NOT a town NPC — main spawns
@@ -2195,6 +2244,25 @@ func _meshy_scene_for_type() -> PackedScene:
 			return preload("res://assets/models/dog_walker.glb")
 		"shopkeeper":
 			return preload("res://assets/models/shopkeeper.glb")
+		# v1.0.22 MESHY BATCH 2: the eight new townsfolk. Every
+		# street type now has a model — the code-built "pedestrian"
+		# body no longer spawns anywhere (Michael's all-Meshy rule).
+		"mailcarrier":
+			return preload("res://assets/models/mail_carrier.glb")
+		"gardener":
+			return preload("res://assets/models/gardener.glb")
+		"skateboarder":
+			return preload("res://assets/models/skateboarder.glb")
+		"baker":
+			return preload("res://assets/models/baker.glb")
+		"construction":
+			return preload("res://assets/models/construction_worker.glb")
+		"coffeeowner":
+			return preload("res://assets/models/coffee_shop_owner.glb")
+		"jogger":
+			return preload("res://assets/models/jogger.glb")
+		"musician":
+			return preload("res://assets/models/street_musician.glb")
 	return null
 
 func _attach_meshy() -> void:

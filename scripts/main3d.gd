@@ -53,6 +53,17 @@ var _normal_for: Dictionary = {
 const TEX_RUG: Texture2D = preload("res://assets/textures/rug.png")
 const TEX_SOFA: Texture2D = preload("res://assets/textures/sofa_fabric.png")
 const PersonScript: GDScript = preload("res://scripts/person.gd")
+const TownCatScript: GDScript = preload("res://scripts/town_cat.gd") # v1.0.22: the Meshy town cats
+const TOWN_CAT_SCENES: Dictionary = {
+	"town_tabby": preload("res://assets/models/town_tabby.glb"),
+	"black_cat": preload("res://assets/models/black_cat.glb"),
+	"white_cat": preload("res://assets/models/white_cat.glb"),
+	"calico_cat": preload("res://assets/models/calico_cat.glb"),
+	"gray_tabby": preload("res://assets/models/gray_tabby.glb"),
+	"siamese_cat": preload("res://assets/models/siamese_cat.glb"),
+	"tortoiseshell_cat": preload("res://assets/models/tortoiseshell_cat.glb"),
+	"russian_blue_cat": preload("res://assets/models/russian_blue_cat.glb"),
+}
 const EscapePanelScript: GDScript = preload("res://scripts/escape_panel.gd")
 const OpeningCutsceneScript: GDScript = preload("res://scripts/opening_cutscene.gd") # STORY PART 1: the opening cutscene + pound start module
 
@@ -63,6 +74,9 @@ var home_index: int = 0
 var home_address: String = ""
 var player: CharacterBody3D = null
 var npcs: Array = []
+var town_cats: Array = [] # v1.0.22: the eight Meshy town cats wandering the streets
+var pickup_street: String = "" # v1.0.22: street of the officer's latest capture — feeds the intake card only
+var intake_card_label: Label3D = null # v1.0.22: the card on Zander's cage front (see _build_intake_card)
 var hide_points: Array = [] # Vector3 bush / car centres
 var pursuers: Dictionary = {}
 const PURSUIT_DURATION := 30.0 # v1.0.13: post-escape pursuit length in seconds (Michael, 2026-11-17: 60 -> 30)
@@ -186,6 +200,7 @@ var distract_bar_fill: ColorRect = null
 var prop_prompt_btn: Button = null # "🐾 Paw the plant!" near a standing prop
 var crash_labels: Array = [] # [{node, t}]
 var sfx_crash: AudioStreamPlayer = null # notice.wav at a low pitch — the crash cue
+var sfx_siren: AudioStreamPlayer = null # v1.0.22: the pound van's soft two-tone whoop, riding with its light bar
 # --- v1.2 PLAYER-DRIVEN EXIT (Michael's design, 2026-11-16) -----------
 # On combo success the way OPENS and control returns to the player:
 # the cat walks out through it himself. The escape completes when he
@@ -252,6 +267,20 @@ var nearest_chaser: Node = null
 # --- v0.7 traffic -------------------------------------------------------
 var traffic_cars: Array = [] # {node, vel}
 var _car_variant: int = 0 # v1.0.21: rotates the Meshy vehicle picks inside a car type (see _vehicle_scene)
+# v1.0.22: the Meshy vehicle GLBs carry their nose toward -X in
+# their own scene space — probe-measured on all eight (side
+# renders with axis markers, tests/nose_probe.gd). But EVERY
+# orientation consumer in the town works in the town convention
+# NOSE = car-root +X: the traffic spawn rotations, the driveway
+# parking turn, and the pound van's yaw maths (forward =
+# (cos yaw, 0, -sin yaw) IS the root's +X at that yaw). v1.0.21
+# trusted a comment claiming the models were normalised nose
+# +X and skipped the turn, so every car drove tail-first
+# (Michael, playing v1.0.21: "all the cars drive backwards").
+# _build_car — the ONE place every vehicle in the game is
+# built — yaws the model instance by this much, which puts the
+# nose on +X where the whole town expects it.
+const VEHICLE_MODEL_YAW := 180.0
 # v1.0.21: each Meshy vehicle's real-world envelope (length X,
 # height Y, width Z, metres) — the collision box in _build_car is
 # sized from these. Measured off the imported models (Blender).
@@ -992,6 +1021,7 @@ func _build_world_async() -> void:
 	await _build_frame()
 	await _set_boot_stage("People", 75)
 	await _spawn_npcs()
+	_spawn_town_cats()
 	await _build_frame()
 	_build_pound_depot() # v1.0.21: the pound's garage + office at the west end (before the van, so its home exists when it first returns)
 	await _spawn_pound()
@@ -1354,6 +1384,11 @@ func _build_audio() -> void:
 	sfx_crash = _make_player("res://assets/audio/notice.wav")
 	sfx_crash.pitch_scale = 0.5
 	sfx_crash.volume_db = -4.0
+	# v1.0.22: the pound van's siren blip — a soft, short two-tone
+	# whoop, kept well under the mix (atmosphere, not an alarm).
+	# _pound_update_lights starts and stops it with the light bar.
+	sfx_siren = _make_player("res://assets/audio/siren_blip.wav")
+	sfx_siren.volume_db = -13.0
 	sfx_win = _make_player("res://assets/audio/win_chime.wav")
 	music = _make_player("res://assets/audio/music_pad.wav")
 	music.volume_db = -14.0
@@ -3494,9 +3529,11 @@ func _build_car(parent: Node, pos: Vector3, col: Color, along_x: bool, car_type:
 	# vehicle on the street — traffic, driveway and lot cars, and
 	# the pound van via the "pound" type — is a Meshy model from
 	# assets/models, instantiated under the same "Car" root with
-	# the conventions the town was built around: nose toward +X,
-	# ground at y=0, one solid box body so the cat still bumps
-	# into them and hides at them. `col` stays in the signature
+	# the conventions the town was built around: nose toward +X
+	# (the models arrive nose toward -X — the instance is turned
+	# to suit, see VEHICLE_MODEL_YAW), ground at y=0, one solid
+	# box body so the cat still bumps into them and hides at
+	# them. `col` stays in the signature
 	# (the town's builders pass it) but the models carry their
 	# own colours now. The models were decimated + texture-capped
 	# in Blender before import (see vehicles_src): one mesh, one
@@ -3510,6 +3547,7 @@ func _build_car(parent: Node, pos: Vector3, col: Color, along_x: bool, car_type:
 	parent.add_child(g)
 	var scene: PackedScene = _vehicle_scene(car_type)
 	var inst: Node3D = scene.instantiate()
+	inst.rotation_degrees = Vector3(0, VEHICLE_MODEL_YAW, 0) # v1.0.22: nose -X -> the town's +X (see the const)
 	g.add_child(inst)
 	var dims: Vector3 = VEHICLE_DIMS.get(scene.resource_path, Vector3(4.2, 1.5, 2.0))
 	var body := StaticBody3D.new()
@@ -3523,6 +3561,17 @@ func _build_car(parent: Node, pos: Vector3, col: Color, along_x: bool, car_type:
 	if not for_traffic:
 		_label3d(g, "hide ⛺", Vector3(0, 2.1, 0), 40, Color(1, 1, 1, 0.85))
 	return g
+
+func _car_nose_dir(car_root: Node3D) -> Vector3:
+	# v1.0.22: the world direction a car's NOSE points, flattened.
+	# _build_car guarantees the model's nose lies along the car
+	# root's +X (VEHICLE_MODEL_YAW), so the nose in the world is
+	# the root's X axis. The suite holds traffic cars and the
+	# patrolling pound van to this against their actual motion —
+	# the check v1.0.21 didn't have when it shipped them backwards.
+	var x: Vector3 = car_root.global_transform.basis.x
+	x.y = 0.0
+	return x.normalized() if x.length() > 0.001 else Vector3.RIGHT
 
 func _build_pine(parent: Node, pos: Vector3, s: float = 1.0) -> void:
 	# v0.7: FOUR ragged, slightly offset tiers over a tapered trunk —
@@ -4242,6 +4291,32 @@ func _build_house_room() -> void:
 
 
 # ---------------------------------------------------------------- escape room (3D interior at x≈200)
+func _build_intake_card(room: Node3D, o: Vector3) -> void:
+	# v1.0.22 INTAKE CARD (Michael's street clue, 2026-11-19): a
+	# paper card pinned on the front of ZANDER'S cage in the ward,
+	# like the info cards on the other kennels. It names the street
+	# he was picked up on (see street_name_at / on_cat_taken). It is
+	# a physical card in the room and nothing more — no prompt, no
+	# popup, never surfaced anywhere else: the player learns the
+	# street only by walking up to the cage and reading it.
+	# The cage stands centred at o + (0, 0, 8.55) with its gate on
+	# the north front (see opening_cutscene._ensure_cage); the card
+	# sits on the fixed mesh panel east of the gate.
+	var card := _box(room, o + Vector3(0.86, 0.74, 8.55 - 1.16), Vector3(0.56, 0.4, 0.015), Color(0.96, 0.94, 0.88))
+	card.name = "IntakeCard"
+	var pin := _box(room, o + Vector3(0.86, 0.9, 8.55 - 1.17), Vector3(0.05, 0.05, 0.02), Color(0.75, 0.2, 0.2))
+	pin.name = "IntakeCardPin"
+	intake_card_label = Label3D.new()
+	intake_card_label.name = "IntakeCardText"
+	intake_card_label.font_size = 64
+	intake_card_label.pixel_size = 0.0016
+	intake_card_label.modulate = Color(0.16, 0.14, 0.12)
+	intake_card_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	intake_card_label.position = o + Vector3(0.86, 0.76, 8.55 - 1.175)
+	intake_card_label.rotation_degrees = Vector3(0, 180, 0) # face the room, like the POUND sign
+	room.add_child(intake_card_label)
+	_refresh_intake_card()
+
 func _build_escape_room() -> void:
 	var room := Node3D.new()
 	room.name = "EscapeRoom"
@@ -4262,6 +4337,7 @@ func _build_escape_room() -> void:
 	floor_mi.material_override = _mat_tex(TEX_SIDEWALK, Color(1.0, 0.93, 0.83), Vector3(9, 7, 1))
 	var rug := _box(room, o + Vector3(0, 0.06, 3), Vector3(9, 0.06, 6), Color.WHITE)
 	rug.material_override = _mat(Color(0.63, 0.59, 0.51), 0.95) # POUND FIX: lightened + warmed (see floor note above)
+	_build_intake_card(room, o)
 	for fx in range(-4, 5):
 		_box(room, o + Vector3(float(fx), 0.07, 6.25), Vector3(0.09, 0.03, 0.5), Color(0.45, 0.48, 0.52))
 		_box(room, o + Vector3(float(fx), 0.07, -0.25), Vector3(0.09, 0.03, 0.5), Color(0.45, 0.48, 0.52))
@@ -5351,6 +5427,29 @@ func _spawn_player() -> void:
 	player.set("main_ref", self)
 	player.call("set_tag_name") # the tag says his NAME ("Zander"), not the address
 
+func _spawn_town_cats() -> void:
+	# v1.0.22: the eight Meshy TOWN CATS wander the town as ambient
+	# animals (Michael's all-Meshy street rule — the old code-built
+	# strays are gone). Each is its own little CharacterBody3D with
+	# a procedural trot (the GLBs are rigged but carry no clips —
+	# see town_cat.gd). Spots sit on grass/verge near known NPC
+	# spots in the legacy town, clear of the road centrelines.
+	var spots: Array = [
+		["town_tabby", Vector3(-24, 0.2, -2)], ["black_cat", Vector3(30, 0.2, -19)],
+		["white_cat", Vector3(-31, 0.2, 24)], ["calico_cat", Vector3(52, 0.2, 3)],
+		["gray_tabby", Vector3(3, 0.2, 31)], ["siamese_cat", Vector3(-47, 0.2, 33)],
+		["tortoiseshell_cat", Vector3(79, 0.2, -32)], ["russian_blue_cat", Vector3(55, 0.2, 63)],
+	]
+	for d in spots:
+		var cat := CharacterBody3D.new()
+		cat.set_script(TownCatScript)
+		cat.set("model_scene", TOWN_CAT_SCENES[d[0]])
+		cat.set("player_ref", player)
+		cat.set("home", d[1])
+		cat.position = d[1]
+		add_child(cat)
+		town_cats.append(cat)
+
 func _spawn_npcs() -> void:
 	# v0.9 (item 2): MORE neighbours — 22 out walking (was 14),
 	# spread over the whole map including the filled east/south
@@ -5365,27 +5464,27 @@ func _spawn_npcs() -> void:
 	# the community garden, Willow Hall and Maple Mart.
 	var defs: Array = [
 		["woman", Vector3(-30, 0.2, -6)], ["kid", Vector3(36, 0.2, -14)], ["dogwalker", Vector3(-36, 0.2, 20)],
-		["shopkeeper", Vector3(46, 0.2, 6)], ["pedestrian", Vector3(-44, 0.2, -22)], ["pedestrian", Vector3(50, 0.2, 34)],
+		["shopkeeper", Vector3(46, 0.2, 6)], ["mailcarrier", Vector3(-44, 0.2, -22)], ["gardener", Vector3(50, 0.2, 34)],
 		["woman", Vector3(8, 0.2, 26)], ["kid", Vector3(-52, 0.2, 28)],
 		["woman", Vector3(84, 0.2, -37)], ["kid", Vector3(-86, 0.2, 38)], ["dogwalker", Vector3(60, 0.2, 66)], # MAP DOUBLING: this neighbour moved z -44 -> -37 — a new Elm S house now stands at (84,-44)
-		["shopkeeper", Vector3(-60, 0.2, -70)], ["pedestrian", Vector3(100, 0.2, 20)], ["pedestrian", Vector3(-100, 0.2, -80)],
+		["shopkeeper", Vector3(-60, 0.2, -70)], ["skateboarder", Vector3(100, 0.2, 20)], ["baker", Vector3(-100, 0.2, -80)],
 		["woman", Vector3(-112, 0.2, -48)], ["kid", Vector3(108, 0.2, 38)], ["dogwalker", Vector3(-58, 0.2, 84)],
-		["shopkeeper", Vector3(80, 0.2, -72)], ["pedestrian", Vector3(14, 0.2, -84)], ["pedestrian", Vector3(-14, 0.2, 48)],
-		["woman", Vector3(110, 0.2, -6)], ["pedestrian", Vector3(34, 0.2, 84)],
-		["woman", Vector3(-38, 0.2, -83)], ["pedestrian", Vector3(58, 0.2, -85)], ["shopkeeper", Vector3(97, 0.2, -17)],
+		["shopkeeper", Vector3(80, 0.2, -72)], ["construction", Vector3(14, 0.2, -84)], ["coffeeowner", Vector3(-14, 0.2, 48)],
+		["woman", Vector3(110, 0.2, -6)], ["jogger", Vector3(34, 0.2, 84)],
+		["woman", Vector3(-38, 0.2, -83)], ["musician", Vector3(58, 0.2, -85)], ["shopkeeper", Vector3(97, 0.2, -17)],
 		["kid", Vector3(93, 0.2, 25)], ["woman", Vector3(88, 0.2, 19)], ["dogwalker", Vector3(106, 0.2, 73)],
-		["pedestrian", Vector3(103, 0.2, 80)], ["woman", Vector3(102, 0.2, -60)], ["pedestrian", Vector3(56, 0.2, -8)],
-		["dogwalker", Vector3(-95, 0.2, 76)], ["pedestrian", Vector3(24, 0.2, 74)], ["woman", Vector3(-84, 0.2, -14)],
+		["mailcarrier", Vector3(103, 0.2, 80)], ["woman", Vector3(102, 0.2, -60)], ["gardener", Vector3(56, 0.2, -8)],
+		["dogwalker", Vector3(-95, 0.2, 76)], ["skateboarder", Vector3(24, 0.2, 74)], ["woman", Vector3(-84, 0.2, -14)],
 		# MAP DOUBLING: 14 more neighbours (defs 35-48) — most in
 		# the new east district (Harbour Market, Meadow Court,
 		# Sunset Green, the new streets and promenade), plus one
 		# old-town infill walker. Roles below keep the split at
 		# exactly 25% to avoid: 12 / 19 / 17 of 48.
-		["shopkeeper", Vector3(193, 0.2, -19)], ["pedestrian", Vector3(198, 0.2, -24)], ["woman", Vector3(252, 0.2, -59)],
-		["dogwalker", Vector3(300, 0.2, 74)], ["pedestrian", Vector3(340, 0.2, 22)], ["woman", Vector3(160, 0.2, 58)],
-		["pedestrian", Vector3(214, 0.2, -72)], ["kid", Vector3(255, 0.2, 24)], ["woman", Vector3(305, 0.2, -38)],
-		["pedestrian", Vector3(348, 0.2, -18)], ["kid", Vector3(182, 0.2, 8)], ["woman", Vector3(150, 0.2, -83)],
-		["pedestrian", Vector3(58, 0.2, -18)], ["woman", Vector3(326, 0.2, -61)],
+		["shopkeeper", Vector3(193, 0.2, -19)], ["baker", Vector3(198, 0.2, -24)], ["woman", Vector3(252, 0.2, -59)],
+		["dogwalker", Vector3(300, 0.2, 74)], ["construction", Vector3(340, 0.2, 22)], ["woman", Vector3(160, 0.2, 58)],
+		["coffeeowner", Vector3(214, 0.2, -72)], ["kid", Vector3(255, 0.2, 24)], ["woman", Vector3(305, 0.2, -38)],
+		["jogger", Vector3(348, 0.2, -18)], ["kid", Vector3(182, 0.2, 8)], ["woman", Vector3(150, 0.2, -83)],
+		["musician", Vector3(58, 0.2, -18)], ["woman", Vector3(326, 0.2, -61)],
 	]
 	# BISECT (v1.0.12): in legacy mode the MAP DOUBLING neighbours
 	# above keep their types and their order in the array — so the
@@ -5553,7 +5652,25 @@ func _input(event: InputEvent) -> void:
 			dismiss_splash()
 		return
 	if escape_panel != null and escape_panel.visible:
-		return # v1.1: the escape panel owns ALL input while open — the cat stays put, swipes go to the panel
+		# v1.0.22 (Michael's direction): the panel owns input while
+		# open — BUT the escape combination is entered on the game's
+		# OWN on-screen A (HOP) / B (PAW) buttons (the duplicate
+		# on-panel buttons are gone). The panel Control covers the
+		# whole screen, so the Buttons' own signals never fire; the
+		# presses are claimed HERE, on the raw channels, exactly like
+		# the v1.0.18/v1.0.21 action claims, and routed to the panel.
+		var pp2 := Vector2(-9999, -9999)
+		if event is InputEventScreenTouch and event.pressed:
+			pp2 = (event as InputEventScreenTouch).position
+		elif event is InputEventMouseButton and event.pressed and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
+			pp2 = (event as InputEventMouseButton).position
+		if pp2.x > -9000.0:
+			var act2: String = _claim_action_touch(pp2)
+			if act2 == "hop":
+				escape_panel_input("A")
+			elif act2 == "paw":
+				escape_panel_input("B")
+		return
 	if state == "escape" and ((escape_prompt_btn != null and escape_prompt_btn.visible) or (prop_prompt_btn != null and prop_prompt_btn.visible)):
 		# A press ON either escape prompt button is the button's own —
 		# never a joystick or look-drag start.
@@ -6021,6 +6138,8 @@ func _build_hud() -> void:
 	# which no longer tell the player to memorise an address.
 	_hud_label(title_panel, "Find your way home — and don't let kind people\ntake you home with them.", Vector2(70, 344), 23)
 	var start_btn := Button.new()
+	start_btn.focus_mode = Control.FOCUS_NONE # v1.0.22: no focus square
+	start_btn.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 	start_btn.text = "▶  START  —  Find Home!"
 	start_btn.position = Vector2(200, 436)
 	start_btn.size = Vector2(400, 80)
@@ -6029,7 +6148,7 @@ func _build_hud() -> void:
 	title_panel.add_child(start_btn)
 	# v1.0.10: subtle build tag so Michael can confirm which build
 	# he is running from the title screen itself.
-	var ver := _hud_label(title_panel, "v1.0.21", Vector2(706, 522), 16)
+	var ver := _hud_label(title_panel, "v1.0.22", Vector2(706, 522), 16)
 	ver.label_settings.font_color = Color(0.65, 0.7, 0.85)
 	win_panel = _make_panel(hud_layer, Vector2(290, 130), Vector2(700, 460), Color(0.12, 0.2, 0.12, 0.97))
 	win_panel.set_anchors_preset(Control.PRESET_CENTER)
@@ -6040,6 +6159,8 @@ func _build_hud() -> void:
 	win_label = _hud_label(win_panel, "", Vector2(40, 40), 30)
 	win_label.custom_minimum_size = Vector2(620, 240)
 	var again := Button.new()
+	again.focus_mode = Control.FOCUS_NONE # v1.0.22: no focus square
+	again.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 	again.text = "🔁  Play Again (new address!)"
 	again.position = Vector2(130, 320)
 	again.size = Vector2(440, 80)
@@ -6246,6 +6367,8 @@ func _build_escape_ui() -> void:
 	# THE PROMPT: a big warm dialogue-style button, bottom-centre,
 	# shown only while the cat stands at the current mechanism.
 	escape_prompt_btn = Button.new()
+	escape_prompt_btn.focus_mode = Control.FOCUS_NONE # v1.0.22: no focus square
+	escape_prompt_btn.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 	escape_prompt_btn.text = "🐾 PAW the latch!"
 	escape_prompt_btn.anchor_left = 0.5
 	escape_prompt_btn.anchor_right = 0.5
@@ -6306,6 +6429,8 @@ func _build_escape_ui() -> void:
 	# the cat stands by a standing knock-over prop. Tapping it (or
 	# pressing PAW) topples the prop.
 	prop_prompt_btn = Button.new()
+	prop_prompt_btn.focus_mode = Control.FOCUS_NONE # v1.0.22: no focus square
+	prop_prompt_btn.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 	prop_prompt_btn.text = "🐾 Paw it over!"
 	prop_prompt_btn.anchor_left = 0.5
 	prop_prompt_btn.anchor_right = 0.5
@@ -6357,6 +6482,8 @@ func _round_style(color: Color, diameter: int) -> StyleBoxFlat:
 
 func _round_action(text: String, pos: Vector2, diameter: int, color: Color, on_press: Callable) -> Button:
 	var b := Button.new()
+	b.focus_mode = Control.FOCUS_NONE # v1.0.22: no square outline / focus box on any touch button
+	b.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 	b.text = text
 	# v0.7: anchored to the bottom-right of the REAL screen (pos is
 	# the old 1280x720 design position) so the buttons hug the corner
@@ -6380,6 +6507,8 @@ func _round_action(text: String, pos: Vector2, diameter: int, color: Color, on_p
 
 func _round_hold(text: String, pos: Vector2, diameter: int, color: Color, on_hold: Callable) -> Button:
 	var b := Button.new()
+	b.focus_mode = Control.FOCUS_NONE # v1.0.22: no square outline / focus box on any touch button
+	b.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 	b.text = text
 	# Same bottom-right anchoring and action-button registration as
 	# _round_action (pos is the old 1280x720 design position), so a
@@ -6886,12 +7015,17 @@ func _build_pound_light_rig() -> void:
 	pound_light_lamp_r.visible = false
 
 func _pound_lights_active() -> bool:
-	# Michael's order of events (his v1.0.21 restatement): the
-	# meter fills -> the LIGHTS GO ON -> the van stops -> the
-	# officer gets out and chases. So the bar is live from the
-	# pull-over beat through the whole encounter — getting out,
-	# the chase, the capture-away, the walk back — and goes dark
-	# again once he is back in and the patrol resumes.
+	# v1.0.22 (Michael, refining his v1.0.21 order): the lights
+	# run for the WHOLE encounter. They start the moment the
+	# notice meter starts BUILDING — the cat is near the van (or
+	# near the officer on foot) and being noticed, still on
+	# patrol — and they keep alternating through the full meter,
+	# the pull-over, the officer getting out, the chase, the
+	# capture-away and the walk back, until the encounter is
+	# over: he is back in, the patrol has resumed and the meter
+	# is empty. (v1.0.21 lit them only once the meter had FILLED.)
+	if pound_notice > 0.0:
+		return true
 	return pound_state == "pullover" or pound_state == "exit" or pound_state == "chase" or pound_state == "away" or pound_state == "return"
 
 func _pound_update_lights(delta: float) -> void:
@@ -6901,11 +7035,20 @@ func _pound_update_lights(delta: float) -> void:
 		pound_light_lamp_l.visible = false
 		pound_light_lamp_r.visible = false
 		pound_light_t = 0.0
+		if sfx_siren and sfx_siren.playing:
+			sfx_siren.stop() # v1.0.22: the whoop ends with the encounter
 		return
 	pound_light_t += delta
+	# Strict alternation: exactly one lamp lit at any moment,
+	# swapping every 0.26 s — never both, never neither.
 	var phase: int = int(pound_light_t / 0.26) % 2
 	pound_light_lamp_l.visible = phase == 0
 	pound_light_lamp_r.visible = phase == 1
+	# v1.0.22: the soft two-tone whoop rides with the lights —
+	# retriggered as each blip ends (the bark pattern), so it
+	# sounds for exactly as long as the bar is live.
+	if sfx_siren and not sfx_siren.playing:
+		sfx_siren.play()
 
 func _spawn_pound() -> void:
 	# The patrol circuit: one right-hand loop around the whole
@@ -7523,6 +7666,59 @@ func _xz_rect_has(r: Rect2, p: Vector3) -> bool:
 	return r.has_point(Vector2(p.x, p.z))
 
 # ---------------------------------------------------------------- taken / escape / pursuit
+const STREET_NAMES_H: Dictionary = {-55.0: "Elm Drive", -11.0: "Maple Street", 15.0: "Oak Avenue", 55.0: "Willow Crescent"}
+const STREET_NAMES_V: Dictionary = {-70.0: "Pine Street", -20.0: "Cedar Street", 24.0: "Birch Lane", 72.0: "Riverside Drive", 128.0: "Harbour Street", 176.0: "Summit Avenue", 224.0: "Quarry Lane", 272.0: "Meadow Drive", 320.0: "Sunset Drive"}
+
+func street_name_at(pos: Vector3) -> String:
+	# v1.0.22: the street a world position belongs to, for the
+	# intake card. The nearer of the closest horizontal / vertical
+	# road centreline wins; beyond the roads entirely, the nearest
+	# house's street speaks for the spot.
+	var best_h := ""
+	var bd_h := 1e9
+	for rz in STREET_NAMES_H.keys():
+		var d: float = absf(pos.z - float(rz))
+		if d < bd_h:
+			bd_h = d
+			best_h = str(STREET_NAMES_H[rz])
+	var best_v := ""
+	var bd_v := 1e9
+	for rx in STREET_NAMES_V.keys():
+		if LEGACY_TOWN_ONLY and float(rx) > 100.0:
+			continue
+		var d2: float = absf(pos.x - float(rx))
+		if d2 < bd_v:
+			bd_v = d2
+			best_v = str(STREET_NAMES_V[rx])
+	if minf(bd_h, bd_v) <= 17.0:
+		return best_h if bd_h <= bd_v else best_v
+	var best_house := ""
+	var bd_house := 1e9
+	for h in houses:
+		var hp: Vector3 = h["pos"]
+		var dh: float = Vector2(pos.x - hp.x, pos.z - hp.z).length()
+		if dh < bd_house:
+			bd_house = dh
+			best_house = str(h["address"])
+	if best_house != "":
+		var sp: int = best_house.find(" ")
+		if sp > 0:
+			return best_house.substr(sp + 1)
+		return best_house
+	return best_h if bd_h <= bd_v else best_v
+
+func _refresh_intake_card() -> void:
+	# v1.0.22: the intake card on Zander's cage names the street he
+	# was picked up on. It is a physical card in the ward — the
+	# player learns the street only by walking up and reading it;
+	# nothing anywhere else ever shows it.
+	if intake_card_label == null:
+		return
+	if pickup_street == "":
+		intake_card_label.text = "INTAKE\nCat — orange tabby\nFound on —"
+	else:
+		intake_card_label.text = "INTAKE\nCat — orange tabby\nFound on " + pickup_street
+
 func on_cat_taken(npc: Node) -> void:
 	if state != "play":
 		return
@@ -7533,6 +7729,10 @@ func on_cat_taken(npc: Node) -> void:
 	capture_return_pos = player.global_position
 	pursuers.erase(npc)
 	if npc == pound_worker:
+		# v1.0.22: remember where he was picked up — the intake
+		# card on his cage in the ward will say this street.
+		pickup_street = street_name_at(player.global_position)
+		_refresh_intake_card()
 		# POUND VAN: he is the captor now — the cutscene, the room
 		# ("back at the pound") and his pursuit own him until the
 		# pursuit drains, which hands him back to the van (below).
@@ -8101,8 +8301,9 @@ func _close_escape_panel() -> void:
 	if player and escape_anim_t < 0.0:
 		player.set("frozen", false)
 
-# One entry point for ALL panel inputs (the panel's A / B buttons,
-# the PC hop / paw keys, and the automated tests). v1.0.21: inputs
+# One entry point for ALL panel inputs (the game's on-screen A / B
+# buttons via the raw-touch claim in _input, the PC hop / paw keys,
+# and the automated tests). v1.0.21: inputs
 # are "A" / "B" presses against the rolled escape_combo.
 func escape_panel_input(inp: String) -> void:
 	if escape_panel == null or not escape_panel.visible:

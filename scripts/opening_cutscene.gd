@@ -77,6 +77,8 @@ func setup(main_ref: Node) -> void:
 	# layer (they can never show at once — the cat can't be at the
 	# cage gate and at the door mechanism at the same time).
 	cage_prompt_btn = Button.new()
+	cage_prompt_btn.focus_mode = Control.FOCUS_NONE # v1.0.22: no focus square
+	cage_prompt_btn.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 	cage_prompt_btn.text = "🐾 PAW the cage gate!"
 	cage_prompt_btn.anchor_left = 0.5
 	cage_prompt_btn.anchor_right = 0.5

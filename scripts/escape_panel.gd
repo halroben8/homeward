@@ -7,8 +7,12 @@ extends Control
 ## direction, replacing the v1.1 swipe combo): the combination is a
 ## sequence of the A and B buttons (A = the game's HOP button,
 ## B = PAW), FIVE presses, RANDOMLY ROLLED by main every time the
-## puzzle starts — the panel's own A and B buttons (and the PC hop /
-## paw keys, routed by main) enter it. Correct inputs light the chips
+## puzzle starts. v1.0.22 (Michael's direction): the combination is
+## entered on the game's OWN on-screen A / B buttons — the duplicate
+## on-panel A / B buttons v1.0.21 added here are GONE; main claims
+## presses on the HUD buttons' rects on the raw touch channel while
+## the panel is open and routes them in (the PC hop / paw keys are
+## routed by main too). Correct inputs light the chips
 ## and work the pictured mechanism a notch; a wrong input gently
 ## slips the sequence back — no punishment. v1.2: the captor is in
 ## the room (main3d.gd) — the status strip across the picture shows
@@ -47,8 +51,6 @@ var _nudge_t: float = 0.0 # brief carrier rattle after a correct input
 var _title_label: Label = null
 var _hint_label: Label = null
 var _slip_label: Label = null
-var _a_btn: Button = null
-var _b_btn: Button = null
 var _close_btn: Button = null
 
 const BOX_W := 880.0
@@ -80,31 +82,11 @@ func _ready() -> void:
 	_slip_label.add_theme_color_override("font_color", Color(1.0, 0.8, 0.45))
 	_slip_label.visible = false
 	add_child(_slip_label)
-	# v1.0.21: the panel's own A and B buttons — same labels, colours
-	# and order as the game's touch buttons (A HOP red, B PAW blue).
-	_a_btn = Button.new()
-	_a_btn.text = "A"
-	_a_btn.add_theme_font_size_override("font_size", 30)
-	var a_col := Color(0.85, 0.3, 0.3, 0.95)
-	_a_btn.add_theme_stylebox_override("normal", _round_style(a_col, 104))
-	_a_btn.add_theme_stylebox_override("pressed", _round_style(a_col.lightened(0.25), 104))
-	_a_btn.add_theme_stylebox_override("hover", _round_style(a_col, 104))
-	_a_btn.pressed.connect(func() -> void:
-		if on_input.is_valid():
-			on_input.call("A"))
-	add_child(_a_btn)
-	_b_btn = Button.new()
-	_b_btn.text = "B"
-	_b_btn.add_theme_font_size_override("font_size", 30)
-	var b_col := Color(0.3, 0.45, 0.9, 0.95)
-	_b_btn.add_theme_stylebox_override("normal", _round_style(b_col, 104))
-	_b_btn.add_theme_stylebox_override("pressed", _round_style(b_col.lightened(0.25), 104))
-	_b_btn.add_theme_stylebox_override("hover", _round_style(b_col, 104))
-	_b_btn.pressed.connect(func() -> void:
-		if on_input.is_valid():
-			on_input.call("B"))
-	add_child(_b_btn)
+	# v1.0.22: NO A / B buttons on the panel — the combo is entered
+	# on the game's own HUD A (HOP) / B (PAW) buttons (see header).
 	_close_btn = Button.new()
+	_close_btn.focus_mode = Control.FOCUS_NONE # v1.0.22: no focus square on any touch button
+	_close_btn.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 	_close_btn.text = "✕"
 	_close_btn.add_theme_font_size_override("font_size", 22)
 	var close_col := Color(0.55, 0.3, 0.28, 0.9)
@@ -147,13 +129,9 @@ func _layout() -> void:
 	_title_label.position = Vector2(b.position.x + 20.0, b.position.y + 16.0)
 	_title_label.size = Vector2(b.size.x - 40.0, 56.0)
 	_hint_label.position = Vector2(b.position.x + 36.0, b.position.y + b.size.y - 54.0)
-	_hint_label.size = Vector2(b.size.x - 300.0, 40.0)
+	_hint_label.size = Vector2(b.size.x - 72.0, 40.0)
 	_slip_label.position = Vector2(b.position.x + 20.0, b.position.y + 478.0)
 	_slip_label.size = Vector2(b.size.x - 40.0, 34.0)
-	_b_btn.position = Vector2(b.position.x + b.size.x - 140.0, b.position.y + b.size.y - 148.0)
-	_b_btn.size = Vector2(104.0, 104.0)
-	_a_btn.position = Vector2(b.position.x + b.size.x - 262.0, b.position.y + b.size.y - 148.0)
-	_a_btn.size = Vector2(104.0, 104.0)
 	_close_btn.position = Vector2(b.position.x + b.size.x - 58.0, b.position.y + 12.0)
 	_close_btn.size = Vector2(44.0, 44.0)
 
@@ -219,10 +197,11 @@ func _process(delta: float) -> void:
 	queue_redraw() # chip pulse + shake/rattle animation
 
 # ---------------------------------------------------------------- input
-# v1.0.21: the picture takes NO input any more (the swipe combo is
-# gone) — the combination is entered on the A / B buttons below (and
-# the PC hop/paw keys, which main routes). Presses on the panel
-# itself are simply swallowed so nothing leaks to the room behind.
+# The picture takes NO input (the swipe combo is gone) — the
+# combination is entered on the game's own A / B buttons (main
+# claims those presses before they reach the GUI) and the PC
+# hop/paw keys, which main routes. Presses on the panel itself are
+# simply swallowed so nothing leaks to the room behind.
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch or event is InputEventScreenDrag or event is InputEventMouseButton or event is InputEventMouseMotion:
 		accept_event()
