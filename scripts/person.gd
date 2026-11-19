@@ -9,6 +9,25 @@ extends CharacterBody3D
 
 var npc_type: String = "pedestrian"
 var display_name: String = "Pedestrian"
+# --- v1.0.19 PRONOUNS: ONE set per character, defined once in
+# _apply_type() and nowhere else. Every player-facing line that
+# refers to a character pulls its pronouns from here (main3d's
+# escape-room text, the opening's pound line) — the v1.0.17 build
+# wrote the escape text as if every captor were the young woman,
+# so the pound called the officer "she", and one screen mixed
+# her/him for the same captor (Michael's v1.0.17 play report).
+# gendered = true ONLY where the character's concept/model
+# establishes a gender: the officer (the kind man of the opening
+# story; cap + moustache on the splash), the Cat-Loving Young
+# Woman, the shopkeeper (flat cap + moustache on the sheet and
+# the model). The kid, the dog walker and the pedestrian
+# neighbours have NO established gender — gendered stays false
+# and text refers to them by display_name instead of a pronoun.
+# Never guess one for them.
+var pron_subj: String = "they" # he | she | they
+var pron_obj: String = "them" # him | her | them
+var pron_poss: String = "their" # his | her | their
+var gendered: bool = false
 var walk_speed: float = 2.4
 var chase_speed: float = 6.2
 var detect_radius: float = 11.0
@@ -252,15 +271,24 @@ func _apply_type() -> void:
 	match npc_type:
 		"woman":
 			display_name = "Cat-Loving Young Woman"
+			pron_subj = "she"; pron_obj = "her"; pron_poss = "her"; gendered = true
 			walk_speed = 2.5; chase_speed = 6.3; detect_radius = 7.5; fill_rate = 0.24
 		"kid":
 			display_name = "Excited Kid"
+			# v1.0.19: no gender in the concept sheet or the model
+			# (hoodie, grin, freckles) — gendered stays false, so
+			# text uses the name, never a guessed pronoun.
 			walk_speed = 3.4; chase_speed = 7.0; detect_radius = 7.0; fill_rate = 0.30; body_h = 1.15
 		"dogwalker":
 			display_name = "Friendly Dog Walker"
+			# v1.0.19: no established gender (wavy hair, overshirt,
+			# messenger bag) — gendered stays false, name-based text.
 			walk_speed = 2.3; chase_speed = 6.6; detect_radius = 8.0; fill_rate = 0.26
 		"shopkeeper":
 			display_name = "Cheerful Shopkeeper"
+			# v1.0.19: he/him — the flat cap + MOUSTACHE are part of
+			# his sheet design and his model (see _build_model).
+			pron_subj = "he"; pron_obj = "him"; pron_poss = "his"; gendered = true
 			walk_speed = 2.1; chase_speed = 6.0; detect_radius = 6.5; fill_rate = 0.22
 		"poundworker":
 			# POUND VAN (Michael, 2026-11-17): the animal-control
@@ -270,10 +298,52 @@ func _apply_type() -> void:
 			# pull-over / return-to-van states itself; his chase,
 			# grab and capture reuse this class's grabber machinery.
 			display_name = "Pound Worker"
+			# v1.0.19: he/him — the kind man of the opening story
+			# (Michael's direction: the officer is a HE).
+			pron_subj = "he"; pron_obj = "him"; pron_poss = "his"; gendered = true
 			walk_speed = 2.4; chase_speed = 6.4; detect_radius = 12.0; fill_rate = 0.30
 		_:
 			display_name = "Pedestrian"
+			# v1.0.19: the generic neighbours have no established
+			# gender — gendered stays false, name-based text.
 			walk_speed = 2.4; chase_speed = 6.1; detect_radius = 6.0; fill_rate = 0.18
+
+# --- v1.0.19 pronoun accessors: player-facing text builds its
+# references to a character from THESE and nothing else. --------
+func p_subj() -> String:
+	return pron_subj
+
+func p_obj() -> String:
+	return pron_obj
+
+func p_poss() -> String:
+	return pron_poss
+
+func p_is_gendered() -> bool:
+	return gendered
+
+# Subject-position reference, sentence-ready: "He" / "She" for a
+# gendered character, "The Excited Kid" for a neutral one.
+func p_ref() -> String:
+	return pron_subj.capitalize() if gendered else "The " + display_name
+
+# The same reference mid-sentence: "he" / "she" / "the Excited Kid".
+func p_ref_lower() -> String:
+	return pron_subj if gendered else "the " + display_name
+
+# Object-position reference: "him" / "her" / "the Excited Kid".
+func p_ref_obj() -> String:
+	return pron_obj if gendered else "the " + display_name
+
+# Possessive reference: "his" / "her" / "the Excited Kid's".
+func p_ref_poss() -> String:
+	return pron_poss if gendered else "the " + display_name + "'s"
+
+# "<X> is" as one fragment: "She's" / "He's" for a gendered
+# character, "The Excited Kid is" for a neutral one — for the
+# "<X> busy / watching / distracted / in the room" lines.
+func p_is() -> String:
+	return (pron_subj.capitalize() + "'s") if gendered else ("The " + display_name + " is")
 
 func _build_collision() -> void:
 	var cs := CollisionShape3D.new()

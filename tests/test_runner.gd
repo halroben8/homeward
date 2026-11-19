@@ -8,6 +8,7 @@ extends Node
 ## retained v0.7 set: no minimap, roles (population step: 9 of 34 seek the cat — 25% of everyone, rounded up),
 ## flat sign text, camera far plane, RUN-hold sprint + winded drop (v1.0.14),
 ## RUN hold driven through the REAL two-finger touch path (v1.0.18),
+## per-captor pronoun consistency across all generated escape text (v1.0.19),
 ## collar check removed (v1.0.8: button/zoom gone, tag print kept),
 ## single-mechanism escapes (v1.4: the back
 ## door for EVERY capture — the carrier is transport only),
@@ -119,6 +120,80 @@ func walk_cat_out() -> void:
 		if str(main.get("state")) != "escape":
 			break
 		main.call("_process_escape", 0.25)
+
+func band_texts() -> Array:
+	# Everything currently on the message band: the showing message
+	# plus the queued ones, in order.
+	var out: Array = []
+	var lab = main.get("message_label")
+	if lab and str(lab.text) != "":
+		out.append(str(lab.text))
+	for q in main.get("message_queue"):
+		out.append(str(q["text"]))
+	return out
+
+func npc_by_type(t: String) -> Node:
+	for n in main.get("npcs"):
+		if str(n.get("npc_type")) == t:
+			return n
+	return null
+
+func collect_captor_texts(cap: Node) -> Array:
+	# v1.0.19: enter the escape room with `cap` as captor and gather
+	# every captor-referring line the game generates for them: the
+	# two entry beats, the distract HUD (idle + busy), the escape
+	# panel's status strip (watching + busy), the topple message
+	# and the spotted-at-the-door message. The pronoun checks read
+	# the whole set at once — Michael's bug was two lines on ONE
+	# screen disagreeing about the same captor.
+	var texts: Array = []
+	main.call("clear_message_band")
+	main.set("captor", cap)
+	main.call("_enter_escape")
+	texts.append_array(band_texts())
+	if str(main.get("held_escape_message")) != "":
+		texts.append(str(main.get("held_escape_message")))
+		texts.append(str(main.get("held_escape_message_2")))
+	# distract HUD, captor undistracted
+	main.call("_update_distract_hud")
+	var dl = main.get("distract_label")
+	if dl:
+		texts.append(str(dl.text))
+	# panel status, undistracted: the "watching" line
+	var o: Vector3 = main.get("escape_origin")
+	(player as Node3D).global_position = o + Vector3(13.4, 0.3, 3.4)
+	main.call("_on_escape_prompt_pressed")
+	main.call("_process_escape", 0.05)
+	var panel = main.get("escape_panel")
+	if panel:
+		texts.append(str(panel.get("status_text")))
+	main.call("_close_escape_panel")
+	# topple a prop: the crash message, and the captor is distracted
+	main.call("clear_message_band")
+	var props: Array = main.get("distract_props")
+	(player as Node3D).global_position = (props[0]["base"] as Vector3) + Vector3(0.9, 0.3, 0.9)
+	main.call("topple_prop_at_cat")
+	texts.append_array(band_texts())
+	var guard: int = 0
+	while not bool(main.call("captor_distracted")) and guard < 40:
+		main.call("_process_escape", 0.25)
+		guard += 1
+	# distract HUD, captor busy
+	main.call("_update_distract_hud")
+	if dl:
+		texts.append(str(dl.text))
+	# panel status, distracted: the "busy" line
+	(player as Node3D).global_position = o + Vector3(13.4, 0.3, 3.4)
+	main.call("_on_escape_prompt_pressed")
+	main.call("_process_escape", 0.05)
+	if panel:
+		texts.append(str(panel.get("status_text")))
+	main.call("_close_escape_panel")
+	# spotted at the door: the interrupt message
+	main.call("clear_message_band")
+	main.call("_interrupt_escape")
+	texts.append_array(band_texts())
+	return texts
 
 func find_buttons(node: Node, out: Array) -> void:
 	for c in node.get_children():
@@ -1314,6 +1389,49 @@ func run_tests() -> void:
 	for inp in ["down", "up", "down", "up", "paw"]:
 		main.call("escape_panel_input", inp)
 		main.call("_process_escape", 0.4)
+	walk_cat_out()
+	main.call("_process", 30.1) # drain the pursuit
+
+	# ---------- v1.0.19 PRONOUNS (Michael's v1.0.17 play report) ----------
+	# Every character has ONE pronoun set (person.gd _apply_type) and
+	# all captor-referring text must use it: the pound called the
+	# officer "she", and one house screen said "distract her" at the
+	# top and "distract him" at the bottom for the same captor.
+	# Collect each captor's full generated text set and read it whole.
+	var rx_fem := RegEx.new()
+	rx_fem.compile("(?i)\\b(she|her|hers)\\b")
+	var rx_masc := RegEx.new()
+	rx_masc.compile("(?i)\\b(he|him|his)\\b")
+	# (1) the officer: he/him in his text, and NO she/her anywhere
+	var officer_texts: Array = collect_captor_texts(main.get("pound_worker"))
+	var officer_joined: String = "\n".join(PackedStringArray(officer_texts))
+	check("v1.0.19: the officer's escape text uses he/him", officer_joined.contains("so is he") and officer_joined.contains("distract him"), officer_joined)
+	check("v1.0.19: the officer's escape text has NO she/her", rx_fem.search(officer_joined) == null, officer_joined)
+	# (2) the young woman: she/her in her text, and NO he/him mixed in
+	var woman19: Node = npc_by_type("woman")
+	var woman_texts: Array = collect_captor_texts(woman19)
+	var woman_joined: String = "\n".join(PackedStringArray(woman_texts))
+	check("v1.0.19: the woman's escape text uses she/her", woman_joined.contains("so is she") and woman_joined.contains("distract her"), woman_joined)
+	check("v1.0.19: the woman's escape text has NO he/him", rx_masc.search(woman_joined) == null, woman_joined)
+	# (3) every other captor the suite can instantiate: the
+	# shopkeeper is he/him (moustache); the kid, the dog walker and
+	# the pedestrian neighbours have NO established gender, so their
+	# text must carry no gendered pronoun at all and use the name.
+	var keeper_texts: Array = collect_captor_texts(npc_by_type("shopkeeper"))
+	var keeper_joined: String = "\n".join(PackedStringArray(keeper_texts))
+	check("v1.0.19: the shopkeeper's escape text uses he/him with NO she/her", keeper_joined.contains("distract him") and rx_fem.search(keeper_joined) == null, keeper_joined)
+	for t19 in ["kid", "dogwalker", "pedestrian"]:
+		var cap19: Node = npc_by_type(t19)
+		var n_texts: Array = collect_captor_texts(cap19)
+		var n_joined: String = "\n".join(PackedStringArray(n_texts))
+		check("v1.0.19: the " + t19 + " (no established gender) gets NO gendered pronouns", rx_fem.search(n_joined) == null and rx_masc.search(n_joined) == null, n_joined)
+		check("v1.0.19: the " + t19 + "'s text refers by name instead", n_joined.contains(str(cap19.get("display_name"))), n_joined)
+	# Leave the room the intended way so later sections start clean.
+	main.set("captor", woman19)
+	main.call("_enter_escape")
+	distract_captor()
+	(player as Node3D).global_position = Vector3(573.4, 0.3, 3.4)
+	drive_escape_panel()
 	walk_cat_out()
 	main.call("_process", 30.1) # drain the pursuit
 

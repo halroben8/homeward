@@ -130,13 +130,13 @@ var theme_groups: Dictionary = {} # npc_type -> Node3D (only one visible)
 # shoes, picture, book stack, yarn, sill plant, wastebasket, coat
 # stand, stool, watering can); the crash pulls
 # the captor over to right it for ~5 s of walking + 5 s of righting —
-# that is the window to work the latch. No distraction: she notices
-# the cat at the door in NOTICE_GRACE seconds and kindly interrupts
-# (panel closes, combo lost, cat shooed off — no fail state).
+# that is the window to work the latch. No distraction: the captor
+# notices the cat at the door in NOTICE_GRACE seconds and kindly
+# interrupts (panel closes, combo lost, cat shooed off — no fail).
 const DISTRACT_RIGHT_TIME := 5.0 # seconds spent righting a toppled prop
 const DISTRACT_WALK_SPEED := 2.3
 const ROOM_WALK_SPEED := 1.15
-const NOTICE_GRACE := 1.2 # seconds at the door, undistracted, before she notices
+const NOTICE_GRACE := 1.2 # seconds at the door, undistracted, before the captor notices
 const NOTICE_COOLDOWN := 2.5 # grace after an interrupt before the panel may reopen
 var distract_props: Array = [] # [{id, name, pivot, base, stand, toppled, anim_t, home_rot, topple_rot, bubble}]
 # SHELTER WARD (2026-11-18): the pound's cages and their animals.
@@ -5933,7 +5933,7 @@ func _build_hud() -> void:
 	title_panel.add_child(start_btn)
 	# v1.0.10: subtle build tag so Michael can confirm which build
 	# he is running from the title screen itself.
-	var ver := _hud_label(title_panel, "v1.0.18", Vector2(706, 522), 16)
+	var ver := _hud_label(title_panel, "v1.0.19", Vector2(706, 522), 16)
 	ver.label_settings.font_color = Color(0.65, 0.7, 0.85)
 	win_panel = _make_panel(hud_layer, Vector2(290, 130), Vector2(700, 460), Color(0.12, 0.2, 0.12, 0.97))
 	win_panel.set_anchors_preset(Control.PRESET_CENTER)
@@ -7309,11 +7309,12 @@ func _step_text(kind: String) -> String:
 	# press PAW when you get there (Michael's fix: pawing is how you
 	# activate the puzzle; the prompt says so too).
 	# v1.0.15 HUD fix: the old texts ALSO repeated the distraction
-	# clause ("— knock something over first, she's watching!") in
-	# every step, which pushed the line off the screen's right edge.
-	# That half of the instruction hasn't gone anywhere: the entry
-	# message's second beat says it, and the distract label directly
-	# under this line carries it the whole time she's in the room.
+	# clause ("— knock something over first, the captor's watching!")
+	# in every step, which pushed the line off the screen's right
+	# edge. That half of the instruction hasn't gone anywhere: the
+	# entry message's second beat says it, and the distract label
+	# directly under this line carries it the whole time the captor
+	# is in the room.
 	match kind:
 		"carrier": return "You're shut in a CARRIER! Press PAW by it to wriggle the door!"
 		"latch": return "Find the WINDOW! Press PAW by it to work the brass latch!"
@@ -7406,6 +7407,39 @@ func _apply_escape_theme(ctype: String) -> void:
 			"poundworker": room_title_label.text = "🚐 The pound — find the back door!"
 			_: room_title_label.text = "💛 A cozy cat-lover's home — find a way out!"
 
+# --- v1.0.19: captor references for player-facing text. Every
+# escape-room line that mentions the captor builds the reference
+# from the captor's OWN pronoun definition (person.gd _apply_type)
+# — never a hardcoded she/her. (The v1.0.17 text was written for
+# the young woman and applied to everyone: the pound called the
+# officer "she", and one screen mixed her/him for one captor.)
+# With no captor set, the neutral they-forms are used — they can
+# never misgender anyone.
+func _captor_ref() -> String: # "She" / "He" / "The Excited Kid"
+	if captor and captor.has_method("p_ref"):
+		return str(captor.call("p_ref"))
+	return "They"
+
+func _captor_ref_lower() -> String: # "she" / "he" / "the Excited Kid"
+	if captor and captor.has_method("p_ref_lower"):
+		return str(captor.call("p_ref_lower"))
+	return "they"
+
+func _captor_obj() -> String: # "her" / "him" / "the Excited Kid"
+	if captor and captor.has_method("p_ref_obj"):
+		return str(captor.call("p_ref_obj"))
+	return "them"
+
+func _captor_poss() -> String: # "her" / "his" / "the Excited Kid's"
+	if captor and captor.has_method("p_ref_poss"):
+		return str(captor.call("p_ref_poss"))
+	return "their"
+
+func _captor_is() -> String: # "She's" / "He's" / "The Excited Kid is"
+	if captor and captor.has_method("p_is"):
+		return str(captor.call("p_is"))
+	return "They're"
+
 func _enter_escape() -> void:
 	state = "escape"
 	fade_in_t = 0.6 # fade back in from the capture cutscene
@@ -7415,8 +7449,9 @@ func _enter_escape() -> void:
 		var cm = captor.get("model")
 		if cm:
 			cm.rotation.x = 0.0
-		# v1.3: release the scoop poses — her arms are her own again
-		# in the room, and the cat is back on his own four paws.
+		# v1.3: release the scoop poses — the captor's arms are
+		# their own again in the room, and the cat is back on his
+		# own four paws.
 		if captor.has_method("set_carry_pose"):
 			captor.call("set_carry_pose", 0.0, 0.0, 0.0, 0.0)
 	if player and player.has_method("stop_held"):
@@ -7439,9 +7474,9 @@ func _enter_escape() -> void:
 	player.global_position = escape_origin + Vector3(0, 0.3, 6)
 	if player: player.set("frozen", false)
 	# v1.2: the captor is IN THE ROOM with the cat (Michael's design) —
-	# settling him in, tidying up. She ambles between the room anchors
-	# (see _update_captor_room); her town chase state is cleared so she
-	# reads as a calm host, never angry.
+	# settling him in, tidying up. The captor ambles between the room
+	# anchors (see _update_captor_room); their town chase state is
+	# cleared so they read as a calm host, never angry.
 	if captor:
 		captor.set("mode", "wander")
 		captor.set("notice", 0.0)
@@ -7455,7 +7490,7 @@ func _enter_escape() -> void:
 			captor.call("show_bubble", "There we are — safe and sound! 💛", 2.6)
 		else:
 			captor.call("show_bubble", "There we are — home sweet home! 💛", 2.6)
-		captor.call("set_expression", "happy") # v1.4: her warm welcome face
+		captor.call("set_expression", "happy") # v1.4: the warm welcome face
 		captor.set("expr_timer", 4.0)
 	_update_escape_label()
 	# HUD fix (v1.0.15, Michael's v1.0.14 play): the entry message is
@@ -7468,11 +7503,13 @@ func _enter_escape() -> void:
 	if captor == pound_worker:
 		# POUND VAN: his capture lands the cat back at the pound —
 		# the same bolt-door escape, exactly as Michael described.
-		entry_beat_1 = "You're in the POUND — and so is he!"
-		entry_beat_2 = "Knock something over to distract him, then work the back door."
+		# v1.0.19: the pronouns come from the captor's own
+		# definition (his, here) — never hardcoded.
+		entry_beat_1 = "You're in the POUND — and so is %s!" % _captor_ref_lower()
+		entry_beat_2 = "Knock something over to distract %s, then work the back door." % _captor_obj()
 	else:
-		entry_beat_1 = "You're in their home — and so is she!"
-		entry_beat_2 = "Knock something over to distract her, then work the way out."
+		entry_beat_1 = "You're in %s home — and so is %s!" % [_captor_poss(), _captor_ref_lower()]
+		entry_beat_2 = "Knock something over to distract %s, then work the way out." % _captor_obj()
 	# STORY PART 1: when this entry is the OPENING's capture, the cat
 	# lands in the pound CAGE — the room instructions are held back
 	# until the cage gate opens (the story module releases them via
@@ -7521,7 +7558,7 @@ func _escape_interact() -> void:
 		# Caged at the pound: no fallback hint — while he's in the
 		# cage, the cage prompt is the only instruction.
 		if not _cat_caged():
-			show_message("Paw the way out to work it — or knock something over to distract her! 🐾", 1.8)
+			show_message("Paw the way out to work it — or knock something over to distract %s! 🐾" % _captor_obj(), 1.8)
 
 # ---------------------------------------------------------------- v1.1 escape PANEL puzzle
 # Michael's flow (2026-11-16): walk to the mechanism and a big
@@ -7593,8 +7630,9 @@ func _open_escape_panel() -> void:
 	combo_index = 0
 	escape_prog = 0.0
 	notice_t = 0.0 # v1.2: the notice clock starts as the panel opens
-	# (notice_cooldown is NOT cleared: right after an interruption she
-	# is still suspicious and the grace is halved — see _update_escape_room.)
+	# (notice_cooldown is NOT cleared: right after an interruption the
+	# captor is still suspicious and the grace is halved — see
+	# _update_escape_room.)
 	_update_mechanism_visuals(kind)
 	if escape_panel:
 		escape_panel.open_for(kind)
@@ -7899,29 +7937,30 @@ func topple_prop(p: Dictionary) -> void:
 	crash_labels.append({"node": lbl, "t": 0.0, "y0": lbl.position.y})
 	if captor:
 		captor.call("show_bubble", str(p["bubble"]), 2.2)
-		captor.call("set_expression", "worried") # v1.4: the crash worries her
+		captor.call("set_expression", "worried") # v1.4: the crash worries the captor
 		captor.set("expr_timer", 2.5)
 		if captor_room_state == "idle" or captor_room_state == "walk" or captor_room_state == "return" or captor_room_state == "shoo":
 			captor_prop = p
 			captor_trip_t = 0.0
 			captor_room_state = "to_prop"
 		else:
-			distract_queue.append(p) # she's already busy — this one queues
-	show_message("💥 You knocked over %s! She's distracted — quick, work the way out! 🐾" % str(p["name"]), 2.8)
+			distract_queue.append(p) # the captor is already busy — this one queues
+	show_message("💥 You knocked over %s! %s distracted — quick, work the way out! 🐾" % [str(p["name"]), _captor_is()], 2.8)
 
 func _on_prop_prompt_pressed() -> void:
 	if state == "escape":
 		topple_prop_at_cat()
 
-# She noticed the cat at the door: the panel closes, the combo is
-# lost, and the cat is kindly shooed off with a little hop. NO fail
-# state, no score loss — the only cost is the combo and her being
-# extra watchful (halved grace) for a few seconds after.
+# The captor noticed the cat at the door: the panel closes, the
+# combo is lost, and the cat is kindly shooed off with a little
+# hop. NO fail state, no score loss — the only cost is the combo
+# and the captor being extra watchful (halved grace) for a few
+# seconds after.
 func _interrupt_escape() -> void:
 	if escape_step >= escape_steps.size():
 		return
 	if captor:
-		captor.call("set_expression", "worried") # v1.4: she spotted him at the latch
+		captor.call("set_expression", "worried") # v1.4: the captor spotted him at the latch
 		captor.set("expr_timer", 2.0)
 	var kind: String = escape_steps[escape_step]["kind"]
 	if escape_panel:
@@ -7956,7 +7995,7 @@ func _interrupt_escape() -> void:
 		shoo_t = 0.0
 		player.set("frozen", true)
 		player.call("do_paw_swipe")
-	show_message("👀 She spotted you at the door! Knock something over to distract her first! 🐾", 3.0)
+	show_message("👀 %s spotted you at the door! Knock something over to distract %s first! 🐾" % [_captor_ref(), _captor_obj()], 3.0)
 
 # Per-frame room life: shoo hop, topple falls, crash cues, the
 # captor's routine, the notice clock, prompts and the HUD.
@@ -8004,9 +8043,9 @@ func _update_escape_room(delta: float) -> void:
 			if captor_distracted():
 				var left: float = distraction_time_left()
 				var what: String = str(captor_prop.get("name", "the mess")) if not captor_prop.is_empty() else "the mess"
-				escape_panel.set_status("💥 She's busy with %s — %.0fs!" % [what, ceil(left)], clampf(left / 12.0, 0.0, 1.0), false)
+				escape_panel.set_status("💥 %s busy with %s — %.0fs!" % [_captor_is(), what, ceil(left)], clampf(left / 12.0, 0.0, 1.0), false)
 			else:
-				escape_panel.set_status("👀 She's watching — she'll notice you!", clampf(notice_t / grace, 0.0, 1.0), true)
+				escape_panel.set_status("👀 %s watching — %s will notice you!" % [_captor_is(), _captor_ref_lower()], clampf(notice_t / grace, 0.0, 1.0), true)
 	else:
 		notice_t = 0.0
 		if notice_cooldown > 0.0:
@@ -8036,14 +8075,14 @@ func _update_distract_hud() -> void:
 	elif captor_distracted():
 		var left: float = distraction_time_left()
 		var what: String = str(captor_prop.get("name", "the mess")) if not captor_prop.is_empty() else "the mess"
-		distract_label.text = "💥 She's busy with %s — %.0fs to work the way out!" % [what, ceil(left)]
+		distract_label.text = "💥 %s busy with %s — %.0fs to work the way out!" % [_captor_is(), what, ceil(left)]
 		distract_bar_bg.visible = true
 		distract_bar_fill.visible = true
 		distract_bar_fill.color = Color(0.45, 0.9, 0.45, 0.95)
 		distract_bar_fill.position = Vector2(2, 2)
 		distract_bar_fill.size = Vector2(516.0 * clampf(left / 12.0, 0.0, 1.0), 8)
 	else:
-		distract_label.text = "👀 She's in the room with you — knock something over to distract her! 🐾"
+		distract_label.text = "👀 %s in the room with you — knock something over to distract %s! 🐾" % [_captor_is(), _captor_obj()]
 		distract_bar_bg.visible = false
 
 func _update_mechanism_visuals(kind: String) -> void:

@@ -441,7 +441,12 @@ func _trigger_scoop() -> void:
 	if route.size() >= 1:
 		var spot: Vector3 = route[0]
 		main.set("capture_return_pos", Vector3(spot.x + 3.0, 0, spot.z - 4.3))
-	main.call("show_message", "🚐 The pound — he'll help you find your way home. First: the little cage…", 4.5)
+	# v1.0.19: the pronoun comes from the worker's own definition
+	# (person.gd: he/him) — never a hardcoded gender in the text.
+	var hell: String = "they'll"
+	if worker and worker.has_method("p_subj"):
+		hell = str(worker.call("p_subj")) + "'ll"
+	main.call("show_message", "🚐 The pound — " + hell + " help you find your way home. First: the little cage…", 4.5)
 
 
 # A tap during the street beats: land every beat instantly, exactly

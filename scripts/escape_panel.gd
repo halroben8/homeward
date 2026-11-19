@@ -9,8 +9,10 @@ extends Control
 ## and work the pictured mechanism a notch; a wrong input gently
 ## slips the sequence back — no punishment. v1.2: the captor is in
 ## the room (main3d.gd) — the status strip across the picture shows
-## her distraction window, or her "watching" warning: undistracted,
-## she notices and closes the panel within about a second.
+## the captor's distraction window, or the "watching" warning:
+## undistracted, the captor notices and closes the panel within
+## about a second. (v1.0.19: the status STRINGS are built by main
+## from the captor's own pronoun definition — see person.gd.)
 ## All game logic lives in main3d.gd; this is the view + input surface.
 ## main wires: on_input("down"|"up"|"paw"), on_close().
 
@@ -22,7 +24,7 @@ var on_close: Callable = Callable()
 
 # v1.2: the distraction status strip (set by main each frame while the
 # panel is open): either the countdown of the distraction window
-# (green) or the "she's watching" warning filling up (red).
+# (green) or the "watching" warning filling up (red).
 var status_text: String = ""
 var status_frac: float = -1.0 # <0 = no bar
 var status_warn: bool = false
