@@ -5,16 +5,18 @@ extends Node
 ## houses clear of road corridors + numbers in order (items 1+2),
 ## paw swipe always resets (item 4), notice bar ONLY for the grabber
 ## + friendly bend-down pet/treat on paw/meow only (item 5), plus the
-## retained v0.7 set: no minimap / no Sprint button, roles (population step: 9 of 34 seek the cat — 25% of everyone, rounded up),
-## flat sign text, camera far plane, joystick sprint + winded drop,
+## retained v0.7 set: no minimap, roles (population step: 9 of 34 seek the cat — 25% of everyone, rounded up),
+## flat sign text, camera far plane, RUN-hold sprint + winded drop (v1.0.14),
 ## collar check removed (v1.0.8: button/zoom gone, tag print kept),
 ## single-mechanism escapes (v1.4: the back
 ## door for EVERY capture — the carrier is transport only),
-## exactly-60s pursuit, traffic, solid fences + open cat gaps,
+## exactly-30s pursuit, traffic, solid fences + open cat gaps,
 ## purr, the v1.3 camera framing (person + notice bar and sign
 ## boards inside the frustum at interaction distance, cat share
-## floor), and the v1.4 camera handoff (an escape restores the
-## town framing — pitch/yaw/FOV/distance — for the pursuit).
+## floor), the v1.4 camera handoff (an escape restores the
+## town framing — pitch/yaw/FOV/distance — for the pursuit),
+## and the v1.0.13 far-pursuer pursuit framing (a pursuer tens
+## of metres behind cannot drag the camera off the cat).
 
 var main: Node = null
 var player: Node = null
@@ -136,6 +138,13 @@ func run_tests() -> void:
 	var scene: PackedScene = load("res://scenes/Main.tscn")
 	main = scene.instantiate()
 	add_child(main)
+	# v1.0.9 harness plumbing: Main now builds its world across frames
+	# behind the splash — wait for build_complete before driving it,
+	# exactly as the title flow does. No assertion is changed.
+	var _bw109: int = 0
+	while not bool(main.get("build_complete")) and _bw109 < 21600:
+		await get_tree().process_frame
+		_bw109 += 1
 	await wait_sec(0.6)
 	player = main.get("player")
 
@@ -237,7 +246,48 @@ func run_tests() -> void:
 	main.call("dismiss_splash")
 	main.call("start_game")
 	await wait_sec(0.4)
-	check("game starts in play state", str(main.get("state")) == "play", str(main.get("state")))
+	# STORY PART 1 (2026-11-18): START no longer drops the cat
+	# straight into town — the opening cutscene plays first (he
+	# leaves his house, loses his collar, the pound van takes him
+	# in) and the run begins with the pound escape. Drive the
+	# whole flow here, through the module's own skip path.
+	check("STORY: START begins the opening cutscene, not town play", str(main.get("state")) == "opening", str(main.get("state")))
+	var story_mod: Node = main.get("story")
+	check("STORY: the opening module is live", story_mod != null)
+	var home_h: Dictionary = (main.get("houses") as Array)[int(main.get("home_index"))]
+	check("STORY: the cat is staged at his own front door", (player as Node3D).global_position.distance_to(home_h["door"]) < 2.5, str((player as Node3D).global_position))
+	check("STORY: the run starts collarless (player_collared false — the van's gate tells the truth)", not bool(main.get("player_collared")))
+	check("STORY: he still wears the collar at the start (it drops mid-stroll)", bool(player.call("is_collar_visible")))
+	story_mod.call("skip_opening")
+	check("STORY: the skip lands in the pound escape room", str(main.get("state")) == "escape", str(main.get("state")))
+	check("STORY: the skip's captor is the pound worker", main.get("captor") == main.get("pound_worker"))
+	await wait_sec(0.4)
+	check("STORY: pound start = the cat is in the little cage", bool(story_mod.get("cage_closed")) and bool(story_mod.call("cat_in_cage")))
+	check("STORY: the collar is off, lying where it fell, its tag printed with his name (Zander — not the address)", not bool(player.call("is_collar_visible")) and story_mod.get("dropped_collar") != null and str(story_mod.call("dropped_tag_text")) == "Zander", str(story_mod.call("dropped_tag_text")))
+	check("STORY: the dropped collar rests ON the sidewalk slab (y >= 0.06 — visible, not buried under it)", story_mod.get("dropped_collar") != null and (story_mod.get("dropped_collar") as Node3D).global_position.y >= 0.06, str((story_mod.get("dropped_collar") as Node3D).global_position.y) if story_mod.get("dropped_collar") != null else "none")
+	check("STORY: still collarless in the pound (he stays van-eligible)", not bool(main.get("player_collared")))
+	# Out of the cage: PAW at the gate, through the real interact path.
+	var gate_p: Vector3 = story_mod.call("cage_gate_pos")
+	(player as Node3D).global_position = gate_p + Vector3(0, 0.3, 0.8)
+	main.call("_on_interact")
+	check("STORY: PAW at the cage gate opens it", not bool(story_mod.get("cage_closed")))
+	# The pound escape itself: the ordinary bolt-door flow.
+	distract_captor()
+	(player as Node3D).global_position = Vector3(573.4, 0.3, 3.4)
+	drive_escape_panel()
+	walk_cat_out()
+	check("STORY: the pound escape leads out to town, the worker pursuing", str(main.get("state")) == "play" and (main.get("pursuers") as Dictionary).has(main.get("pound_worker")), str(main.get("state")))
+	# Tidy up: end his pursuit so the sections below run
+	# undisturbed, and park him back on patrol (held off below).
+	var story_worker: Node = main.get("pound_worker")
+	story_worker.call("stop_pursuit")
+	(main.get("pursuers") as Dictionary).erase(story_worker)
+	main.set("pound_engage_cd", 99999.0) # set BEFORE patrol resumes: the deposit spot is inside his spot radius
+	main.set("pound_state", "patrol")
+	story_worker.set("active", false)
+	(story_worker as Node3D).visible = false
+	story_worker.call("set_net_visible", true) # as his return-to-van does: net back in hand
+	story_worker.call("set_expression", "neutral")
 	# POUND VAN: the patrol van is live in the world from here on,
 	# but his engagements would make the sections below racy (the
 	# cat legitimately crosses his roads) — hold him off with the
@@ -759,7 +809,13 @@ func run_tests() -> void:
 	grabber.set("notice", 0.0)
 	(grabber as Node3D).global_position = Vector3(-100, 0.2, 80)
 
-	# ---------- sprint: full push only + winded drop (item 2) ----------
+	# ---------- sprint: RUN hold only + winded drop (v1.0.14) ----------
+	# Michael's direction: the joystick NEVER sprints on its own now
+	# (a full push "rocketed off") — sprint is the RUN button's
+	# press-and-HOLD (momentary: v1.0.13's press-to-toggle was
+	# reversed by Michael after he played it). The press/release
+	# below go through the button's real button_down/button_up
+	# signals. Stamina/winded rules unchanged.
 	park_npcs_far()
 	(player as Node3D).global_position = Vector3(30, 0.2, 40) # v0.8: clear lane (x=0 now has 28 Oak Ave's lot in the row ahead)
 	player.set("stamina", 100.0)
@@ -771,8 +827,19 @@ func run_tests() -> void:
 	check("partial push: stamina untouched", float(player.get("stamina")) >= 99.9, str(player.get("stamina")))
 	set_joy(Vector2(0, -100)) # full push
 	await wait_sec(0.5)
-	check("full push: sprinting", bool(player.get("is_sprinting")))
-	check("full push: stamina draining", float(player.get("stamina")) < 99.0, str(player.get("stamina")))
+	check("full push alone: still walking, NOT sprinting (RUN is a button now)", not bool(player.get("is_sprinting")))
+	check("full push alone: stamina untouched", float(player.get("stamina")) >= 99.9, str(player.get("stamina")))
+	check("RUN button exists beside MEOW", main.get("run_btn") != null)
+	check("RUN starts off: button shows plain RUN", str((main.get("run_btn") as Button).text) == "RUN", str((main.get("run_btn") as Button).text))
+	(main.get("run_btn") as Button).button_down.emit() # press & HOLD
+	check("RUN held: touch_sprint set", bool(player.get("touch_sprint")))
+	check("RUN held: main's held state set", bool(main.get("run_on")))
+	check("RUN held: button text stays plain RUN", str((main.get("run_btn") as Button).text) == "RUN", str((main.get("run_btn") as Button).text))
+	var run_on_style := (main.get("run_btn") as Button).get_theme_stylebox("normal") as StyleBoxFlat
+	check("RUN held: button fill turns green", run_on_style != null and run_on_style.bg_color == Color(0.22, 0.72, 0.28, 0.95), str(run_on_style.bg_color) if run_on_style != null else "no normal style")
+	await wait_sec(0.5)
+	check("RUN held + moving: sprinting", bool(player.get("is_sprinting")))
+	check("RUN held: stamina draining", float(player.get("stamina")) < 99.0, str(player.get("stamina")))
 	var sprint_speed: float = Vector2((player as CharacterBody3D).velocity.x, (player as CharacterBody3D).velocity.z).length()
 	check("sprint speed is near 11.5 (>> walk 5.6)", sprint_speed > 9.5, str(sprint_speed))
 	player.set("stamina", 0.4) # nearly empty: winded drop must follow
@@ -780,9 +847,17 @@ func run_tests() -> void:
 	check("empty pool: winded (sprint locked out)", bool(player.get("winded")))
 	var winded_speed: float = Vector2((player as CharacterBody3D).velocity.x, (player as CharacterBody3D).velocity.z).length()
 	check("winded: speed visibly back at walk (<= 5.7)", winded_speed <= 5.7 and not bool(player.get("is_sprinting")), str(winded_speed))
+	check("winded: RUN hold itself stays on (still held)", bool(player.get("touch_sprint")))
 	player.set("stamina", 60.0)
 	await wait_sec(0.3)
-	check("stamina recovered: sprint available again", bool(player.get("is_sprinting")))
+	check("stamina recovered: sprint resumes (still holding)", bool(player.get("is_sprinting")))
+	(main.get("run_btn") as Button).button_up.emit() # RELEASE
+	await wait_sec(0.3)
+	check("RUN released: back to walking", not bool(player.get("is_sprinting")) and not bool(player.get("touch_sprint")))
+	check("RUN released: main's held state cleared", not bool(main.get("run_on")))
+	check("RUN off: button shows plain RUN again", str((main.get("run_btn") as Button).text) == "RUN", str((main.get("run_btn") as Button).text))
+	var run_off_style := (main.get("run_btn") as Button).get_theme_stylebox("normal") as StyleBoxFlat
+	check("RUN off: button fill returns to grey", run_off_style != null and run_off_style.bg_color == Color(0.35, 0.38, 0.42, 0.85), str(run_off_style.bg_color) if run_off_style != null else "no normal style")
 	clear_joy()
 	await wait_sec(0.3)
 
@@ -806,15 +881,15 @@ func run_tests() -> void:
 	var tag_pos: Vector3 = player.call("get_tag_global_pos")
 	var cam_dist: float = (main.get("cam") as Camera3D).global_position.distance_to(tag_pos)
 	check("camera stays at play distance from the tag (> 1.9 units)", cam_dist > 1.9, str(cam_dist))
-	# v1.5 (Michael, 2026-11-17): the address is printed ON the tag —
-	# no floating billboard caption — and it still is, for the ending.
+	# v1.5 (Michael, 2026-11-17): a print ON the tag — no floating
+	# billboard caption. Since 2026-11-18 the print is his NAME
+	# ("Zander", Michael named him), not the home address.
 	check("floating collar caption is gone", main.get("collar_caption") == null)
 	var tag_label: Label3D = player.call("get_tag_label")
-	check("tag carries a printed address label", tag_label != null)
+	check("tag carries a printed name label", tag_label != null)
 	if tag_label != null:
 		var printed: String = tag_label.text.replace("\n", " ").replace(", ", " ")
-		var addr_norm: String = str(main.get("home_address")).replace(", ", " ")
-		check("tag print equals the run's home address", printed == addr_norm, "'" + printed + "' vs '" + addr_norm + "'")
+		check("tag print is the cat's name (Zander), not the address", printed == "Zander", "'" + printed + "'")
 		var tag_node: Node = player.get("collar_tag")
 		check("tag label is parented to the tag (moves with it)", tag_node != null and tag_node.is_ancestor_of(tag_label))
 		check("tag label is fixed to the face (no billboard)", tag_label.billboard == BaseMaterial3D.BILLBOARD_DISABLED)
@@ -929,7 +1004,7 @@ func run_tests() -> void:
 	check("car hit: score floors at 0", int(main.get("score")) == 0, str(main.get("score")))
 	(main.get("traffic_cars") as Array).clear()
 
-	# ---------- escape: one mechanism + exactly 60s pursuit (items 6 + retained) ----------
+	# ---------- escape: one mechanism + exactly 30s pursuit (items 6 + retained) ----------
 	var woman: Node = null
 	for n in main.get("npcs"):
 		if str(n.get("npc_type")) == "woman":
@@ -968,11 +1043,11 @@ func run_tests() -> void:
 	check("v1.4: escape completion restores the town pitch (room look drags don't leak)", float(main.get("look_pitch_deg")) == 4.0, str(main.get("look_pitch_deg")))
 	check("escape bonus +3", int(main.get("score")) == score_before + 3, "%d -> %d" % [score_before, int(main.get("score"))])
 	var purs: Dictionary = main.get("pursuers")
-	check("post-escape pursuit starts at exactly 60.0s", purs.has(woman) and float(purs[woman]) == 60.0, str(purs))
-	main.call("_process", 59.95)
-	check("pursuit still running at 59.95s", (main.get("pursuers") as Dictionary).has(woman))
+	check("post-escape pursuit starts at exactly 30.0s", purs.has(woman) and float(purs[woman]) == 30.0, str(purs))
+	main.call("_process", 29.95)
+	check("pursuit still running at 29.95s", (main.get("pursuers") as Dictionary).has(woman))
 	main.call("_process", 0.1)
-	check("pursuit over at 60.0s (captor back to wander)", not (main.get("pursuers") as Dictionary).has(woman) and str(woman.get("mode")) == "wander", str(woman.get("mode")))
+	check("pursuit over at 30.0s (captor back to wander)", not (main.get("pursuers") as Dictionary).has(woman) and str(woman.get("mode")) == "wander", str(woman.get("mode")))
 
 	# ---------- v1.2 DISTRACTIONS + PAW ACTIVATION (Michael's playtest fixes) ----------
 	# The captor is in the room; PAW (not a prompt tap) opens the
@@ -1011,7 +1086,7 @@ func run_tests() -> void:
 	check("v1.2: distracted, a slow combo still works the bolt", bool(main.get("exit_open")) and str(main.get("exit_open_kind")) == "bolt", str(main.get("exit_open_kind")))
 	walk_cat_out()
 	check("v1.2: the cat walks out and the escape completes", str(main.get("state")) == "play", str(main.get("state")))
-	main.call("_process", 60.1) # drain the pursuit before the e2e section
+	main.call("_process", 30.1) # drain the pursuit before the e2e section
 
 	# ---------- v1.5 KNOCK OVER ALMOST EVERYTHING (Michael, 2026-11-17) ----------
 	# The distraction system now covers nearly every loose object in
@@ -1070,13 +1145,61 @@ func run_tests() -> void:
 	check("v1.5: after the chaos, the door escape still works", bool(main.get("exit_open")) and str(main.get("exit_open_kind")) == "bolt", str(main.get("exit_open_kind")))
 	walk_cat_out()
 	check("v1.5: the cat walks out after the knock-over spree", str(main.get("state")) == "play", str(main.get("state")))
-	main.call("_process", 60.1) # drain the pursuit before the e2e section
+	main.call("_process", 30.1) # drain the pursuit before the e2e section
+
+	# ---------- SHELTER WARD: animals in cages + the BREAKOUT ----------
+	# Every freeable cage starts with its animal home and visible;
+	# a PAW at a gate opens it (+5, once per cage), the animal RUNS
+	# out and is gone; re-entering the room resets the whole ward.
+	main.set("captor", woman)
+	main.call("_enter_escape")
+	var ward: Array = main.get("ward_cages")
+	check("ward: the freeable cages are registered (runs + stacked bank)", ward.size() >= 10, str(ward.size()))
+	var all_home: bool = true
+	for cg0 in ward:
+		var an0 := cg0["animal"] as Node3D
+		if not an0.visible or str(cg0["animal_state"]) != "in" or bool(cg0["freed"]):
+			all_home = false
+	check("ward: every cage starts with its animal home and visible", all_home)
+	var biscuit: Dictionary = ward[0]
+	var willow: Dictionary = {}
+	for cg1 in ward:
+		if str(cg1["name"]) == "WILLOW":
+			willow = cg1
+	check("ward: the stacked cage over Biscuit is registered", not willow.is_empty())
+	var score_ward0: int = int(main.get("score"))
+	(player as Node3D).global_position = (biscuit["gate_pos"] as Vector3) + Vector3(0, 0.3, -1.3)
+	main.call("_on_interact")
+	check("ward: a PAW at the gate frees Biscuit", bool(biscuit["freed"]))
+	check("ward: freeing pays +5", int(main.get("score")) == score_ward0 + 5, str(main.get("score")))
+	main.call("_on_interact")
+	check("ward: the next PAW frees the stacked cage over him (WILLOW)", bool(willow["freed"]))
+	check("ward: the second free pays +5 more", int(main.get("score")) == score_ward0 + 10, str(main.get("score")))
+	main.call("_on_interact")
+	check("ward: no third free from the same spot — each cage pays once", int(main.get("score")) == score_ward0 + 10, str(main.get("score")))
+	var run_guard: int = 0
+	while run_guard < 200 and (str(biscuit["animal_state"]) != "gone" or str(willow["animal_state"]) != "gone"):
+		main.call("_process_escape", 0.25)
+		run_guard += 1
+	check("ward: freed animals RUN out and are gone", str(biscuit["animal_state"]) == "gone" and str(willow["animal_state"]) == "gone", "guard=" + str(run_guard))
+	check("ward: freed animals end hidden", not (biscuit["animal"] as Node3D).visible)
+	main.call("_enter_escape")
+	check("ward: the next visit resets the cages", not bool(biscuit["freed"]) and str(biscuit["animal_state"]) == "in" and (biscuit["animal"] as Node3D).visible)
+	# Leave the room the intended way so later sections start clean.
+	distract_captor()
+	(player as Node3D).global_position = Vector3(573.4, 0.3, 3.4)
+	main.call("_on_escape_prompt_pressed")
+	for inp in ["down", "up", "down", "up", "paw"]:
+		main.call("escape_panel_input", inp)
+		main.call("_process_escape", 0.4)
+	walk_cat_out()
+	main.call("_process", 30.1) # drain the pursuit
 
 	# ---------- v0.9 CAPTURE END-TO-END (the grabber really takes him home) ----------
 	# Michael reported an NPC who "couldn't take me home" — so drive
 	# the REAL path, nothing mocked: paw provokes the tell, the chase
 	# runs, the kid catches and HOLDS the cat, the cutscene fires,
-	# the escape room opens, and the 60s pursuit follows the escape.
+	# the escape room opens, and the 30s pursuit follows the escape.
 	park_npcs_far()
 	clear_joy()
 	(player as Node3D).global_position = Vector3(60, 0.2, 84)
@@ -1132,8 +1255,33 @@ func run_tests() -> void:
 	var e_vp: Vector2 = get_viewport().get_visible_rect().size
 	var e_share: float = absf(ecam.unproject_position(Vector3(e_base.x, e_aabb.position.y, e_base.z)).y - ecam.unproject_position(Vector3(e_base.x, e_aabb.position.y + e_aabb.size.y, e_base.z)).y) / e_vp.y
 	check("v1.4: the cat is a normal size again during the pursuit (not tiny from above)", e_share >= 0.05, str(e_share))
-	main.call("_process", 60.1)
-	check("capture e2e: pursuit ends at 60s", not (main.get("pursuers") as Dictionary).has(cap_grabber))
+	# v1.0.13 PURSUIT CAMERA: the far-pursuer geometry real play
+	# always reaches and the v1.4 staging never did — sprinting
+	# away, she falls tens of metres behind while her mode stays
+	# "pursue" for the full timer. On the old code the chase cam's
+	# aim lerp dragged the aim point gap x 0.28 m off the cat and
+	# he measured 0.03 of the frame at a 30 m gap, recovering only
+	# when the timer ended (tests/PursuitCamProbe.tscn). Freeze
+	# her 30 m away mid-pursuit: the framing must fall back to
+	# the town distance and the cat to his normal share.
+	cap_grabber.set_physics_process(false)
+	var f_pos: Vector3 = (player as Node3D).global_position + Vector3(-30, 0, 0)
+	f_pos.y = 0.2
+	(cap_grabber as Node3D).global_position = f_pos
+	await wait_sec(1.2) # camera settle
+	var f_aabb := AABB()
+	var f_first := true
+	for mi in (player as Node3D).find_children("*", "MeshInstance3D", true, false):
+		var ga4: AABB = (mi as MeshInstance3D).global_transform * (mi as MeshInstance3D).get_aabb()
+		f_aabb = ga4 if f_first else f_aabb.merge(ga4)
+		f_first = false
+	var f_base: Vector3 = (player as Node3D).global_position
+	var f_share: float = absf(ecam.unproject_position(Vector3(f_base.x, f_aabb.position.y, f_base.z)).y - ecam.unproject_position(Vector3(f_base.x, f_aabb.position.y + f_aabb.size.y, f_base.z)).y) / e_vp.y
+	check("v1.0.13: a far pursuer (30m) cannot drag the pursuit camera out (orbit back to 2.0)", absf(float(main.get("current_cam_dist")) - 2.0) < 0.01, "dist=" + str(main.get("current_cam_dist")))
+	check("v1.0.13: the cat stays a normal size mid-pursuit with a far pursuer (share >= 0.18)", f_share >= 0.18, str(f_share))
+	cap_grabber.set_physics_process(true)
+	main.call("_process", 30.1)
+	check("capture e2e: pursuit ends at 30s", not (main.get("pursuers") as Dictionary).has(cap_grabber))
 	# ...and once the pursuit is over the framing is the plain town
 	# view again: orbit 2.0 and the cat at his usual >= 0.18 share.
 	park_npcs_far()
@@ -1203,7 +1351,7 @@ func run_tests() -> void:
 	(player as Node3D).global_position = Vector3(573.4, 0.3, 3.4)
 	drive_escape_panel()
 	walk_cat_out()
-	main.call("_process", 60.1)
+	main.call("_process", 30.1)
 	check("scoop: cleanup returns to play", str(main.get("state")) == "play", str(main.get("state")))
 
 	# ---------- POUND VAN (Michael, 2026-11-17) ----------
@@ -1283,7 +1431,7 @@ func run_tests() -> void:
 	drive_escape_panel()
 	walk_cat_out()
 	check("pound van: the escape completes and HE is the pursuer", str(main.get("state")) == "play" and (main.get("pursuers") as Dictionary).has(pworker), str(main.get("state")))
-	main.call("_process", 60.1) # drain his pursuit
+	main.call("_process", 30.1) # drain his pursuit
 	check("pound van: pursuit over -> he heads back to the van", str(main.get("pound_state")) == "return", str(main.get("pound_state")))
 	(player as Node3D).global_position = Vector3(-100, 0.2, 80) # the player runs off home-free; he just goes back to work
 	guard_p = 0.0

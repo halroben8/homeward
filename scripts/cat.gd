@@ -2,7 +2,7 @@ extends CharacterBody3D
 ## HOMEWARD v0.7 — 3D player cat, modelled on Michael's reference sheet
 ## (assets/reference/protagonist_reference_5249.jpg): domestic shorthair
 ## ORANGE TABBY — rich orange fur, darker tabby stripes across back,
-## sides, legs and tail; WHITE muzzle, chest/belly, paws and tail tip;
+## sides, legs and tail; WHITE muzzle, chest patch, paws and tail tip;
 ## BIG green eyes, pink nose, friendly open smile; black collar with a
 ## round SILVER tag with a paw print. Soft/furry look via high-roughness
 ## materials + overlapping fluff spheres (cheeks, chest, tail).
@@ -20,6 +20,54 @@ extends CharacterBody3D
 # SEE.
 const VISUAL_SCALE := 1.25
 
+# The cat's name (Michael named him, 2026-11-18): ZANDER. It is what
+# his collar tag says — the tag carries his NAME, not the home
+# address (the address lives on the title screen).
+const CAT_NAME := "Zander"
+
+# --- v1.0.14 MESHY ZANDER -------------------------------------------------
+# Michael's call (2026-11-18): the in-code sculpt is replaced on
+# screen by the Meshy model generated from his cover art
+# (assets/models/zander.glb). The swap is a GHOST RIG: the sculpt
+# still builds exactly as before — every pose system, body-space
+# getter and suite contract reads it — but its meshes are hidden,
+# and the imported model's skeleton is posed every frame by
+# MIRRORING the sculpt rig's pivot state (legs / head / spine /
+# tail / ears) onto the matching bones (see _attach_meshy /
+# _mirror_meshy at the end of this file). Movement, collision,
+# camera and gameplay are untouched; only the drawn cat changes.
+# The imported skeleton uses the same axis convention as the
+# sculpt (nose +Z, up +Y — verified by tests/meshy_probe.gd), so
+# pivot rotations carry across with no axis conversion.
+const MESHY_SCENE: PackedScene = preload("res://assets/models/zander.glb")
+const MESHY_SCALE := 0.88 # measured (tests/meshy_probe.gd): scales the GLB's nose->rump (0.711) and back height onto the sculpt's (0.627 / 0.322 in model units)
+const MESHY_GROUND_Y := 0.256 # the GLB's feet rest at y=-0.291 in its own space; x0.88 -> -0.256, so this lifts them onto model-space y=0
+
+# NORTH STAR VARIANT (look proposal for Michael, 2026-11-18):
+# he adopted a Grok illustration as the game's art North Star
+# and wants the cat pushed toward it — rounder/chubbier body,
+# a BIG head, very large round eyes with worried brow ridges,
+# fluffy cheek ruffs, a rich fur-textured orange coat, shorter
+# legs, bigger paws. `north_star` restyles the SAME rig at
+# build time (proportions, eye size, brows, ruffs, coat
+# texture, nose). It defaults OFF, and with it off every build
+# path below produces exactly the shipping model — the variant
+# exists so Michael can judge comparison stills before any
+# shipping change. Harnesses set it on the instance BEFORE the
+# node enters the tree (the model builds in _ready).
+var north_star: bool = false
+# Coat textures actually used by the builders — swapped to the
+# North Star coat at the top of _build_model when the flag is
+# on; with the flag off they ARE the shipping textures.
+var _tex_body: Texture2D = TEX_BODY
+var _tex_fur: Texture2D = TEX_FUR
+# Eye-stack scale.y bases captured at build time. _apply_idle_pose
+# squashes the eyes from these (it used to hardcode the shipping
+# sizes, which would have snapped variant eyes back every frame).
+var eye_base_y: float = 0.0595
+var iris_base_y: float = 0.037
+var pupil_base_y: float = 0.018
+
 var speed_walk: float = 5.6
 var speed_sprint: float = 11.5 # v0.7: sprint must FEEL fast — nearly 2x walk, well clear of the fastest chaser (7.0)
 var gravity: float = 24.0
@@ -28,7 +76,7 @@ var frozen: bool = true
 var is_hidden: bool = false
 var is_sprinting: bool = false
 var touch_dir: Vector2 = Vector2.ZERO
-var touch_sprint: bool = false
+var touch_sprint: bool = false # v1.0.14: the RUN button's HELD state (set by main3d._on_run_hold) — true only while the button is held down
 var cam_yaw: float = 0.0
 var main_ref: Node = null
 
@@ -57,8 +105,13 @@ var look_a: float = 0.0
 var tail_a: float = 0.0
 var tap_a: float = 0.0
 var sleepy_a: float = 0.0
-var eye_l_mi: MeshInstance3D = null
+var eye_l_mi: MeshInstance3D = null # the SCLERA (white ball) since the normal-eye rebuild
 var eye_r_mi: MeshInstance3D = null
+var iris_l_mi: MeshInstance3D = null
+var iris_r_mi: MeshInstance3D = null
+var pupil_l_mi: MeshInstance3D = null
+var pupil_r_mi: MeshInstance3D = null
+var lid_base_y: float = 0.065 # set at build from the lid's resting height; _apply_idle_pose droops from here
 var lid_l_mi: MeshInstance3D = null
 var lid_r_mi: MeshInstance3D = null
 var head_base_pos: Vector3 = Vector3(0, 0.315, 0.27)
@@ -104,7 +157,37 @@ var held_target: float = 0.0
 var startle_t: float = 0.0 # seconds of startle remaining
 const STARTLE_DUR := 0.38
 var collar_tag: MeshInstance3D = null # v0.7: the real 3D tag, for the collar-check camera zoom
-var tag_label: Label3D = null # the run's home address, printed ON the tag's face (child of collar_tag)
+var tag_label: Label3D = null # his name ("Zander"), printed ON the tag's face (child of collar_tag)
+var collar_parts: Array = [] # STORY PART 1: every collar mesh (band, ring link, tag, paw print) — the opening cutscene drops the WHOLE collar at once (see set_collar_visible)
+# v1.0.14 Meshy ghost rig (see the MESHY note at the top):
+var meshy_root: Node3D = null # the imported model instance wrapper, child of `model`
+var meshy_skel: Skeleton3D = null
+var meshy_rest: Dictionary = {} # bone index -> global rest Transform3D (skeleton space)
+var meshy_local_rest: Dictionary = {} # bone index -> parent-relative rest Transform3D
+var meshy_bone: Dictionary = {} # role -> bone index (fl/fr/bl/br/head/spine/ear_l/ear_r)
+var meshy_tail: Array = [] # tail bone indices, base -> tip
+var meshy_leg_snap: Array = [Vector3.ZERO, Vector3.ZERO, Vector3.ZERO, Vector3.ZERO] # leg pivot rotations as the idle branch left them, before _apply_idle_pose's += terms (see _mirror_meshy)
+var meshy_leg_snap_fresh := false
+# LEGS FIX (2026-11-18): the snapshot above was the shipped bug —
+# _apply_idle_pose runs on EVERY _animate call, so the snapshot
+# always contained the walk branch's just-assigned swing and the
+# mirror's (raw - snapshot) cancelled the gait to ~0.00-0.03 rad
+# at the bones (measured, tests/leg_probe.gd) while the sculpt
+# swung the full 0.62. The mirror now picks its source by REGIME,
+# flagged here by _animate itself:
+var meshy_move_raw := false # true on frames where the movement branch ASSIGNED the leg pose (walk / sprint / stun): raw pivot values ARE the intended pose, no differencing
+var meshy_held_snap: Array = [Vector3.ZERO, Vector3.ZERO, Vector3.ZERO, Vector3.ZERO] # leg rotations the HELD block assigned this frame (an absolute pose — differencing it against the idle snapshot ate the cradle fold the same way)
+var meshy_held_fresh := false
+# Gait synthesis constants for the mirror (the sculpt keeps its
+# settled trot; these shape what the MODEL's legs do with it —
+# lower-leg fold so the legs BEND, and a true gallop at sprint).
+const GAIT_WALK_GAIN := 1.12 # mirror-side gain on the sculpt's 0.62 rad trot swing
+const GAIT_GALLOP_AMP := 0.82 # upper-leg swing amplitude (rad) in the gallop
+const GAIT_FOLD_FRONT := 0.55 # lower-leg fold (rad) at full protraction, walk
+const GAIT_FOLD_REAR := 0.50
+const GAIT_FOLD_LEAD := 0.35 # fold peaks slightly ahead of mid-protraction
+const GAIT_GALLOP_PITCH := 0.13 # spine pitch flex (rad) in the gallop
+const GAIT_GALLOP_BOB := 0.030 # extra body bob (model units) in the gallop
 
 func set_chase_mode(on: bool) -> void:
 	if on and not chase_mode:
@@ -186,6 +269,11 @@ const TEX_FUR_N: Texture2D = preload("res://assets/textures/tabby_plain_normal.p
 const TEX_HEAD_N: Texture2D = preload("res://assets/textures/tabby_head_normal.png")
 const TEX_CREAM_N: Texture2D = preload("res://assets/textures/cream_fur_normal.png")
 const TEX_FUR_ALPHA: Texture2D = preload("res://assets/textures/fur_alpha.png")
+# NORTH STAR VARIANT coat (2026-11-18): a richer, furrier tabby
+# texture (deep saturated orange, soft broken stripes, strand
+# grain) generated for the look proposal — used ONLY when the
+# north_star flag is on; the shipping cat keeps TEX_BODY/TEX_FUR.
+const TEX_NS: Texture2D = preload("res://assets/textures/tabby_northstar.png")
 
 func _normal_for(tex: Texture2D) -> Texture2D:
 	if tex == TEX_BODY:
@@ -274,6 +362,94 @@ func _band(parent: Node, pos: Vector3, rx: float, ry: float, tube: float, c: Col
 	parent.add_child(mi)
 	return mi
 
+# A flat STRAP ring for the collar: a rectangular cross-section
+# (width along Z, thin radially) swept around an ellipse in the
+# X-Y plane. Four crisp faces — outer wall, inner wall, two rims —
+# each with its own flat normals, so the strap's EDGES read the
+# way a real collar band's do (the round-cord _band torus never
+# could). Centred on the local origin; position it on the neck.
+func _strap_mesh(rx: float, ry: float, width: float, thick: float, segs: int = 40) -> ArrayMesh:
+	var hw := width * 0.5
+	var ro := Vector2(rx + thick * 0.5, ry + thick * 0.5)
+	var ri := Vector2(rx - thick * 0.5, ry - thick * 0.5)
+	# Per station: corner points 0 outer/+z, 1 outer/-z,
+	# 2 inner/+z, 3 inner/-z, plus the radial outward normal.
+	var stations: Array = []
+	for i in range(segs + 1):
+		var th := TAU * float(i) / float(segs)
+		var co := cos(th)
+		var si := sin(th)
+		var n := Vector2(co / rx, si / ry).normalized()
+		stations.append([
+			Vector3(ro.x * co, ro.y * si, hw), Vector3(ro.x * co, ro.y * si, -hw),
+			Vector3(ri.x * co, ri.y * si, hw), Vector3(ri.x * co, ri.y * si, -hw),
+			Vector3(n.x, n.y, 0)])
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var idx := PackedInt32Array()
+	# Surfaces as (corner A, corner B, normal kind): the quad strip
+	# between the two corner tracks, wound so the supplied normal
+	# is the visible side; the strap material is cull-disabled, so
+	# a winding slip can never make a face vanish.
+	var surfaces := [
+		[0, 1, 0], # outer wall — radial normal
+		[2, 0, 1], # front rim (+Z)
+		[3, 2, 2], # inner wall — inward normal
+		[1, 3, 3], # back rim (-Z)
+	]
+	for s in surfaces:
+		var ca: int = s[0]
+		var cb: int = s[1]
+		var kind: int = s[2]
+		var base := verts.size()
+		for i in range(segs + 1):
+			var st: Array = stations[i]
+			var nrm: Vector3 = st[4]
+			if kind == 1:
+				nrm = Vector3(0, 0, 1)
+			elif kind == 2:
+				nrm = -st[4]
+			elif kind == 3:
+				nrm = Vector3(0, 0, -1)
+			verts.append(st[ca])
+			normals.append(nrm)
+			verts.append(st[cb])
+			normals.append(nrm)
+		for i in range(segs):
+			var a0 := base + i * 2
+			idx.append_array([a0, a0 + 1, a0 + 2, a0 + 1, a0 + 3, a0 + 2])
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_INDEX] = idx
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+# A collar BUCKLE: a little rectangular frame with a centre bar,
+# built from thin boxes in the Y-Z plane — the tangent plane at
+# the strap's +X side, where `centre` sits. Returns the pieces.
+func _buckle(parent: Node, centre: Vector3, mat: Material) -> Array:
+	var out: Array = []
+	var dims := [
+		[Vector3(0, 0.0084, 0), Vector3(0.005, 0.0032, 0.017)], # top bar (runs along Z)
+		[Vector3(0, -0.0084, 0), Vector3(0.005, 0.0032, 0.017)], # bottom bar
+		[Vector3(0, 0, 0.0069), Vector3(0.005, 0.0136, 0.0032)], # front bar (runs along Y)
+		[Vector3(0, 0, -0.0069), Vector3(0.005, 0.0136, 0.0032)], # back bar
+		[Vector3(0, 0, 0), Vector3(0.004, 0.0168, 0.0024)], # centre bar
+	]
+	for d in dims:
+		var b := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = d[1]
+		b.mesh = bm
+		b.position = centre + (d[0] as Vector3)
+		b.material_override = mat
+		parent.add_child(b)
+		out.append(b)
+	return out
+
 func _ready() -> void:
 	add_to_group("player")
 	idle_rng.randomize()
@@ -281,7 +457,6 @@ func _ready() -> void:
 	_build_model()
 
 func _build_collision() -> void:
-	var cs := CollisionShape3D.new()
 	var cap := CapsuleShape3D.new()
 	# SCALE FIX collision: the capsule is UPRIGHT now. A lying
 	# capsule sized to the new cat (top ~0.28) slipped UNDER the
@@ -292,9 +467,29 @@ func _build_collision() -> void:
 	# rail, footprint 0.34 across (gaps are 4-6m — no fit change).
 	cap.radius = 0.17
 	cap.height = 0.55
-	cs.shape = cap
-	cs.position = Vector3(0, 0.275, 0)
-	add_child(cs)
+	# v1.0.13 WALL-CLIP FIX (Michael's screenshot: the cat's rear
+	# half sunk into a brick wall beside a door): ONE upright
+	# capsule guards only a 0.34 DISC, but the DRAWN cat is long —
+	# ScaleProbe measures the built model at nose z=+0.47, rump
+	# z=-0.30 (0.77 nose-to-rump, tail trailing to -0.54) against
+	# the disc's +/-0.17. Walking nose-first into a wall, the head
+	# sank 0.31 in; turning beside a wall swept the body 0.29 in;
+	# a door post was swallowed whole (tests/clip_probe.gd, before:
+	# head_on 0.314 / turn 0.293 / post overlap 0.18). The fix is a
+	# CHAIN of the same upright capsules along the body's long
+	# axis (z -0.19 / 0 / +0.155 / +0.31): identical height profile
+	# (ground contact and fence rails untouched), identical 0.34
+	# width (gap fit untouched — clip probe gaps 0.5/0.4 still
+	# pass), but the guarded footprint now spans z -0.36..+0.48,
+	# covering rump and nose. The chain rotates with the cat, so
+	# turns beside walls push the cat out instead of sweeping the
+	# body through. Only the thin trailing tail tip (to -0.54,
+	# carried raised/curved in every gait) can still kiss a wall.
+	for zoff in [0.155, 0.31, -0.19, 0.0]: # centre capsule added LAST: ScaleProbe reads the last CollisionShape3D child as the primary
+		var cs := CollisionShape3D.new()
+		cs.shape = cap
+		cs.position = Vector3(0, 0.275, zoff)
+		add_child(cs)
 
 # ============================================================
 # v1.2 SCULPT — the cat is built from SHAPED MESHES now, not from
@@ -462,7 +657,19 @@ func _body_stations() -> Array:
 	var out := []
 	for r in raw:
 		var z: float = r[0]
-		out.append(_station(Vector3(0, r[1], z), r[2], r[3], (0.25 - z) / 0.50 * 1.02))
+		var cy: float = r[1]
+		var rr1: float = r[2]
+		var rr2: float = r[3]
+		if north_star:
+			# NORTH STAR: chubbier through the chest, barrel and
+			# haunches; the throat ring (z >= 0.20) grows less so
+			# the collar still sits on the neck. Centres drop a
+			# touch so the extra depth reads as a low, round body.
+			var wmul := 1.10 if z >= 0.20 else 1.24
+			rr1 = r[2] * wmul
+			rr2 = r[3] * 1.13
+			cy = r[1] - 0.006
+		out.append(_station(Vector3(0, cy, z), rr1, rr2, (0.25 - z) / 0.50 * 1.02))
 	return out
 
 func _leg_stations() -> Array:
@@ -470,7 +677,7 @@ func _leg_stations() -> Array:
 	# legs were 0.44 AABB on a 0.93 back — stubby; now the leg
 	# is ~0.20 long under a 0.32 back, near real-cat ratio).
 	# v spans 0..0.38 of the tabby sheet -> SOFT painted stripes.
-	return [
+	var st := [
 		_station(Vector3(0, 0.038, 0), 0.007, 0.007, 0.00),
 		_station(Vector3(0, 0.016, 0), 0.034, 0.032, 0.02),
 		_station(Vector3(0, -0.032, 0), 0.034, 0.032, 0.10),
@@ -479,10 +686,20 @@ func _leg_stations() -> Array:
 		_station(Vector3(0, -0.157, 0), 0.028, 0.027, 0.34),
 		_station(Vector3(0, -0.170, 0), 0.030, 0.028, 0.38),
 	]
+	if north_star:
+		# NORTH STAR: shorter (y x0.85) and thicker (r x1.18)
+		# legs. _make_leg drops the pivot by the same share so
+		# the paw still lands exactly on the ground.
+		for s in st:
+			var c: Vector3 = s["c"]
+			s["c"] = Vector3(c.x, c.y * 0.85, c.z)
+			s["r1"] = float(s["r1"]) * 1.18
+			s["r2"] = float(s["r2"]) * 1.18
+	return st
 
 func _paw_stations() -> Array:
 	# a low paw sweeping forward from the ankle (+Z = forward)
-	return [
+	var st := [
 		_station(Vector3(0, -0.166, -0.031), 0.005, 0.004, 0.5),
 		_station(Vector3(0, -0.166, -0.020), 0.027, 0.017, 0.5),
 		_station(Vector3(0, -0.167, 0.007), 0.030, 0.018, 0.5),
@@ -490,10 +707,20 @@ func _paw_stations() -> Array:
 		_station(Vector3(0, -0.164, 0.056), 0.021, 0.014, 0.5),
 		_station(Vector3(0, -0.163, 0.065), 0.005, 0.004, 0.5),
 	]
+	if north_star:
+		# NORTH STAR: bigger paws — longer sweep (z x1.12),
+		# much rounder (r x1.30), riding at the shortened
+		# leg's ankle height (y x0.85).
+		for s in st:
+			var c: Vector3 = s["c"]
+			s["c"] = Vector3(c.x, c.y * 0.85, c.z * 1.12)
+			s["r1"] = float(s["r1"]) * 1.30
+			s["r2"] = float(s["r2"]) * 1.30
+	return st
 
 func _tail_stations() -> Array:
 	# one tail segment, base -> rounded tip, drifting back slightly
-	return [
+	var st := [
 		_station(Vector3(0, -0.010, 0.001), 0.010, 0.010, 0.00),
 		_station(Vector3(0, 0.007, 0.0), 0.022, 0.022, 0.06),
 		_station(Vector3(0, 0.034, -0.002), 0.027, 0.027, 0.20),
@@ -502,24 +729,52 @@ func _tail_stations() -> Array:
 		_station(Vector3(0, 0.107, -0.010), 0.014, 0.014, 0.55),
 		_station(Vector3(0, 0.116, -0.011), 0.003, 0.003, 0.60),
 	]
+	if north_star:
+		# NORTH STAR: a fluffier tail (r x1.18); the white tip
+		# (v > 0.55 in the loft's cream fn) is unchanged.
+		for s in st:
+			s["r1"] = float(s["r1"]) * 1.18
+			s["r2"] = float(s["r2"]) * 1.18
+	return st
 
 # HEAD: a sphere deformed by the splash cat's proportions. d is a
 # unit direction from the head centre; the result is the surface
 # point. Feature placement (eyes/nose/patches) uses the same
 # function, so details sit exactly ON the sculpted surface.
+func _head_radii() -> Vector3:
+	# NORTH STAR: the head grows ~26% in every axis — the
+	# reference cat's head is BIG against its body, the single
+	# biggest proportion lever in the illustration.
+	return Vector3(0.124, 0.106, 0.103) if north_star else Vector3(0.098, 0.086, 0.084)
+
 func _head_point(d: Vector3) -> Vector3:
 	# SCALE FIX: head radii were (0.40, 0.355, 0.345) -> a 0.91m
 	# head, WIDER than the torso and 1.8x a person's head. Now
 	# (0.098, 0.086, 0.084): ~0.21m wide with cheeks — a cute-big
 	# head (~40% of torso length) inside real-cat plausibility
 	# (a real head is ~0.125m, ~27% of torso length).
-	var p := Vector3(d.x * 0.098, d.y * 0.086, d.z * 0.084)
+	var hr := _head_radii()
+	var p := Vector3(d.x * hr.x, d.y * hr.y, d.z * hr.z)
 	# wide, low, fluffy cheeks (the splash head is nearly body-width)
+	# NORTH STAR: cheek factor 0.17 -> 0.27 for the round,
+	# ruff-framed face in the reference.
+	var cheek_k := 0.27 if north_star else 0.17
 	var cheek := exp(-pow((d.y + 0.28) / 0.42, 2.0)) * absf(d.x)
-	p.x *= 1.0 + 0.17 * cheek
+	p.x *= 1.0 + cheek_k * cheek
 	# muzzle pushed out of the face itself, low and front
+	# NORTH STAR: a touch more muzzle (0.020 -> 0.027).
+	var muz_k := 0.027 if north_star else 0.020
 	var muz := exp(-pow((d.y + 0.38) / 0.34, 2.0)) * maxf(0.0, d.z)
-	p.z += 0.020 * muz
+	p.z += muz_k * muz
+	if north_star:
+		# NORTH STAR RUFF FLARE: the cheek ruff lives in the
+		# sculpt itself — the lower-cheek silhouette widens
+		# with a gentle vertical scallop, so the jaw line
+		# feathers like fur. (Separate cone tufts were tried
+		# first and read as hard red spikes in the stills;
+		# a silhouette treatment is the honest cheap route.)
+		var ruff := exp(-pow((d.y + 0.40) / 0.32, 2.0)) * pow(absf(d.x), 2.0)
+		p.x *= 1.0 + 0.10 * ruff * (0.75 + 0.25 * sin(d.y * 26.0))
 	# flatter face, slightly flattened crown, fuller back of head
 	if d.z > 0.0:
 		p.z *= 0.96
@@ -536,7 +791,14 @@ func _head_point(d: Vector3) -> Vector3:
 
 func _head_normal(d: Vector3) -> Vector3:
 	var p := _head_point(d)
+	# Shipping denominators are the shipping radii squared,
+	# rounded (0.0096 / 0.0074 / 0.0071) — kept verbatim so the
+	# flag-off head is untouched; the variant divides by its
+	# own radii squared.
 	var n := Vector3(p.x / 0.0096, p.y / 0.0074, p.z / 0.0071)
+	if north_star:
+		var hr := _head_radii()
+		n = Vector3(p.x / (hr.x * hr.x), p.y / (hr.y * hr.y), p.z / (hr.z * hr.z))
 	return n.normalized() if n.length() > 0.001 else Vector3(0, 0, 1)
 
 func _head_mesh() -> ArrayMesh:
@@ -567,7 +829,7 @@ func _head_mesh() -> ArrayMesh:
 				idx_b.append_array([q0, q2, q1, q1, q2, q3])
 			else:
 				idx_a.append_array([q0, q2, q1, q1, q2, q3])
-	return _finish_mesh(verts, uvs, idx_a, idx_b, _mat_tex(TEX_FUR), _mat_tex(TEX_CREAM), Vector3.ZERO)
+	return _finish_mesh(verts, uvs, idx_a, idx_b, _mat_tex(_tex_fur), _mat_tex(TEX_CREAM), Vector3.ZERO)
 
 # A shallow dome (unit: rim radius 0.5 in XY, pole at z=+0.5) —
 # eyes, nose, eyelids. Scaled per use.
@@ -627,20 +889,29 @@ func _patch_on_head(d_center: Vector3, w: float, h: float, ang_deg: float, mat: 
 
 func _make_leg(x: float, z: float) -> Node3D:
 	var pivot := Node3D.new()
-	pivot.position = Vector3(x, 0.205, z)
+	# NORTH STAR: the pivot drops 0.205 -> 0.175 to match the
+	# shortened leg stations (y x0.85), so the paw still lands
+	# at the same ground plane and every animation rotation
+	# about the pivot is unchanged.
+	pivot.position = Vector3(x, 0.175 if north_star else 0.205, z)
 	model.add_child(pivot)
 	# one tapered loft — stripes are the texture's soft painted
 	# bands now, not dark cylinder hoops around a tube
 	var leg_mi := MeshInstance3D.new()
-	leg_mi.mesh = _loft_mesh(_leg_stations(), Vector3.RIGHT, Vector3.BACK, 18, _mat_tex(TEX_BODY), null, Callable())
+	leg_mi.mesh = _loft_mesh(_leg_stations(), Vector3.RIGHT, Vector3.BACK, 18, _mat_tex(_tex_body), null, Callable())
 	pivot.add_child(leg_mi)
 	var paw_mi := MeshInstance3D.new()
 	paw_mi.mesh = _loft_mesh(_paw_stations(), Vector3.RIGHT, Vector3.UP, 18, _mat_tex(TEX_CREAM), null, Callable())
 	pivot.add_child(paw_mi)
+	# NORTH STAR: toe/bean accents ride the shortened leg (y
+	# x0.85) and the longer paw sweep (z x1.12); shipping
+	# placements are exact when the flag is off.
+	var ls := 0.85 if north_star else 1.0
+	var zs := 1.12 if north_star else 1.0
 	for tx in [-0.019, 0.0, 0.019]:
-		_box(pivot, Vector3(tx, -0.161, 0.059), Vector3(0.005, 0.017, 0.007), ORANGE_DARK)
+		_box(pivot, Vector3(tx, -0.161 * ls, 0.059 * zs), Vector3(0.005, 0.017, 0.007), ORANGE_DARK)
 	for tx2 in [-0.017, 0.0, 0.017]: # pink toe beans under each toe
-		_sphere(pivot, Vector3(tx2, -0.193, 0.032), Vector3(0.010, 0.006, 0.009), Color(0.94, 0.55, 0.58))
+		_sphere(pivot, Vector3(tx2, -0.193 * ls, 0.032 * zs), Vector3(0.010, 0.006, 0.009), Color(0.94, 0.55, 0.58))
 	return pivot
 
 func _build_model() -> void:
@@ -657,13 +928,33 @@ func _build_model() -> void:
 	visual_root.add_child(model)
 	body_node = Node3D.new()
 	model.add_child(body_node)
+	# NORTH STAR: swap the coat to the richer fur texture for
+	# every builder below (body, head, legs, tail, ears, lids).
+	if north_star:
+		_tex_body = TEX_NS
+		_tex_fur = TEX_NS
 	# --- BODY: one lofted sculpt (see the SCULPT note above) ---
-	# Cream surface = the splash cat's chest bib: throat wrap,
-	# chest front, running down between the front legs.
+	# Cream surface = a chest bib ONLY: throat wrap + upper chest.
 	var body_cream := func(t01: float, sinm: float, zm: float) -> bool:
-		return zm >= 0.205 or (zm >= 0.115 and sinm < 0.55) or (zm >= 0.045 and sinm < 0.12)
+		# CHEST PATCH (Michael, 2026-11-18, second pass — the first
+		# pass still wrapped the whole chest depth and showed as a
+		# broad white region down the underside): the bib lives on
+		# the throat and the UPPER chest and ends ahead of the
+		# front legs. Throat cone: wraps except the neck top.
+		# Chest row: bottom + lower sides only (sinm < 0.18), so
+		# the white no longer climbs the chest walls. One row
+		# further back only the very bottom centre dips in
+		# (sinm < -0.78) — a soft point to the patch, not a band.
+		# Everything behind/below that line is orange tabby.
+		if zm >= 0.205:
+			return sinm < 0.55
+		if zm >= 0.155:
+			return sinm < 0.18
+		if zm >= 0.125:
+			return sinm < -0.78
+		return false
 	var body_mi := MeshInstance3D.new()
-	body_mi.mesh = _loft_mesh(_body_stations(), Vector3.RIGHT, Vector3.UP, 36, _mat_tex(TEX_BODY), _mat_tex(TEX_CREAM), body_cream)
+	body_mi.mesh = _loft_mesh(_body_stations(), Vector3.RIGHT, Vector3.UP, 36, _mat_tex(_tex_body), _mat_tex(TEX_CREAM), body_cream)
 	body_node.add_child(body_mi)
 	# --- Legs (short, pivots at hips/shoulders) ---
 	leg_pivots.append(_make_leg(-0.082, 0.145))
@@ -672,7 +963,11 @@ func _build_model() -> void:
 	leg_pivots.append(_make_leg(0.086, -0.155))
 	# --- HEAD: one sculpted parametric mesh ---
 	head_node = Node3D.new()
-	head_node.position = Vector3(0, 0.315, 0.27)
+	# NORTH STAR: the bigger head sits a touch higher and
+	# further forward on the chubbier neck; head_base_pos
+	# follows so idle/treat head motion orbits the new home.
+	head_node.position = Vector3(0, 0.345, 0.290) if north_star else Vector3(0, 0.315, 0.27)
+	head_base_pos = head_node.position
 	model.add_child(head_node)
 	var head_mi := MeshInstance3D.new()
 	head_mi.mesh = _head_mesh()
@@ -693,9 +988,11 @@ func _build_model() -> void:
 	var nose_p := _head_point(nose_d)
 	var nose_mi := MeshInstance3D.new()
 	nose_mi.mesh = _dome_mesh(1.15)
-	nose_mi.scale = Vector3(0.031, 0.020, 0.013)
+	# NORTH STAR: a bigger, pinker nose (the reference nose is
+	# a clear pink, not brick).
+	nose_mi.scale = Vector3(0.031, 0.020, 0.013) * (1.30 if north_star else 1.0)
 	nose_mi.position = nose_p + Vector3(0, 0, 0.001)
-	nose_mi.material_override = _mat(Color(0.93, 0.38, 0.44), 0.32) # moist — slight gloss
+	nose_mi.material_override = _mat(Color(0.96, 0.47, 0.54) if north_star else Color(0.93, 0.38, 0.44), 0.32) # moist — slight gloss
 	head_node.add_child(nose_mi)
 	# whisker roots: three tiny dark dots each side of the muzzle
 	for sxw in [-1.0, 1.0]:
@@ -703,100 +1000,212 @@ func _build_model() -> void:
 			var rd := Vector3(sxw * (0.20 + float(wi2) * 0.085), -0.30 - float(wi2 % 2) * 0.05, 1.0).normalized()
 			_sphere(head_node, _head_point(rd) + _head_normal(rd) * 0.001, Vector3(0.004, 0.004, 0.003), Color(0.45, 0.25, 0.12))
 	# open smiling mouth + tongue, tucked under the muzzle
-	_sphere(head_node, Vector3(0, -0.045, 0.084), Vector3(0.031, 0.017, 0.011), Color(0.42, 0.14, 0.12))
-	_sphere(head_node, Vector3(0, -0.052, 0.086), Vector3(0.017, 0.009, 0.008), Color(0.96, 0.52, 0.54))
-	# whiskers: 3 long thin lines each side
+	# NORTH STAR: the mouth rides the bigger head's surface
+	# (z x1.23, a touch lower and larger) so it stays visible
+	# instead of sinking into the grown muzzle.
+	var mzs := 1.23 if north_star else 1.0
+	var mss := 1.20 if north_star else 1.0
+	_sphere(head_node, Vector3(0, -0.045 * mss, 0.084 * mzs), Vector3(0.031, 0.017, 0.011) * mss, Color(0.42, 0.14, 0.12))
+	_sphere(head_node, Vector3(0, -0.052 * mss, 0.086 * mzs), Vector3(0.017, 0.009, 0.008) * mss, Color(0.96, 0.52, 0.54))
+	# whiskers: 3 thin lines each side, fanned FORWARD off the
+	# muzzle with a gentle downward droop — the old near-
+	# horizontal set stuck straight out sideways and read as
+	# stiff wires on the cover close-ups (Michael, 2026-11-18).
+	# NORTH STAR: whisker roots ride the wider, deeper head.
+	var wx := 0.118 if north_star else 0.093
+	var wz := 0.114 if north_star else 0.093
+	var wl := 0.088 if north_star else 0.078
 	for sx in [-1.0, 1.0]:
 		for wi in range(3):
-			var whisker := _cyl(head_node, Vector3(sx * 0.093, -0.020 - float(wi) * 0.012, 0.093), 0.0016, 0.0016, 0.085, Color(0.93, 0.91, 0.87))
-			whisker.rotation_degrees = Vector3(0, sx * 16.0, sx * (80.0 - float(wi) * 9.0))
+			var whisker := _cyl(head_node, Vector3(sx * wx, -0.020 - float(wi) * 0.012, wz), 0.0016, 0.0016, wl, Color(0.93, 0.91, 0.87))
+			whisker.rotation_degrees = Vector3(-12.0 - float(wi) * 5.0, sx * 26.0, sx * (64.0 - float(wi) * 7.0))
 	# BIG ROUND green eyes, set FORWARD and FLUSH on the face:
 	# a flat stack of shallow domes on the surface point — dark
 	# outline, glossy iris, round pupil, clear cornea, sparkles.
-	# NOTE: _apply_idle_pose drives iris scale.y from the constant
-	# 0.058 — the iris node scale below keeps 0.058 as its base
+	# NOTE: _apply_idle_pose squashes the whole stack from the
+	# base scale.y values captured at the end of this loop
+	# (shipping: sclera 0.0595 / iris 0.037 / pupil 0.018)
 	# (SCALE FIX: was 0.24 when the head was 0.91m wide).
+	# NORTH STAR: the whole stack grows x1.38 (depth x1.30) and
+	# sits a touch wider/higher — the reference's eyes are HUGE
+	# and round, the face's whole expression.
+	var es := 1.38 if north_star else 1.0
+	var ez := 1.30 if north_star else 1.0
 	for sx in [-0.40, 0.40]:
-		var ed := Vector3(sx, 0.30, 1.0).normalized()
+		var ed := Vector3(sx * (1.10 if north_star else 1.0), 0.34 if north_star else 0.30, 1.0).normalized()
 		var ep := _head_point(ed)
 		var base := ep + Vector3(0, 0, 0.001)
 		var outline := MeshInstance3D.new()
 		outline.mesh = _dome_mesh(1.30)
-		outline.scale = Vector3(0.062, 0.066, 0.014)
+		outline.scale = Vector3(0.062, 0.066, 0.014) * Vector3(es, es, ez)
 		outline.position = base
 		outline.material_override = _mat(Color(0.08, 0.06, 0.05), 0.55)
 		head_node.add_child(outline)
+		# NORMAL EYE (Michael, 2026-11-18): white of the eye
+		# FIRST — a sclera dome the iris sits on. The solid
+		# green orb read "soulless"; he asked for regular eyes:
+		# whites, green irises, dark pupils, a highlight.
+		var sclera := MeshInstance3D.new()
+		sclera.mesh = _dome_mesh(1.25)
+		sclera.scale = Vector3(0.0545, 0.0595, 0.015) * Vector3(es, es, ez)
+		sclera.position = base + Vector3(0, 0, 0.001)
+		sclera.material_override = _mat(Color(0.97, 0.96, 0.93), 0.35)
+		head_node.add_child(sclera)
 		var iris := MeshInstance3D.new()
 		iris.mesh = _dome_mesh(1.20)
-		iris.scale = Vector3(0.052, 0.058, 0.016)
-		iris.position = base + Vector3(0, 0, 0.002)
+		iris.scale = Vector3(0.031, 0.037, 0.0165) * Vector3(es, es, ez)
+		iris.position = base + Vector3(0, 0, 0.0035 * es)
 		var iris_mat := StandardMaterial3D.new()
-		iris_mat.albedo_color = EYE_GREEN
+		# NORTH STAR: a richer, more saturated green (still not
+		# the lime Michael rejected — a deep leaf green).
+		iris_mat.albedo_color = Color(0.18, 0.33, 0.06) if north_star else EYE_GREEN
 		iris_mat.roughness = 0.12
 		iris_mat.metallic = 0.05
+		# COVER FIX (Michael, 2026-11-18): at dusk the deep-green
+		# albedo alone rendered as a BLACK VOID in close-up — the
+		# green never reached the camera. A dim green emission in
+		# the same colour family lifts the iris so it READS green
+		# at cover range without going back to the lime he hated.
+		iris_mat.emission_enabled = true
+		iris_mat.emission = Color(0.05, 0.16, 0.015) if north_star else Color(0.05, 0.14, 0.015)
 		iris.material_override = iris_mat
 		head_node.add_child(iris)
 		var pupil := MeshInstance3D.new()
 		pupil.mesh = _dome_mesh(1.10)
-		pupil.scale = Vector3(0.026, 0.031, 0.012)
-		pupil.position = base + Vector3(0, -0.001, 0.005)
+		pupil.scale = Vector3(0.012, 0.018, 0.012) * Vector3(es, es, ez) # NORMAL EYE: pupil clearly smaller than the iris, a touch taller than wide
+		pupil.position = base + Vector3(0, -0.0005, 0.0095 * es)
 		pupil.material_override = _mat(Color(0.04, 0.04, 0.04), 0.4)
 		head_node.add_child(pupil)
 		var cornea := MeshInstance3D.new()
 		cornea.mesh = _dome_mesh(1.25)
-		cornea.scale = Vector3(0.057, 0.062, 0.019)
+		cornea.scale = Vector3(0.0575, 0.0625, 0.021) * Vector3(es, es, ez)
 		cornea.position = base + Vector3(0, 0, 0.003)
 		var cornea_mat := StandardMaterial3D.new()
-		cornea_mat.albedo_color = Color(1, 1, 1, 0.10)
+		cornea_mat.albedo_color = Color(1, 1, 1, 0.07) # COVER FIX: thinner film — the old 0.10 + metallic sheen helped mute the iris to black
 		cornea_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 		cornea_mat.roughness = 0.03
-		cornea_mat.metallic = 0.15
+		cornea_mat.metallic = 0.0
 		cornea.material_override = cornea_mat
 		head_node.add_child(cornea)
 		var lid := MeshInstance3D.new()
 		lid.mesh = _dome_mesh(1.05)
-		lid.scale = Vector3(0.058, 0.016, 0.026)
-		lid.position = Vector3(ep.x, 0.065, ep.z - 0.005)
-		lid.rotation_degrees = Vector3(-24, 0, 0)
-		lid.material_override = _mat_tex(TEX_FUR)
+		# NORTH STAR: the lid grows in WIDTH with the eye but
+		# keeps the shipping THINNESS — scaled up in y it read
+		# as a red disc floating over the eye in the first
+		# North Star stills.
+		lid.scale = Vector3(0.056, 0.013, 0.021) * Vector3(es, 1.0 if north_star else es, ez)
+		# COVER FIX (Michael, 2026-11-18): the lid used to float
+		# at a fixed y=0.065, ~0.04 above the eye centre — at
+		# cover range it detached completely and read as a RED
+		# OVAL hovering over each eye (proven by hiding
+		# lid_l_mi/lid_r_mi in a staged frame: both ovals
+		# vanished). It now hugs the eye stack, overlapping the
+		# outline dome's top edge like a real eyelid.
+		lid.position = Vector3(ep.x, ep.y + 0.031 * es, ep.z - 0.003)
+		lid.rotation_degrees = Vector3(-28, 0, 0)
+		lid.material_override = _mat_tex(_tex_fur)
 		head_node.add_child(lid)
+		lid_base_y = lid.position.y
+		# Capture the built eye bases for _apply_idle_pose's
+		# squash — identical to the old hardcoded constants when
+		# the flag is off, the grown sizes when it is on.
+		eye_base_y = sclera.scale.y
+		iris_base_y = iris.scale.y
+		pupil_base_y = pupil.scale.y
 		if sx < 0.0:
-			eye_l_mi = iris
+			eye_l_mi = sclera
+			iris_l_mi = iris
+			pupil_l_mi = pupil
 			lid_l_mi = lid
 		else:
-			eye_r_mi = iris
+			eye_r_mi = sclera
+			iris_r_mi = iris
+			pupil_r_mi = pupil
 			lid_r_mi = lid
-		_sphere(head_node, base + Vector3(0.011, 0.018, 0.012), Vector3(0.014, 0.014, 0.005), WHITE)
-		_sphere(head_node, base + Vector3(-0.010, -0.012, 0.011), Vector3(0.007, 0.007, 0.004), WHITE)
-	ear_l = _make_ear(-0.052)
-	ear_r = _make_ear(0.052)
-	# --- Black collar: full band visible front/side/back + silver paw tag ---
-	_band(model, Vector3(0, 0.25, 0.215), 0.080, 0.080, 0.020, Color(0.06, 0.06, 0.08))
-	_cyl(model, Vector3(0, 0.185, 0.272), 0.007, 0.007, 0.022, SILVER).rotation_degrees = Vector3(20, 0, 0) # tag ring link
-	var tag := _cyl(model, Vector3(0, 0.158, 0.288), 0.030, 0.030, 0.010, SILVER)
+		# NORTH STAR: sparkles grow only a little (ss) — at the
+		# full eye scale they read as white balls stuck on the
+		# iris in the first stills.
+		var ss := 1.12 if north_star else 1.0
+		_sphere(head_node, base + Vector3(0.011 * ss, 0.018 * ss, 0.012 * ss), Vector3(0.014, 0.014, 0.005) * ss, WHITE)
+		_sphere(head_node, base + Vector3(-0.010 * ss, -0.012 * ss, 0.011 * ss), Vector3(0.007, 0.007, 0.004) * ss, WHITE)
+	if north_star:
+		# NORTH STAR EXPRESSION (variant only): the reference
+		# cat's face is WORRIED-cute — brow ridges slanting
+		# down toward the nose. Brows are surface patches in a
+		# mid-dark orange (fur shadow, not a drawn line). The
+		# cheek ruff is sculpted into the head silhouette
+		# itself (see the ruff flare in _head_point).
+		var brow_mat := _mat(Color(0.55, 0.23, 0.02))
+		brow_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		for sxb in [-1.0, 1.0]:
+			_patch_on_head(Vector3(sxb * 0.37, 0.64, 0.82), 0.125, 0.026, sxb * 28.0, brow_mat)
+	ear_l = _make_ear(-0.066 if north_star else -0.052)
+	ear_r = _make_ear(0.066 if north_star else 0.052)
+	# --- The collar: a real CAT collar (Michael, 2026-11-18) ---
+	# The old build was a round-cord torus ring and a 6 cm disc —
+	# it read as a rubber ring with a dinner plate. A collar is a
+	# FLAT STRAP with hardware: strap, buckle, D-ring, and a tag
+	# sized like a real pet tag (2.5 cm) hanging at the chest.
+	# STORY PART 1: every piece is registered in collar_parts so
+	# the opening cutscene can take the whole collar off in one
+	# call (and the homecoming can put it back).
+	var collar_metal := _mat(Color(0.78, 0.80, 0.84), 0.35, 0.5) # satin silver — stays silver at dusk (full-metal mirrored the dark sky and went black)
+	var strap_mat := _mat(Color(0.055, 0.055, 0.07), 0.88) # black fabric strap
+	strap_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	# NORTH STAR: the strap grows x1.16 around the chubbier
+	# throat so it still sits ON the neck, not inside it.
+	var cs := 1.16 if north_star else 1.0
+	var strap := MeshInstance3D.new()
+	strap.mesh = _strap_mesh(0.0835 * cs, 0.0865 * cs, 0.013, 0.0038)
+	strap.position = Vector3(0, 0.248 + (0.004 if north_star else 0.0), 0.215)
+	strap.material_override = strap_mat
+	model.add_child(strap)
+	collar_parts.append(strap)
+	# The buckle: a little rectangular frame with its centre bar,
+	# standing proud of the strap on his right side.
+	for piece in _buckle(model, Vector3(0.0864 * cs, 0.248, 0.215), collar_metal):
+		collar_parts.append(piece)
+	# The D-ring at the throat: its top tucks into the strap's
+	# lower edge, and the tag hangs from it.
+	var dring := MeshInstance3D.new()
+	var dtm := TorusMesh.new()
+	dtm.inner_radius = 0.0059
+	dtm.outer_radius = 0.0091
+	dtm.rings = 16
+	dtm.ring_segments = 8
+	dring.mesh = dtm
+	dring.position = Vector3(0, 0.143, 0.2285) if north_star else Vector3(0, 0.155, 0.2245)
+	dring.rotation_degrees = Vector3(90, 0, 0)
+	dring.material_override = collar_metal
+	model.add_child(dring)
+	collar_parts.append(dring)
+	# The tag: 2.5 cm across, hanging from the ring in the hollow
+	# under his throat, face forward, tipped back a touch the way
+	# a worn tag rests.
+	# NORTH STAR: the tag drops a touch lower/further forward
+	# so it clears the grown chest instead of clipping into it.
+	var tag := _cyl(model, Vector3(0, 0.134, 0.236) if north_star else Vector3(0, 0.1385, 0.2285), 0.0125, 0.0125, 0.0024, SILVER)
 	collar_tag = tag
-	tag.rotation_degrees = Vector3(90, 0, 0)
-	tag.material_override = _mat(SILVER, 0.28, 0.85)
-	_sphere(model, Vector3(0, 0.148, 0.299), Vector3(0.018, 0.014, 0.006), Color(0.15, 0.15, 0.19)) # paw pad
-	for tx in [-0.016, 0.0, 0.016]:
-		_sphere(model, Vector3(tx * 0.85, 0.190, 0.299), Vector3(0.007, 0.009, 0.006), Color(0.15, 0.15, 0.19)) # paw toes
-	# --- The home address, printed ON the tag's face ---
+	collar_parts.append(tag)
+	tag.rotation_degrees = Vector3(82, 0, 0)
+	tag.material_override = collar_metal
+	# --- His name, printed ON the tag's face ---
 	# A Label3D riding as a CHILD of the tag mesh — no billboard, so
 	# it moves and tilts with the tag exactly, like print on metal.
 	# Tag-local frame: the tag cylinder's axis is +Y and its front
 	# cap faces +Y, so the label lies flat against that cap: a -90
 	# rotation about X turns the label's facing (+Z) onto +Y and its
-	# text-up onto the model's up. It floats 0.0165 along +Y — the
-	# cap is at 0.005 and the paw-print spheres stand ~0.009 proud
-	# of it — so the print rests just on the paw, never clipping in.
+	# text-up onto the model's up. It floats 0.0026 along +Y — the
+	# cap is at 0.0012 — so the print rests just off the face.
+	# Dark print on the pale metal, like an engraved tag.
 	tag_label = Label3D.new()
 	tag_label.font_size = 64
 	tag_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	tag_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	tag_label.modulate = Color(1.0, 0.97, 0.85)
-	tag_label.outline_size = 12
-	tag_label.outline_modulate = Color(0.08, 0.07, 0.05, 0.9)
-	tag_label.position = Vector3(0, 0.0165, 0)
+	tag_label.modulate = Color(0.10, 0.10, 0.13)
+	tag_label.outline_size = 8
+	tag_label.outline_modulate = Color(0.95, 0.96, 0.98, 0.85)
+	tag_label.position = Vector3(0, 0.0026, 0)
 	tag_label.rotation_degrees = Vector3(-90, 0, 0)
 	tag.add_child(tag_label)
 	# --- Tail: 3 chained lofted segments, tapering, white tip ---
@@ -808,10 +1217,10 @@ func _build_model() -> void:
 		parent_node.add_child(pivot)
 		var seg_mi := MeshInstance3D.new()
 		if i == 2:
-			seg_mi.mesh = _loft_mesh(_tail_stations(), Vector3.RIGHT, Vector3.BACK, 20, _mat_tex(TEX_BODY), _mat_tex(TEX_CREAM),
+			seg_mi.mesh = _loft_mesh(_tail_stations(), Vector3.RIGHT, Vector3.BACK, 20, _mat_tex(_tex_body), _mat_tex(TEX_CREAM),
 				func(t01: float, sinm: float, zm: float) -> bool: return t01 > 0.55)
 		else:
-			seg_mi.mesh = _loft_mesh(_tail_stations(), Vector3.RIGHT, Vector3.BACK, 20, _mat_tex(TEX_BODY), null, Callable())
+			seg_mi.mesh = _loft_mesh(_tail_stations(), Vector3.RIGHT, Vector3.BACK, 20, _mat_tex(_tex_body), null, Callable())
 		pivot.add_child(seg_mi)
 		pivot.rotation_degrees = Vector3(-19, 0, 0)
 		tail_pivots.append(pivot)
@@ -824,6 +1233,8 @@ func _build_model() -> void:
 	hide_label.modulate = Color(0.6, 1.0, 0.6)
 	hide_label.visible = false
 	add_child(hide_label)
+	# v1.0.14: hang the Meshy model on this rig and hide the sculpt
+	_attach_meshy()
 
 # A SHAPED ear: a broad flat triangle with a rounded tip, traced
 # from the splash cat — not a cone. Three things make it read as
@@ -834,12 +1245,22 @@ func _build_model() -> void:
 func _ear_outline() -> Array:
 	# SCALE FIX: the splash-traced outline at 0.30x — ear height
 	# 0.49 -> 0.147, so ear tips land ~0.51 instead of 1.52.
-	return [
+	# EAR TRIM (Michael, 2026-11-18): "not quite that big" — the
+	# traced outline at 0.82x (18% off height and width, tips now
+	# ~0.483). Same shape, forward set and skirt; just less ear.
+	var raw := [
 		Vector2(-0.0384, -0.027), Vector2(-0.0414, 0.006), Vector2(-0.0432, 0.036),
 		Vector2(-0.036, 0.0705), Vector2(-0.0192, 0.099), Vector2(0.000, 0.120),
 		Vector2(0.0192, 0.099), Vector2(0.0348, 0.0675), Vector2(0.0411, 0.0345),
 		Vector2(0.0384, 0.006), Vector2(0.0366, -0.027),
 	]
+	# NORTH STAR: ears trim a further ~12% — against the bigger
+	# head the shipping ears towered in the first stills.
+	var ek := 0.82 * (0.88 if north_star else 1.0)
+	var out := []
+	for p in raw:
+		out.append(Vector2(p.x * ek, p.y * ek))
+	return out
 
 func _ear_xform(p: Vector2, z: float, side: float) -> Vector3:
 	var tilt := -side * deg_to_rad(7.0)
@@ -879,7 +1300,7 @@ func _ear_mesh(side: float) -> ArrayMesh:
 		idx.append_array([0, f0, f1]) # front fan
 		idx.append_array([n + 1, b1, b0]) # back fan
 		idx.append_array([f0, f1, b1, f0, b1, b0]) # rim
-	return _finish_mesh(verts, uvs, idx, PackedInt32Array(), _mat_tex(TEX_FUR), null, Vector3(cf.x, cf.y, 0))
+	return _finish_mesh(verts, uvs, idx, PackedInt32Array(), _mat_tex(_tex_fur), null, Vector3(cf.x, cf.y, 0))
 
 func _ear_inner_mesh(side: float) -> ArrayMesh:
 	var outline := _ear_outline()
@@ -904,7 +1325,9 @@ func _ear_inner_mesh(side: float) -> ArrayMesh:
 
 func _make_ear(x: float) -> Node3D:
 	var pivot := Node3D.new()
-	pivot.position = Vector3(x, 0.385, 0.255)
+	# NORTH STAR: ear pivots ride the bigger head (up, out,
+	# a touch back); shipping placement exact when off.
+	pivot.position = Vector3(x, 0.418 if north_star else 0.385, 0.270 if north_star else 0.255)
 	model.add_child(pivot)
 	var side := 1.0 if x > 0.0 else -1.0
 	var outer := MeshInstance3D.new()
@@ -935,8 +1358,8 @@ func _physics_process(delta: float) -> void:
 		velocity.x = move_toward(velocity.x, 0.0, 26.0 * delta)
 		velocity.z = move_toward(velocity.z, 0.0, 26.0 * delta)
 		move_and_slide()
-		global_position.x = clamp(global_position.x, -118.5, 590.0) # MAP DOUBLING: east edge + escape room moved east
-		global_position.z = clamp(global_position.z, -90.5, 90.5)
+		global_position.x = clamp(global_position.x, -194.0, 590.0) # SHORELINE ACCESS (v1.0.14): backstop only — the IslandShore wall stops him ~2 m short of the water, well inside these bounds; east stays 590 for the escape room
+		global_position.z = clamp(global_position.z, -164.0, 164.0)
 		_animate(delta, Vector2(velocity.x, velocity.z).length())
 		return
 	var dir2 := Vector2.ZERO
@@ -957,7 +1380,16 @@ func _physics_process(delta: float) -> void:
 		if touch_mag < 0.12:
 			dir2 = Vector2.ZERO # joystick deadzone
 	dir2 = dir2.normalized()
-	want_sprint = Input.is_physical_key_pressed(KEY_SHIFT) or touch_sprint or (from_touch and touch_mag > 0.85)
+	# v1.0.14 RUN HOLD (Michael's direction, superseding v0.7's
+	# push-to-sprint and v1.0.13's press-to-toggle, which he reversed
+	# after playing it): the joystick NEVER sprints on its own any
+	# more — a full push "rocketed off". Sprint comes only from the
+	# RUN button while it is HELD (touch_sprint, set by
+	# main3d._on_run_hold) or the PC Shift key (also hold). The
+	# stamina/winded gate below is unchanged: an empty pool still
+	# drops the cat to walk until recovery, even while RUN stays
+	# held, and sprint then resumes.
+	want_sprint = Input.is_physical_key_pressed(KEY_SHIFT) or touch_sprint
 	# Stamina gate (v0.7): sprint only while the pool lasts. When the
 	# pool (stamina + chase adrenaline) hits EMPTY the cat is WINDED:
 	# speed drops straight back to walk and sprint stays locked out
@@ -990,8 +1422,8 @@ func _physics_process(delta: float) -> void:
 		var target_yaw: float = atan2(dir3.x, dir3.z)
 		rotation.y = lerp_angle(rotation.y, target_yaw, min(1.0, 14.0 * delta))
 	move_and_slide()
-	global_position.x = clamp(global_position.x, -118.5, 590.0) # MAP DOUBLING: east edge + escape room moved east
-	global_position.z = clamp(global_position.z, -90.5, 90.5)
+	global_position.x = clamp(global_position.x, -194.0, 590.0) # SHORELINE ACCESS (v1.0.14): backstop only — the IslandShore wall stops him ~2 m short of the water, well inside these bounds; east stays 590 for the escape room
+	global_position.z = clamp(global_position.z, -164.0, 164.0)
 	var speed2d: float = Vector2(velocity.x, velocity.z).length()
 	_animate(delta, speed2d)
 	if main_ref != null and main_ref.has_method("update_player_hiding"):
@@ -999,6 +1431,12 @@ func _physics_process(delta: float) -> void:
 
 func _animate(delta: float, speed2d: float) -> void:
 	anim_speed = speed2d
+	# LEGS FIX: regime flags for the Meshy mirror (see _mirror_meshy).
+	# The movement branch below ASSIGNS the leg pose outright when
+	# speed2d > 0.4 (the same condition it branches on); the held
+	# flag is (re)armed by the held block further down.
+	meshy_move_raw = speed2d > 0.4
+	meshy_held_fresh = false
 	var t: float = Time.get_ticks_msec() / 1000.0
 	# PAW UNDO (v0.8, item 4): strip LAST frame's swipe offset before
 	# any pose system writes the leg. Nothing else ever writes
@@ -1128,6 +1566,14 @@ func _animate(delta: float, speed2d: float) -> void:
 			var dangle: float = 0.5 * held_a + sin(t * 1.4) * 0.06 * held_a
 			leg_pivots[2].rotation.x = dangle
 			leg_pivots[3].rotation.x = dangle + sin(t * 1.4 + 0.7) * 0.04 * held_a
+			# LEGS FIX: record the assigned cradle pose for the
+			# mirror — it is ABSOLUTE, so the mirror must read it
+			# as-is, not difference it against the idle snapshot
+			# (which absorbs the assignment next frame and ate
+			# ~92% of the fold in the shipped build).
+			for i in range(4):
+				meshy_held_snap[i] = leg_pivots[i].rotation
+			meshy_held_fresh = true
 		# Tail curls round the side, the way it does when he sits.
 		if tail_pivots.size() == 3:
 			tail_pivots[0].rotation.y += 1.0 * held_a
@@ -1151,6 +1597,14 @@ func _animate(delta: float, speed2d: float) -> void:
 				eye_l_mi.scale.y *= 1.0 - 0.6 * blink
 			if eye_r_mi:
 				eye_r_mi.scale.y *= 1.0 - 0.6 * blink
+			if iris_l_mi:
+				iris_l_mi.scale.y *= 1.0 - 0.6 * blink
+			if iris_r_mi:
+				iris_r_mi.scale.y *= 1.0 - 0.6 * blink
+			if pupil_l_mi:
+				pupil_l_mi.scale.y *= 1.0 - 0.6 * blink
+			if pupil_r_mi:
+				pupil_r_mi.scale.y *= 1.0 - 0.6 * blink
 	elif model and model.rotation.x != 0.0:
 		model.rotation.x = 0.0
 		if ear_l:
@@ -1178,6 +1632,9 @@ func _animate(delta: float, speed2d: float) -> void:
 	if model:
 		var target_sy: float = 1.06 if hop_airborne else 1.0
 		model.scale.y = lerp(model.scale.y, target_sy, min(1.0, 8.0 * delta))
+	# v1.0.14: the sculpt's final pose for this frame, mirrored onto
+	# the Meshy skeleton (no-op while the import is absent).
+	_mirror_meshy()
 
 func _start_idle_action() -> void:
 	var choices: Array = ["sit", "groom", "look", "tailflick", "pawtap"]
@@ -1205,6 +1662,20 @@ func _apply_idle_pose(delta: float, t: float) -> void:
 	tail_a = move_toward(tail_a, env if idle_action == "tailflick" else 0.0, rate)
 	tap_a = move_toward(tap_a, env if idle_action == "pawtap" else 0.0, rate)
 	sleepy_a = move_toward(sleepy_a, 1.0 if purring else 0.0, delta * 3.0)
+	# v1.0.14 MESHY: snapshot the legs exactly as the idle branch
+	# left them, BEFORE this function's += pose terms land. The +=
+	# terms below accumulate against the branch's lerp re-base
+	# (equilibrium = term / (10*delta) — radians of garbage the
+	# sculpt's short hidden legs tolerate but a real model's legs
+	# cannot). LEGS FIX (2026-11-18): the mirror differences
+	# against this snapshot ONLY on idle-family frames — on
+	# movement frames the walk branch has already assigned the
+	# swing before this snapshot is taken, and differencing ate
+	# the whole gait. See _mirror_meshy for the regime split.
+	if leg_pivots.size() == 4:
+		for i in range(4):
+			meshy_leg_snap[i] = leg_pivots[i].rotation
+		meshy_leg_snap_fresh = true
 	if body_node == null:
 		return
 	# SIT: rear drops, chest rises, front legs stay straight, tail curls round
@@ -1235,14 +1706,26 @@ func _apply_idle_pose(delta: float, t: float) -> void:
 		body_node.position.z += cos(t * 23.0) * 0.0015
 	else:
 		body_node.position.x = 0.0
+	# Eye squash bases come from the build (eye_base_y etc.) —
+	# the shipping sizes when the flag is off, the North Star
+	# sizes when it is on, so blinks/squints keep working on
+	# either model.
 	if eye_l_mi:
-		eye_l_mi.scale.y = 0.058 * (1.0 - 0.45 * sleepy_a - 0.3 * pet_a)
+		eye_l_mi.scale.y = eye_base_y * (1.0 - 0.45 * sleepy_a - 0.3 * pet_a)
 	if eye_r_mi:
-		eye_r_mi.scale.y = 0.058 * (1.0 - 0.45 * sleepy_a - 0.3 * pet_a)
+		eye_r_mi.scale.y = eye_base_y * (1.0 - 0.45 * sleepy_a - 0.3 * pet_a)
+	if iris_l_mi:
+		iris_l_mi.scale.y = iris_base_y * (1.0 - 0.45 * sleepy_a - 0.3 * pet_a)
+	if iris_r_mi:
+		iris_r_mi.scale.y = iris_base_y * (1.0 - 0.45 * sleepy_a - 0.3 * pet_a)
+	if pupil_l_mi:
+		pupil_l_mi.scale.y = pupil_base_y * (1.0 - 0.45 * sleepy_a - 0.3 * pet_a)
+	if pupil_r_mi:
+		pupil_r_mi.scale.y = pupil_base_y * (1.0 - 0.45 * sleepy_a - 0.3 * pet_a)
 	if lid_l_mi:
-		lid_l_mi.position.y = 0.065 - 0.011 * sleepy_a
+		lid_l_mi.position.y = lid_base_y - 0.011 * sleepy_a
 	if lid_r_mi:
-		lid_r_mi.position.y = 0.065 - 0.011 * sleepy_a
+		lid_r_mi.position.y = lid_base_y - 0.011 * sleepy_a
 
 func debug_set_idle_action(action_name: String) -> void:
 	idle_action = action_name
@@ -1319,7 +1802,7 @@ func apply_car_bump(dir3: Vector3) -> void:
 func get_tag_global_pos() -> Vector3:
 	if collar_tag:
 		return collar_tag.global_position
-	return global_position + Vector3(0, 0.158, 0.29) * VISUAL_SCALE
+	return global_position + Vector3(0, 0.1385, 0.2285) * VISUAL_SCALE
 
 func get_tag_facing() -> Vector3:
 	# World direction the tag's printed face points: the tag
@@ -1332,34 +1815,324 @@ func get_tag_facing() -> Vector3:
 func get_tag_label() -> Label3D:
 	return tag_label
 
-func set_tag_address(addr: String) -> void:
-	# Print the run's home address on the collar tag. Two lines so
-	# it fits the little disc ("19 Oak Avenue" / "Apartment 3B",
-	# "31 Willow" / "Crescent"), and the pixel size is fitted to
-	# the measured string so the widest line spans the tag's face.
+# STORY PART 1: the whole collar comes off (the opening's drop beat)
+# and goes back on (the homecoming, a later build) as one piece. The
+# meshes stay in the tree — only their visibility flips — so the tag
+# label, the sculpt checks and the homecoming framing are unaffected.
+func set_collar_visible(on: bool) -> void:
+	for p in collar_parts:
+		if p is Node3D:
+			(p as Node3D).visible = on
+
+func is_collar_visible() -> bool:
+	return collar_tag != null and collar_tag.visible
+
+func set_tag_name() -> void:
+	# Print the cat's NAME on the collar tag (Michael, 2026-11-18:
+	# the tag says "Zander", NOT the home address — the address is
+	# on the title screen). One line, and the pixel size is fitted
+	# to the measured string so the name spans the tag's face.
 	if tag_label == null:
 		return
-	var line1 := addr
-	var line2 := ""
-	if ", " in addr:
-		var parts := addr.split(", ", true, 1)
-		line1 = parts[0]
-		if parts.size() > 1:
-			line2 = parts[1]
-	else:
-		var words := addr.split(" ")
-		if words.size() >= 3:
-			line2 = words[words.size() - 1]
-			words.remove_at(words.size() - 1)
-			line1 = " ".join(words)
-	tag_label.text = line1 if line2 == "" else line1 + "\n" + line2
+	tag_label.text = CAT_NAME
 	var font := ThemeDB.fallback_font
-	var w: float = 0.0
-	for ln in tag_label.text.split("\n"):
-		w = maxf(w, font.get_string_size(ln, HORIZONTAL_ALIGNMENT_LEFT, -1.0, float(tag_label.font_size)).x)
+	var w: float = font.get_string_size(CAT_NAME, HORIZONTAL_ALIGNMENT_LEFT, -1.0, float(tag_label.font_size)).x
 	if w > 1.0:
-		tag_label.pixel_size = 0.050 / w
+		tag_label.pixel_size = 0.0195 / w # the name spans the 2.5 cm tag's face
 
 func get_neck_global_pos() -> Vector3:
 	# The collar sits just under the chin, ahead of the chest.
 	return global_position + global_transform.basis * (Vector3(0, 0.27, 0.235) * VISUAL_SCALE)
+
+# ============================================================
+# v1.0.14 MESHY GHOST RIG — attach + per-frame mirror.
+# The sculpt rig (body_node / head_node / leg_pivots / tail_pivots /
+# ear_l / ear_r) keeps posing exactly as it always has; nothing
+# else in the game can tell the difference. _mirror_meshy copies
+# that pose onto the imported skeleton with global-pose overrides:
+# each driven bone's global basis becomes (pivot rotation) x (its
+# own rest basis), about its own rest origin — so lower legs, jaw,
+# ears and tail tip follow their driven parents through the skin.
+# ============================================================
+
+func _attach_meshy() -> void:
+	if MESHY_SCENE == null or model == null:
+		return
+	var inst: Node = MESHY_SCENE.instantiate()
+	meshy_root = Node3D.new()
+	meshy_root.name = "MeshyRoot"
+	model.add_child(meshy_root)
+	meshy_root.add_child(inst)
+	meshy_root.scale = Vector3.ONE * MESHY_SCALE
+	meshy_root.position.y = MESHY_GROUND_Y
+	# Find the skeleton; silence any helper mesh that is not the cat
+	# (the Meshy export carries a stray "Icosphere" helper — in the
+	# Godot import it does not surface as a scene mesh, but if a
+	# future export adds one it must never be drawn or measured).
+	var stack: Array = [inst]
+	while not stack.is_empty():
+		var cur: Node = stack.pop_back()
+		if cur is Skeleton3D:
+			meshy_skel = cur as Skeleton3D
+		elif cur is MeshInstance3D and (cur as MeshInstance3D).name.to_lower().contains("icosphere"):
+			(cur as MeshInstance3D).visible = false
+		for ch in cur.get_children():
+			stack.append(ch)
+	if meshy_skel == null:
+		meshy_root.visible = false
+		meshy_root = null
+		return
+	# Bone map by NAME (indices differ between Meshy exports).
+	# Left/right are matched by POSITION, not by the export's .L/.R
+	# labels: the sculpt's FL pivot sits at model -X, and the bone
+	# whose rest origin sits at skeleton -X in the front pair is
+	# "clavicle.R" — position is what the trot's diagonal pairing
+	# and the paw swipe actually see.
+	var want := {
+		"fl": "clavicle.R", "fr": "clavicle.L",
+		"bl": "rearUpr.R", "br": "rearUpr.L",
+		"head": "head", "spine": "spine2",
+		"ear_l": "ear.R_01", "ear_r": "ear.L_01",
+		# LEGS FIX: the rest of each leg chain — the shipped
+		# mirror drove ONLY the top bone, so the model's legs
+		# could swing (once the gait reached them) but never
+		# BEND. Same position-matched .R/.L convention as the
+		# uppers: sculpt FL (-X) pairs with the .R chain.
+		"fl_lo": "frontLwr.R", "fr_lo": "frontLwr.L",
+		"bl_lo": "rearLwr.R", "br_lo": "rearLwr.L",
+		"fl_hk": "frontHorselink.R", "fr_hk": "frontHorselink.L",
+		"bl_hk": "rearHorselink.R", "br_hk": "rearHorselink.L",
+		"fl_ft": "frontFoot.R", "fr_ft": "frontFoot.L",
+		"bl_ft": "rearFoot.R", "br_ft": "rearFoot.L",
+	}
+	for role in want.keys():
+		var bi: int = meshy_skel.find_bone(str(want[role]))
+		if bi >= 0:
+			meshy_bone[role] = bi
+			meshy_rest[bi] = meshy_skel.get_bone_global_rest(bi)
+	for tname in ["tail1", "tail2", "tail3", "tail4", "tail_05", "tail_06"]:
+		var ti: int = meshy_skel.find_bone(tname)
+		if ti >= 0:
+			meshy_tail.append(ti)
+			meshy_rest[ti] = meshy_skel.get_bone_global_rest(ti)
+	# Every bone's rests, for the mirror's parent-first propagation
+	# (global-pose overrides do NOT flow down the chain on their
+	# own — children are posed from the parent's un-overridden
+	# pose — so _mirror_meshy computes each bone's desired global
+	# itself, composing driven ancestors in).
+	for bi in range(meshy_skel.get_bone_count()):
+		var gr: Transform3D = meshy_skel.get_bone_global_rest(bi)
+		meshy_rest[bi] = gr
+		var bp: int = meshy_skel.get_bone_parent(bi)
+		if bp >= 0:
+			meshy_local_rest[bi] = meshy_skel.get_bone_global_rest(bp).affine_inverse() * gr
+		else:
+			meshy_local_rest[bi] = gr
+	# Hide the sculpt's meshes. The nodes, pivots and pose code all
+	# stay live — only the drawing changes. The collar parts are NOT
+	# hidden: they are re-seated onto the new neck below.
+	body_node.visible = false
+	head_node.visible = false
+	for lp in leg_pivots:
+		(lp as Node3D).visible = false
+	if ear_l:
+		ear_l.visible = false
+	if ear_r:
+		ear_r.visible = false
+	if tail_pivots.size() > 0:
+		(tail_pivots[0] as Node3D).visible = false
+	# Re-seat the collar on the Meshy neck. The new neck is
+	# plumper than the sculpt's (half-width ~0.135 in GLB units,
+	# ~0.119 in model units, against the strap's 0.0835 radius) —
+	# at its old size the strap sank out of sight inside the neck
+	# and only the buckle poked out; grown as a plain vertical
+	# ellipse it read as a giant hoop down the chest (proof shots
+	# screenshots_meshy_swap/01-08). The neck also runs DIAGONALLY
+	# (neck1 (0,0.279,0.228) -> head (0,0.379,0.305) in model
+	# units), so the strap is TILTED square to the neck axis
+	# (-52 deg about X) and only modestly grown — a collar hugging
+	# the neck the way the sculpt's did. The buckle rides out to
+	# the strap's new side; the D-ring + tag re-hang from the
+	# strap's bottom onto the upper chest (measured chest front
+	# z~0.30 at that height) so the tag and Zander's name read.
+	# The parts stay in collar_parts, so the cutscene drop /
+	# homecoming restore and every tag getter behave as before.
+	for i in range(collar_parts.size()):
+		var p = collar_parts[i]
+		if not (p is Node3D):
+			continue
+		var n3 := p as Node3D
+		if i == 0:
+			n3.position = Vector3(0.0, 0.285, 0.232)
+			n3.scale = Vector3(1.38, 1.25, 1.05)
+			n3.rotation_degrees.x = -52.0
+		elif p == collar_tag:
+			n3.position = Vector3(0.0, 0.195, 0.312)
+			n3.scale = Vector3.ONE * 1.25
+		elif n3.position.y < 0.2:
+			n3.position = Vector3(0.0, 0.212, 0.315) # the D-ring
+		else:
+			n3.position += Vector3(0.036, 0.037, 0.017) # buckle hardware
+
+func _mirror_meshy() -> void:
+	if meshy_skel == null or meshy_root == null or body_node == null or head_node == null:
+		return
+	# The walk bounce / sit drop the sculpt applies to body_node's
+	# height rides the whole imported model.
+	meshy_root.position.y = MESHY_GROUND_Y + body_node.position.y
+	# Drivers: bone index -> extra rotation (sculpt pivot Euler)
+	# applied about the bone's own origin, on top of its rest pose.
+	# Global-pose overrides do not propagate to children by
+	# themselves, so the loop below composes the whole skeleton
+	# parent-first: each bone's desired global = (desired parent
+	# global) x (its rest local), with its driver folded in — the
+	# same nesting the sculpt's pivot chain produces.
+	var drv: Dictionary = {}
+	# LEGS FIX (2026-11-18): pick the leg-pose source by REGIME.
+	# The shipped code differenced EVERY frame against the idle
+	# snapshot — but _apply_idle_pose runs every frame and its
+	# snapshot is taken after the walk branch assigned the swing,
+	# so (raw - snapshot) cancelled the gait to ~0 rad at the
+	# bones (Michael, playing v1.0.14: "when it runs the legs
+	# don't move — legs are straight"). The regimes:
+	#   MOVEMENT (walk/sprint/stun): the branch ASSIGNED the
+	#     pivots outright this frame — raw values ARE the pose.
+	#   HELD: the held block ASSIGNED an absolute cradle pose
+	#     after the snapshot — read the recorded assignment.
+	#   IDLE family: the pivots hold an accumulated equilibrium
+	#     of _apply_idle_pose's += terms against the lerp
+	#     re-base — (raw - snapshot) recovers the intended
+	#     single-frame terms (sit/groom/tap), as before.
+	var leg_up := [Vector3.ZERO, Vector3.ZERO, Vector3.ZERO, Vector3.ZERO] # upper-leg pose per leg (FL FR BL BR)
+	var leg_lo := [0.0, 0.0, 0.0, 0.0] # lower-leg fold (rotation.x), mirror-synthesised
+	var gallop_pitch := 0.0
+	if leg_pivots.size() == 4:
+		if meshy_move_raw:
+			for i in range(4):
+				leg_up[i] = leg_pivots[i].rotation
+			# --- gait synthesis on top of the sculpt's trot ---
+			# Per-leg phase: FL/BR swing with walk_phase, FR/BL
+			# against it (the trot's diagonal pairing).
+			var phases := [walk_phase, walk_phase + PI, walk_phase + PI, walk_phase]
+			if is_sprinting:
+				# GALLOP: front pair together (FL leads FR by a
+				# beat), rear pair together half a cycle later,
+				# bigger swing — a running cat must not trot.
+				var g := walk_phase
+				phases = [g, g - 0.38, g + PI - 0.38, g + PI]
+				leg_up[0].x = GAIT_GALLOP_AMP * sin(phases[0])
+				leg_up[1].x = GAIT_GALLOP_AMP * sin(phases[1])
+				leg_up[2].x = GAIT_GALLOP_AMP * sin(phases[2])
+				leg_up[3].x = GAIT_GALLOP_AMP * sin(phases[3])
+				# Spine flexes with the stride; the head counter-
+				# pitches below so his gaze stays level-ish.
+				gallop_pitch = GAIT_GALLOP_PITCH * sin(g + 0.65)
+				meshy_root.position.y += GAIT_GALLOP_BOB * sin(g - 0.45)
+			else:
+				for i in range(4):
+					leg_up[i].x = leg_up[i].x * GAIT_WALK_GAIN
+			# Lower-leg FOLD: peaks while the leg is swinging
+			# forward through the air (protraction), ~zero while
+			# it is planted and pushing (stance). +x pitches the
+			# segment back in skeleton space — the paw trails
+			# and tucks instead of the leg swinging like a peg.
+			var fold_gain := 1.3 if is_sprinting else 1.0
+			for i in range(4):
+				var prot: float = pow(maxf(0.0, -cos(phases[i] - GAIT_FOLD_LEAD)), 1.2)
+				var amp: float = (GAIT_FOLD_FRONT if i < 2 else GAIT_FOLD_REAR) * fold_gain
+				leg_lo[i] = amp * prot
+			if hop_airborne:
+				# Airborne: front paws tuck up, rear legs trail
+				# and fold — instead of trotting on thin air.
+				leg_up[0].x = lerpf(leg_up[0].x, 0.30, 0.6)
+				leg_up[1].x = lerpf(leg_up[1].x, 0.30, 0.6)
+				leg_up[2].x = lerpf(leg_up[2].x, 0.55, 0.6)
+				leg_up[3].x = lerpf(leg_up[3].x, 0.55, 0.6)
+				leg_lo[0] = maxf(leg_lo[0], 0.85)
+				leg_lo[1] = maxf(leg_lo[1], 0.85)
+				leg_lo[2] = maxf(leg_lo[2], 0.55)
+				leg_lo[3] = maxf(leg_lo[3], 0.55)
+		elif meshy_held_fresh:
+			# Cradle: split the sculpt's shoulder fold between
+			# the upper and lower front legs so the paws tuck
+			# under the chest instead of the whole leg planking
+			# back; rear legs keep the assigned dangle.
+			for i in range(4):
+				leg_up[i] = meshy_held_snap[i]
+			leg_up[0].x *= 0.78
+			leg_up[1].x *= 0.78
+			leg_lo[0] = 0.62 * held_a
+			leg_lo[1] = 0.62 * held_a
+			leg_lo[2] = 0.30 * held_a
+			leg_lo[3] = 0.30 * held_a
+		elif meshy_leg_snap_fresh:
+			for i in range(4):
+				leg_up[i] = leg_pivots[i].rotation - meshy_leg_snap[i]
+		else:
+			for i in range(4):
+				leg_up[i] = leg_pivots[i].rotation
+		meshy_leg_snap_fresh = false
+		var up_roles := ["fl", "fr", "bl", "br"]
+		var lo_roles := ["fl_lo", "fr_lo", "bl_lo", "br_lo"]
+		var hk_roles := ["fl_hk", "fr_hk", "bl_hk", "br_hk"]
+		var ft_roles := ["fl_ft", "fr_ft", "bl_ft", "br_ft"]
+		for i in range(4):
+			_set_drv(drv, up_roles[i], leg_up[i])
+			if leg_lo[i] != 0.0:
+				# Horselink + foot counter-rotate part of the
+				# fold so the paw stays flatter to the ground
+				# instead of pointing wherever the fold leaves it.
+				_set_drv(drv, lo_roles[i], Vector3(leg_lo[i], 0, 0))
+				_set_drv(drv, hk_roles[i], Vector3(-leg_lo[i] * 0.45, 0, 0))
+				_set_drv(drv, ft_roles[i], Vector3(-leg_lo[i] * 0.25, 0, 0))
+	# Body roll / sit pitch go to the mid-spine; the head and leg
+	# drivers then compose on top of whatever the spine did,
+	# exactly like the sculpt (body pitch + leg compensation are
+	# separate additive terms there too).
+	var spine_e: Vector3 = body_node.rotation
+	spine_e.x += gallop_pitch
+	_set_drv(drv, "spine", spine_e)
+	var head_e: Vector3 = head_node.rotation
+	head_e.x -= gallop_pitch * 0.6 # gallop: keep the head steadier than the spine
+	_set_drv(drv, "head", head_e)
+	# Tail: the sculpt's pivots carry a baked base curl in their
+	# absolute rotations (x -0.36 walk / -0.27 idle) which the GLB's
+	# rest pose already owns — mirror only the DELTA from neutral,
+	# so the model's own up-curl stays and the sway/lift/wag reads.
+	var tail_neutral := Vector3(-0.315, 0, 0)
+	for i in range(mini(meshy_tail.size(), tail_pivots.size())):
+		drv[int(meshy_tail[i])] = (tail_pivots[i] as Node3D).rotation - tail_neutral
+	if meshy_tail.size() > 3 and tail_pivots.size() == 3:
+		var extra: Vector3 = ((tail_pivots[2] as Node3D).rotation - tail_neutral) * 0.6
+		for j in range(3, meshy_tail.size()):
+			drv[int(meshy_tail[j])] = extra
+	# Ears: mirror the delta from the idle base lean (+-0.12 in z).
+	if ear_l:
+		_set_drv(drv, "ear_l", ear_l.rotation - Vector3(0, 0, 0.12))
+	if ear_r:
+		_set_drv(drv, "ear_r", ear_r.rotation - Vector3(0, 0, -0.12))
+	var head_bi: int = int(meshy_bone.get("head", -1))
+	var head_off: Vector3 = head_node.position - head_base_pos
+	var count: int = meshy_skel.get_bone_count()
+	var desired: Array = []
+	desired.resize(count)
+	for bi in range(count):
+		var bp: int = meshy_skel.get_bone_parent(bi)
+		var g: Transform3D
+		if bp >= 0 and desired[bp] != null:
+			g = (desired[bp] as Transform3D) * (meshy_local_rest[bi] as Transform3D)
+		else:
+			g = meshy_local_rest[bi] as Transform3D
+		if drv.has(bi):
+			var e: Vector3 = drv[bi]
+			g = Transform3D(Basis.from_euler(e) * g.basis, g.origin)
+		if bi == head_bi:
+			# treat/groom/sit also DIP the head off its base spot
+			g.origin += head_off
+		desired[bi] = g
+		meshy_skel.set_bone_global_pose_override(bi, g, 1.0, true)
+
+func _set_drv(drv: Dictionary, role: String, euler: Vector3) -> void:
+	var bi: int = int(meshy_bone.get(role, -1))
+	if bi >= 0:
+		drv[bi] = euler

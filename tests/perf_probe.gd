@@ -85,6 +85,13 @@ func _ready() -> void:
 	var ps: PackedScene = load("res://scenes/Main.tscn")
 	main = ps.instantiate()
 	add_child(main)
+	# v1.0.9 harness plumbing: Main now builds its world across frames
+	# behind the splash — wait for build_complete before driving it,
+	# exactly as the title flow does. No assertion is changed.
+	var _bw109: int = 0
+	while not bool(main.get("build_complete")) and _bw109 < 21600:
+		await get_tree().process_frame
+		_bw109 += 1
 	await get_tree().create_timer(1.5).timeout
 	main.call("dismiss_splash")
 	await get_tree().create_timer(0.3).timeout

@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bmeshy1ingame"]
+
+[ext_resource type="Script" path="res://tests/shot_runner_meshy_ingame.gd" id="1"]
+
+[node name="ShotRunnerMeshyIngame" type="Node"]
+script = ExtResource("1")

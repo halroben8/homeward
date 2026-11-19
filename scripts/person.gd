@@ -31,7 +31,31 @@ var los_timer: float = 0.0
 var has_los_now: bool = true
 var active: bool = true
 var wide_bounds: bool = false # POUND VAN: the patrol worker roams the DOUBLED map (x to 369); town NPCs keep the historic ±117 position clamp below
+var wander_x_max: float = 366.0 # BISECT (v1.0.12): east edge for wander targets — main sets 112.0 in LEGACY_TOWN_ONLY mode so nobody wanders into the ungenerated east district
 var net_root: Node3D = null # POUND VAN: the catch net (poundworker only), parented to the right arm
+# --- v1.0.15 MESHY NPC SWAP (see the block at the end of this file) --
+var meshy_root: Node3D = null # the imported model, child of `model`
+var meshy_skel: Skeleton3D = null
+var meshy_ap: AnimationPlayer = null
+var meshy_rest: Dictionary = {} # bone index -> global rest Transform3D
+var meshy_local_rest: Dictionary = {} # bone index -> parent-relative rest
+var meshy_bone: Dictionary = {} # role -> bone index
+var meshy_order: Array = [] # bone indices, parents before children
+var meshy_arm_chain: Array = [] # bone index -> bool (arm subtree, fades on w_arms)
+var meshy_w_body: float = 0.0 # ghost-mirror weight: body chain
+var meshy_w_arms: float = 0.0 # ghost-mirror weight: arm chains
+var meshy_overrides_on: bool = false
+var meshy_clip: String = ""
+var phone_mis: Array = [] # the woman's phone + screen meshes (kept visible through the swap — the mirrored pose holds them)
+static var _meshy_loops_set: Dictionary = {} # Animation resources already set looping
+# The little dog (dogwalker): his GLB has a skeleton but no clips,
+# so his trot + tail wag get a small mirror of their own.
+var dog_meshy_root: Node3D = null
+var dog_skel: Skeleton3D = null
+var dog_rest: Dictionary = {}
+var dog_local_rest: Dictionary = {}
+var dog_order: Array = []
+var dog_bone: Dictionary = {} # fl/fr/rl/rr/tail -> bone index
 # --- v0.6 interaction roles + grabber RUN tell + obstacle slowdown -----
 # role (assigned by main at spawn): "grabber" | "friendly" | "ignore".
 # Of the NPCs who notice the cat at all, ~1 in 4 is a grabber (2-3 of 14
@@ -70,8 +94,13 @@ var pending_award: String = "" # "pet" | "treat"
 #   AIMS at the cat and strokes along his back, hand in contact,
 #   hearts rising, cat leaning in and purring) or treat (hand offers
 #   a visible treat, cat dips his head and eats it) -> rise.
-# Points fire DURING the action, only after contact is confirmed —
-# never on the trigger, never as a text-only event.
+# Points fire DURING the action, once the action has genuinely
+# run (the pet award lands mid-stroke, the treat award as he
+# finishes eating) — never on the trigger, never as a text-only
+# event. (v1.0.13: the pet award no longer demands a sub-0.34 m
+# hand measurement — the kneeling hand's real standoff is
+# 0.33-0.41 m, so that gate silently ate ~3 of 4 pets. See the
+# "pet" state in _run_interaction.)
 var outfit_idx: int = 0 # 0 = the sheet design; >0 = outfit/hair variants for the extra neighbours
 var mscale: float = 1.0 # body_h / 1.7, stored at build time
 var interact_state: String = "" # "" | approach | bend | pet | treat | rise
@@ -79,6 +108,11 @@ var interact_t: float = 0.0 # seconds in the current sequence phase
 var interact_kind: String = "" # "pet" | "treat"
 var award_pending: bool = false # points will land mid-action (cooldown-gated)
 var award_fired: bool = false
+# v1.0.13 TREAT GUARANTEE: friendly encounters since the last
+# treat, counted across ALL people (static) but only over
+# award-eligible starts (cooldown ready — the encounters whose
+# points can actually land). See _roll_interact_kind.
+static var s_eligible_since_treat: int = 0
 var pet_contact_frames: int = 0 # physics frames the hand was ON the cat this pet
 var last_hand_dist: float = 999.0 # hand-to-cat distance, latest frame (tests + debug)
 var hand_r_mi: MeshInstance3D = null # the right hand mesh (end of the petting arm)
@@ -132,6 +166,19 @@ var dog_legs: Array = []
 var dog_tail: Node3D
 var name_label: Label3D
 var notice_label: Label3D
+# --- v1.0.13 BAR CLEANUP: the notice / GRAB meter is real geometry
+# now (bar_root: frame + track + fill quads), NOT block glyphs in the
+# label text. The old text bar's unfilled cells were "░" shade
+# glyphs, which render as a field of little dots trailing the fill —
+# Michael, v1.0.12 play: "the progress bar for chasing looks like
+# crap... underneath the progress bar it's weird like dots... like
+# it's unfinished." The label carries only the words now; the meter
+# under them is one clean solid fill. Same size, same spot over the
+# head, same yellow, same thresholds and timing.
+const BAR_W := 2.05 # meter width (m) — matches the old 10-block span
+const BAR_H := 0.24
+var bar_root: Node3D
+var bar_fill: MeshInstance3D
 var walk_phase: float = 0.0
 var body_h: float = 1.7
 # --- PERF (post-v1.0.1): distance-throttle state — see the gate at
@@ -632,8 +679,8 @@ func _build_model() -> void:
 	if npc_type == "woman":
 		_sphere(model, Vector3(0, 1.44 * s, 0.2 * s), Vector3(0.045, 0.045, 0.03), Color(0.9, 0.72, 0.25)) # necklace pendant
 		# Phone in front (sheet: she's looking at her phone)
-		_box(model, Vector3(0, 1.18 * s, 0.3 * s), Vector3(0.16, 0.26, 0.04), Color(0.12, 0.13, 0.16))
-		_box(model, Vector3(0, 1.18 * s, 0.325 * s), Vector3(0.13, 0.22, 0.015), Color(0.55, 0.75, 0.9)) # phone screen glow
+		phone_mis.append(_box(model, Vector3(0, 1.18 * s, 0.3 * s), Vector3(0.16, 0.26, 0.04), Color(0.12, 0.13, 0.16)))
+		phone_mis.append(_box(model, Vector3(0, 1.18 * s, 0.325 * s), Vector3(0.13, 0.22, 0.015), Color(0.55, 0.75, 0.9))) # phone screen glow
 		# Cat-face crossbody bag (sheet design): strap + ears + face
 		var strap2 := _box(model, Vector3(-0.08 * s, 1.3 * s, 0.2 * s), Vector3(0.07, 0.6 * s, 0.035), Color(0.6, 0.45, 0.3))
 		strap2.rotation_degrees = Vector3(0, 0, -35)
@@ -819,6 +866,35 @@ func _build_model() -> void:
 	notice_label.modulate = Color(1.0, 0.85, 0.3)
 	notice_label.outline_size = 8
 	add_child(notice_label)
+	# The meter itself (see BAR CLEANUP note at the declarations):
+	# three flat quads on one root — a near-black frame, a dark
+	# track, and the yellow fill whose width _set_bar scales. The
+	# root yaw-faces the camera in _set_bar, so the quads need no
+	# billboard shader and the fill scale behaves plainly.
+	bar_root = Node3D.new()
+	bar_root.position = Vector3(0, body_h + 0.60, 0)
+	bar_root.visible = false
+	add_child(bar_root)
+	var bar_frame := MeshInstance3D.new()
+	var fq := QuadMesh.new()
+	fq.size = Vector2(BAR_W + 0.08, BAR_H + 0.08)
+	bar_frame.mesh = fq
+	bar_frame.material_override = _bar_material(Color(0.03, 0.03, 0.05, 0.92))
+	bar_root.add_child(bar_frame)
+	var bar_track := MeshInstance3D.new()
+	var tq := QuadMesh.new()
+	tq.size = Vector2(BAR_W, BAR_H)
+	bar_track.mesh = tq
+	bar_track.position.z = 0.006
+	bar_track.material_override = _bar_material(Color(0.23, 0.20, 0.16, 0.95))
+	bar_root.add_child(bar_track)
+	bar_fill = MeshInstance3D.new()
+	var iq := QuadMesh.new()
+	iq.size = Vector2(1.0, BAR_H - 0.06)
+	bar_fill.mesh = iq
+	bar_fill.position.z = 0.012
+	bar_fill.material_override = _bar_material(Color(1.0, 0.85, 0.3))
+	bar_root.add_child(bar_fill)
 	# Speech bubble for the joyful "Oh, a cat!" moment (v0.6)
 	bubble_label = Label3D.new()
 	bubble_label.text = ""
@@ -831,37 +907,203 @@ func _build_model() -> void:
 	bubble_label.outline_modulate = Color(0.35, 0.2, 0.1)
 	bubble_label.visible = false
 	add_child(bubble_label)
+	_attach_meshy() # v1.0.15 MESHY NPC SWAP: hang the imported model on this ghost (no-op for types without one)
 
 
-# POUND VAN: the animal-control catch net — a pole continuing the
-# right arm's line past the hand, a hoop, and a soft translucent
-# mesh bag. Everything hangs off a root on arm_r, so the net
-# swings as he walks, spreads with the RUN tell and folds with
-# the capture cradle all by itself. Main hides it while he is
-# carrying the cat / hosting the escape room (set_net_visible).
+# POUND VAN: the animal-control catch net — modelled on
+# Michael's reference photo of a REAL landing net (2026-11-18):
+# a LONG silver pole gripped in the right hand, a rounded-
+# RECTANGLE frame (wider than tall) mounted at the pole's end
+# on a short yoke and TILTED ~26 degrees to the pole, and a
+# DEEP bag of dark hexagonal/diamond mesh hanging BEHIND the
+# frame — side walls of woven strands converging to a gathered
+# bottom, so the bag has visible depth from any three-quarter
+# view. Two earlier builds failed him: a translucent sphere
+# ("a stick and a circle and a circle of white") and a round
+# hoop with a spiral web that read face-on as a satellite
+# dish. This one is rectangular, angled, deep and dark, like
+# the photo. He holds it TWO-HANDED on the chase (see
+# update_net_grip). Everything hangs off a root on arm_r, so
+# the net swings as he walks and aims with the arm. Main hides
+# it while he carries the cat / hosts the escape room
+# (set_net_visible).
 func _build_net(s: float) -> void:
 	net_root = Node3D.new()
 	arm_r.add_child(net_root)
-	var pole := _cyl(net_root, Vector3(0, -1.06 * s, 0.01), 0.021 * s, 0.021 * s, 0.85 * s, Color(0.55, 0.42, 0.25))
-	pole.material_override = _mat(Color(0.55, 0.42, 0.25), 0.7)
-	var hoop := MeshInstance3D.new()
-	var tm := TorusMesh.new()
-	tm.inner_radius = 0.295 * s
-	tm.outer_radius = 0.33 * s
-	tm.rings = 20
-	tm.ring_segments = 8
-	hoop.mesh = tm
-	hoop.position = Vector3(0, -1.52 * s, 0.01)
-	hoop.rotation_degrees = Vector3(90, 0, 0) # hoop plane faces forward, like a carried net
-	hoop.material_override = _mat(Color(0.6, 0.62, 0.65), 0.4)
-	net_root.add_child(hoop)
-	var bag := _sphere(net_root, Vector3(0, -1.60 * s, -0.10 * s), Vector3(0.56 * s, 0.66 * s, 0.56 * s), Color(0.85, 0.88, 0.8))
-	var bm := StandardMaterial3D.new()
-	bm.albedo_color = Color(0.85, 0.88, 0.8, 0.45)
-	bm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	bm.roughness = 0.9
-	bm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	bag.material_override = bm
+	# Rubber grip where the right hand holds, then the long
+	# aluminium shaft with its two dark telescoping bands.
+	var grip := _cyl(net_root, Vector3(0, -0.74 * s, 0.01), 0.030 * s, 0.030 * s, 0.30 * s, Color(0.16, 0.15, 0.14))
+	grip.material_override = _mat(Color(0.16, 0.15, 0.14), 0.95)
+	var pole := _cyl(net_root, Vector3(0, -1.32 * s, 0.01), 0.019 * s, 0.019 * s, 0.92 * s, Color(0.66, 0.68, 0.72))
+	pole.material_override = _mat(Color(0.66, 0.68, 0.72), 0.35)
+	for band_y in [-1.04, -1.52]:
+		var band := _cyl(net_root, Vector3(0, band_y * s, 0.01), 0.0235 * s, 0.0235 * s, 0.055 * s, Color(0.13, 0.13, 0.14))
+		band.material_override = _mat(Color(0.13, 0.13, 0.14), 0.6)
+	# Ferrule collar where the shaft meets the head yoke.
+	var ferrule := _cyl(net_root, Vector3(0, -1.80 * s, 0.01), 0.030 * s, 0.030 * s, 0.09 * s, Color(0.25, 0.26, 0.29))
+	ferrule.material_override = _mat(Color(0.25, 0.26, 0.29), 0.4)
+	# The head: frame + bag on a tilted root at the pole's end.
+	var head := Node3D.new()
+	head.position = Vector3(0, -1.86 * s, 0.01)
+	head.rotation.x = 0.45 # ~26 degrees: the frame angles off the pole, top edge leaning out like the photo
+	net_root.add_child(head)
+	# Yoke strut: from the pole end up to the frame's bottom edge.
+	var yoke := _cyl(head, Vector3(0, 0, -0.075 * s), 0.020 * s, 0.020 * s, 0.21 * s, Color(0.20, 0.20, 0.22))
+	yoke.rotation_degrees.x = 90.0
+	yoke.material_override = _mat(Color(0.20, 0.20, 0.22), 0.45)
+	# The frame itself: a rounded-rectangle tube, dark metal.
+	var ring := _rounded_rect_points(0.32 * s, 0.215 * s, 0.095 * s, 9)
+	var frame := MeshInstance3D.new()
+	frame.mesh = _tube_mesh(ring, 0.0165 * s, 6)
+	frame.material_override = _mat(Color(0.17, 0.17, 0.19), 0.45)
+	head.add_child(frame)
+	# The deep woven bag behind the frame.
+	var bag := MeshInstance3D.new()
+	bag.mesh = _net_bag_mesh(s, ring)
+	var nm := StandardMaterial3D.new()
+	nm.albedo_color = Color(0.13, 0.13, 0.145) # dark charcoal mesh, like the photo — never a pale disc
+	nm.roughness = 0.95
+	nm.cull_mode = BaseMaterial3D.CULL_DISABLED
+	bag.material_override = nm
+	head.add_child(bag)
+	# The gathered knot at the bag's bottom.
+	_sphere(head, Vector3(0, 0.80 * s, -0.075 * s), Vector3(0.035 * s, 0.05 * s, 0.035 * s), Color(0.13, 0.13, 0.145))
+
+# Points around a rounded rectangle in the XZ plane (x =
+# half-width a, z = half-height b, corner radius r), CCW,
+# per_corner points per corner arc. Consecutive points join
+# into the straight edges on their own.
+func _rounded_rect_points(a: float, b: float, r: float, per_corner: int) -> Array:
+	var pts: Array = []
+	var corners: Array = [
+		[Vector2(a - r, b - r), 0.0],
+		[Vector2(-(a - r), b - r), 90.0],
+		[Vector2(-(a - r), -(b - r)), 180.0],
+		[Vector2(a - r, -(b - r)), 270.0],
+	]
+	for ci in range(4):
+		var c: Vector2 = corners[ci][0]
+		var a0: float = float(corners[ci][1])
+		for k in range(per_corner):
+			var ang := deg_to_rad(a0 + 90.0 * float(k) / float(per_corner))
+			pts.append(Vector3(c.x + r * cos(ang), 0, c.y + r * sin(ang)))
+	return pts
+
+# A tube of radius tr swept along a closed planar ring of
+# points (ring plane = XZ, plane normal = +Y). One ArrayMesh.
+func _tube_mesh(ring: Array, tr: float, radial: int) -> ArrayMesh:
+	var n := ring.size()
+	var verts: Array = []
+	var normals: Array = []
+	for i in range(n):
+		var p: Vector3 = ring[i]
+		var pn: Vector3 = ring[(i + 1) % n]
+		var pp: Vector3 = ring[(i - 1 + n) % n]
+		var tang := (pn - pp).normalized()
+		var inplane := Vector3(0, 1, 0).cross(tang).normalized()
+		for j in range(radial):
+			var a0 := TAU * float(j) / float(radial)
+			var a1 := TAU * float(j + 1) / float(radial)
+			var d0 := inplane * cos(a0) + Vector3(0, 1, 0) * sin(a0)
+			var d1 := inplane * cos(a1) + Vector3(0, 1, 0) * sin(a1)
+			var q0: Vector3 = ring[i] + d0 * tr
+			var q1: Vector3 = ring[i] + d1 * tr
+			var r0: Vector3 = ring[(i + 1) % n] + d0 * tr
+			var r1: Vector3 = ring[(i + 1) % n] + d1 * tr
+			# NOTE: next-point ring verts reuse THIS point's frame —
+			# close enough for a 16 mm tube and keeps it one strip.
+			for v in [q0, r0, r1, q0, r1, q1]:
+				verts.append(v)
+			var nn := (d0 + d1).normalized()
+			for k in range(6):
+				normals.append(nn)
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array(verts)
+	arrays[Mesh.ARRAY_NORMAL] = PackedVector3Array(normals)
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+# One quad of net twine: a thin ribbon from a to b, width along wdir.
+func _net_quad(verts: Array, normals: Array, a: Vector3, b: Vector3, wdir: Vector3, hw: float) -> void:
+	var a1 := a - wdir * hw
+	var a2 := a + wdir * hw
+	var b1 := b - wdir * hw
+	var b2 := b + wdir * hw
+	var n := (b - a).cross(wdir)
+	if n.length() < 0.000001:
+		return
+	n = n.normalized()
+	for v in [a1, b1, b2, a1, b2, a2]:
+		verts.append(v)
+		normals.append(n)
+
+# The DEEP net bag as a single ArrayMesh: the rim ring lies ON
+# the frame (the same rounded-rect points) and the walls run
+# BACK toward the handler (+Y in head space), shrinking level
+# by level to a gathered bottom, with a growing downward sag
+# so it hangs like a real net bag instead of a rigid cone.
+# The weave is a DIAMOND lattice — every level connects to the
+# next with both diagonals plus the ring strand — coarse dark
+# twine that reads as hexagonal landing-net mesh at cover
+# distance (~1700 tris, one draw call, no per-strand nodes).
+func _net_bag_mesh(s: float, ring: Array) -> ArrayMesh:
+	var depths: Array = [0.0, 0.15, 0.30, 0.44, 0.56, 0.66, 0.74, 0.79]
+	var facs: Array = [1.0, 0.985, 0.94, 0.85, 0.69, 0.47, 0.20, 0.03]
+	var sag: Array = [0.0, 0.010, 0.024, 0.038, 0.050, 0.060, 0.066, 0.068]
+	var n := ring.size()
+	var levels := depths.size()
+	var pts: Array = []
+	for l in range(levels):
+		var ring_pts: Array = []
+		for i in range(n):
+			var rp: Vector3 = ring[i]
+			ring_pts.append(Vector3(rp.x * float(facs[l]), float(depths[l]) * s, rp.z * float(facs[l]) - float(sag[l]) * s))
+		pts.append(ring_pts)
+	var verts: Array = []
+	var normals: Array = []
+	var hw := 0.0105 * s
+	for l in range(levels):
+		for i in range(n):
+			var i2 := (i + 1) % n
+			# Ring strand around this level (rim level is the frame itself).
+			if l > 0:
+				_net_quad(verts, normals, pts[l][i], pts[l][i2], Vector3(0, 1, 0), hw)
+			if l < levels - 1:
+				var tang2: Vector3 = (pts[l][i2] - pts[l][(i - 1 + n) % n]).normalized()
+				# Meridian + both diagonals = the diamond weave.
+				_net_quad(verts, normals, pts[l][i], pts[l + 1][i], tang2, hw)
+				_net_quad(verts, normals, pts[l][i], pts[l + 1][i2], tang2, hw)
+				_net_quad(verts, normals, pts[l][i2], pts[l + 1][i], tang2, hw)
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array(verts)
+	arrays[Mesh.ARRAY_NORMAL] = PackedVector3Array(normals)
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+# POUND VAN: TWO HANDS on the pole. The right hand grips at
+# the butt (the net root rides arm_r); this slides the LEFT
+# hand up the shaft to the pole point that sits one arm's
+# reach from the left shoulder — a real two-handed landing-net
+# carry. Called every frame while he chases with the net out,
+# and by the splash harness for the cover pose.
+func update_net_grip() -> void:
+	if net_root == null or arm_l == null or arm_r == null or model == null:
+		return
+	var s := mscale
+	var best := Vector3.ZERO
+	var best_err := 1e9
+	for t in [0.98, 1.08, 1.18, 1.28, 1.38, 1.50, 1.62]:
+		var p: Vector3 = arm_r.transform * Vector3(0, -t * s, 0.01)
+		var err := absf(p.distance_to(arm_l.position) - 0.70 * s)
+		if err < best_err:
+			best_err = err
+			best = p
+	if best_err < 0.14 * s:
+		_aim_arm(arm_l, model.to_global(best))
 
 func set_net_visible(v: bool) -> void:
 	if net_root:
@@ -905,7 +1147,7 @@ func _build_dog() -> void:
 	dog_tail.rotation_degrees = Vector3(-35, 0, 0)
 
 func _pick_wander_target() -> void:
-	wander_target = Vector3(randf_range(-112.0, 366.0), 0, randf_range(-84.0, 84.0)) # MAP DOUBLING: wander range covers the east district too
+	wander_target = Vector3(randf_range(-112.0, wander_x_max), 0, randf_range(-84.0, 84.0)) # MAP DOUBLING: wander range covers the east district too (wander_x_max = 366; BISECT: 112 in legacy mode)
 	wander_wait = randf_range(0.0, 1.5)
 
 func _physics_process(delta: float) -> void:
@@ -1174,28 +1416,41 @@ func _animate(delta: float, speed2d: float) -> void:
 		# HIP DROP driven by the two-segment legs: left foot planted
 		# forward (thigh near-horizontal, shin vertical), right
 		# knee DOWN on the ground (thigh angled down-back, shin
-		# folded flat behind it). The torso stays near-upright —
-		# only a slight warm lean (0.10 rad) — and the old Y-squash
-		# is gone entirely. bend_a envelopes in/out with the
-		# interaction sequence, so it never snaps.
+		# folded flat behind it). The old Y-squash is gone entirely.
+		# bend_a envelopes in/out with the interaction sequence, so
+		# it never snaps.
+		# v1.0.13 BEND FIX (Michael, v1.0.12 play: still "folding
+		# in half a little bit"): two root causes. (1) The legs were
+		# posed with a per-frame lerp that FOUGHT the idle branch's
+		# lerp back to zero — the pair settled at 61% of target, so
+		# the kneel never formed: full hip drop on half-bent legs
+		# reads as a stooped lunge. The legs are now SET from
+		# bend_a (this block runs after the walk/idle branch, so
+		# the assignment wins; bend_a itself is smooth). (2) The
+		# back stays UP: torso pitch 0.10 -> 0.03, head 0.28 ->
+		# 0.24 — and the shoulder is held at its old world spot by
+		# settling the model a touch deeper (0.407) and toward the
+		# cat (0.104), so the petting hand lands exactly where it
+		# did. The reach did not change; the back did.
 		var kneeling: bool = interact_state == "bend" or interact_state == "pet" or interact_state == "treat"
 		bend_a = move_toward(bend_a, 1.0 if kneeling else 0.0, delta * 3.4)
 		model.scale.y = lerpf(model.scale.y, 1.0, min(1.0, 10.0 * delta))
-		model.rotation.x = lerpf(model.rotation.x, 0.10 * bend_a, min(1.0, 10.0 * delta))
+		model.rotation.x = lerpf(model.rotation.x, 0.03 * bend_a, min(1.0, 10.0 * delta))
 		# position.y is re-based by the walk/idle branch every frame,
 		# so the kneel drop is applied additively from bend_a.
-		model.position.y += -0.40 * mscale * bend_a
+		model.position.y += -0.407 * mscale * bend_a
+		model.position.z = 0.104 * mscale * bend_a
 		if bend_a > 0.03:
 			if leg_l:
-				leg_l.rotation.x = lerpf(leg_l.rotation.x, -1.45 * bend_a, min(1.0, 14.0 * delta))
+				leg_l.rotation.x = -1.45 * bend_a
 			if shin_l:
-				shin_l.rotation.x = lerpf(shin_l.rotation.x, 1.40 * bend_a, min(1.0, 14.0 * delta))
+				shin_l.rotation.x = 1.40 * bend_a
 			if leg_r:
-				leg_r.rotation.x = lerpf(leg_r.rotation.x, 0.53 * bend_a, min(1.0, 14.0 * delta))
+				leg_r.rotation.x = 0.53 * bend_a
 			if shin_r:
-				shin_r.rotation.x = lerpf(shin_r.rotation.x, 0.99 * bend_a, min(1.0, 14.0 * delta))
+				shin_r.rotation.x = 0.99 * bend_a
 			if head_node:
-				head_node.rotation.x = lerpf(head_node.rotation.x, 0.28 * bend_a, min(1.0, 8.0 * delta))
+				head_node.rotation.x = lerpf(head_node.rotation.x, 0.24 * bend_a, min(1.0, 8.0 * delta))
 			if interact_state == "bend" or interact_state == "rise":
 				# both arms reaching down toward the cat while folding
 				if arm_l:
@@ -1218,6 +1473,10 @@ func _animate(delta: float, speed2d: float) -> void:
 		if arm_r:
 			arm_r.rotation.x = lerp(arm_r.rotation.x, -1.05, min(1.0, 8.0 * delta))
 			arm_r.rotation.z = lerp(arm_r.rotation.z, -0.5, min(1.0, 8.0 * delta))
+	# POUND VAN: chasing with the net out, the left hand leaves
+	# the reach pose and grips the pole — two hands on the net.
+	if net_root != null and net_root.visible and (mode == "chase" or mode == "pursue"):
+		update_net_grip()
 	# v0.9 PETTING ARM AIM: while petting / offering a treat, the
 	# right arm is aimed at the cat in model space every frame —
 	# petting strokes travel along his back, the treat is held
@@ -1239,25 +1498,35 @@ func _animate(delta: float, speed2d: float) -> void:
 	# else — during the cutscene THIS is what the arms are doing.
 	if scoop_reach_a > 0.001 or scoop_cradle_a > 0.001 or scoop_kneel_a > 0.001:
 		if model:
-			# The petting kneel, cutscene-driven: torso tips, body
-			# drops, knees fold — a crouch, not a whole-body tip-over.
-			model.rotation.x = lerpf(model.rotation.x, 0.34 * scoop_kneel_a, min(1.0, 12.0 * delta))
-			model.position.y += -0.3 * mscale * scoop_kneel_a
+			# v1.0.13 BEND FIX (Michael, v1.0.12 play: the pickup
+			# still "folds in half a little bit"): the old scoop
+			# pitched the whole model toward 0.34 rad around her
+			# feet and swung BOTH legs back with locked shins
+			# (+1.9/+1.2) — a bow with her feet kicked up behind
+			# her (and the same lerp fight as the petting kneel
+			# froze even that at ~57-61%). She now takes the SAME
+			# one-knee kneel as the petting pose, set from the
+			# envelope so it fully forms: back up (pitch 0.05),
+			# hips at full kneel depth (0.407), front leg planted,
+			# back knee down with the shin folded flat, plus a
+			# small forward settle (0.15) so her shoulders stay
+			# over the cat while her hands come down at his sides.
+			model.rotation.x = 0.05 * scoop_kneel_a
+			model.position.y += -0.407 * mscale * scoop_kneel_a
+			model.position.z = 0.15 * mscale * scoop_kneel_a
 			if scoop_kneel_a > 0.03:
 				if leg_l:
-					leg_l.rotation.x = lerpf(leg_l.rotation.x, 1.9 * scoop_kneel_a, min(1.0, 14.0 * delta))
-				if leg_r:
-					leg_r.rotation.x = lerpf(leg_r.rotation.x, 1.2 * scoop_kneel_a, min(1.0, 14.0 * delta))
-				# v1.4: the scoop keeps its verified single-segment
-				# silhouette — shins held straight while it plays.
+					leg_l.rotation.x = -1.45 * scoop_kneel_a
 				if shin_l:
-					shin_l.rotation.x = lerpf(shin_l.rotation.x, 0.0, min(1.0, 14.0 * delta))
+					shin_l.rotation.x = 1.40 * scoop_kneel_a
+				if leg_r:
+					leg_r.rotation.x = 0.53 * scoop_kneel_a
 				if shin_r:
-					shin_r.rotation.x = lerpf(shin_r.rotation.x, 0.0, min(1.0, 14.0 * delta))
+					shin_r.rotation.x = 0.99 * scoop_kneel_a
 			if head_node:
 				# Down at the cat while reaching; a soft look-down at
 				# him in her arms once he's cradled.
-				head_node.rotation.x = lerpf(head_node.rotation.x, 0.3 * scoop_kneel_a + 0.16 * scoop_cradle_a, min(1.0, 8.0 * delta))
+				head_node.rotation.x = lerpf(head_node.rotation.x, 0.24 * scoop_kneel_a + 0.16 * scoop_cradle_a, min(1.0, 8.0 * delta))
 		if scoop_reach_a > 0.01 and scoop_cradle_a < 0.6 and player_ref != null:
 			# Both hands come down on either side of the cat's body
 			# and TRACK him as he rises; with lift_k they slide from
@@ -1293,6 +1562,9 @@ func _animate(delta: float, speed2d: float) -> void:
 			dog_model.position.y = abs(sin(walk_phase * 1.7)) * 0.03
 		if dog_tail:
 			dog_tail.rotation.y = sin(t * 6.0) * 0.4
+	# v1.0.15 MESHY NPC SWAP: clips + ghost mirror, applied last so
+	# the visible model wears the pose this function just struck.
+	_update_meshy(delta, speed2d)
 
 # --- v0.9 interaction sequence ---------------------------------------
 func _aim_arm(arm: Node3D, world_target: Vector3) -> void:
@@ -1398,7 +1670,24 @@ func _run_interaction(delta: float, dist: float, to_player: Vector3) -> void:
 			if heart_spawn_t <= 0.0 and interact_t > 0.25:
 				heart_spawn_t = 0.75
 				_spawn_heart()
-			if award_pending and not award_fired and interact_t >= 1.15 and pet_contact_frames >= 8:
+			# v1.0.13 PET AWARD FIX (Michael, v1.0.7 + v1.0.12 play:
+			# "I'm getting pet but the number of pets isn't going
+			# up" — then one DID land: intermittent). The old gate
+			# demanded >= 8 frames with the hand under 0.34 m from
+			# the back point. Measured on the real player path
+			# (tests/PetTreatProbe), the kneeling hand's actual
+			# standoff is 0.33-0.41 m depending on the person's
+			# size and the approach angle — kids sit at 0.35-0.40
+			# and could NEVER score — so only ~1 in 4 completed
+			# pettings ever paid out. The state machine is the
+			# real guarantee: to be stroking at t >= 1.15 she has
+			# trotted to <= 0.88 m, knelt for 0.55 s and the cat
+			# has stayed within 3.2 m the whole time (leaving
+			# aborts to "rise" above). So the +1 now lands on
+			# petting completion, mid-stroke as before.
+			# pet_contact_frames / last_hand_dist stay as pure
+			# telemetry (the suite still reads them).
+			if award_pending and not award_fired and interact_t >= 1.15:
 				award_fired = true
 				_fire_award("pet")
 			if interact_t >= 2.6:
@@ -1461,27 +1750,56 @@ func end_chase_via_spot() -> void:
 		notice_cooldown = 6.0
 		show_bubble("Where did he go…?", 2.0)
 
+func _bar_material(c: Color) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.albedo_color = c
+	if c.a < 1.0:
+		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	return m
+
+func _set_bar(show: bool, frac: float, lower: bool = false) -> void:
+	# Drives the geometry meter built with the labels. `lower` drops
+	# the bar one extra line when the label is carrying two lines
+	# (🏃 CHASE! over ✋ GRAB) so the bar sits under the words, where
+	# the old glyph bar's second line used to be.
+	if bar_root == null:
+		return
+	bar_root.visible = show
+	if not show:
+		return
+	var f: float = clampf(frac, 0.0, 1.0)
+	bar_fill.scale = Vector3(maxf(BAR_W * f, 0.001), 1.0, 1.0)
+	bar_fill.position.x = -BAR_W * 0.5 + BAR_W * f * 0.5
+	bar_root.position.y = body_h + (0.16 if lower else 0.60)
+	# Yaw-face the camera (the bar stays upright — no tilt).
+	if is_inside_tree():
+		var cam3d := get_viewport().get_camera_3d()
+		if cam3d:
+			var cp := cam3d.global_position
+			var bp := bar_root.global_position
+			bar_root.global_rotation = Vector3(0, atan2(cp.x - bp.x, cp.z - bp.z), 0)
+
 func _update_labels() -> void:
 	if notice_label:
 		if mode == "tell":
 			notice_label.text = "❗ RUN!"
+			_set_bar(false, 0.0)
 		elif mode == "chase" or mode == "pursue":
 			var t: String = "🏃 CHASE!"
 			if grab_progress > 0.03:
-				var blocks: int = int(round(grab_progress / grab_needed * 10.0))
-				var bar: String = ""
-				for i in range(10):
-					bar += "█" if i < blocks else "░"
-				t += "\n✋ GRAB " + bar
-			notice_label.text = t
+				t += "\n✋ GRAB"
+				notice_label.text = t
+				_set_bar(true, grab_progress / grab_needed, true)
+			else:
+				notice_label.text = t
+				_set_bar(false, 0.0)
 		elif notice > 0.03:
-			var blocks2: int = int(round(notice * 10.0))
-			var bar2: String = ""
-			for i in range(10):
-				bar2 += "█" if i < blocks2 else "░"
-			notice_label.text = "👀 " + bar2
+			notice_label.text = "👀"
+			_set_bar(true, notice)
 		else:
 			notice_label.text = ""
+			_set_bar(false, 0.0)
 
 func _has_line_of_sight() -> bool:
 	# Geometric LOS against the house blocks (main_ref.houses): a house
@@ -1689,6 +2007,29 @@ func _end_chase() -> void:
 	if main_ref and main_ref.has_method("on_chase_ended"):
 		main_ref.on_chase_ended(self)
 
+func _roll_interact_kind(eligible: bool) -> String:
+	# v1.0.13 TREAT RATE (Michael, every play session ever: "No
+	# one's giving treats" — Treats stuck at 0). The treat award
+	# itself was never broken (probe: every completed treat
+	# sequence paid its +5); treats were just rare and luck-only:
+	# a flat 25% roll, stacked on few completed encounters (and,
+	# until today, a pet gate that ate most of the rest). Now:
+	# the same 25% roll, PLUS a guarantee over award-eligible
+	# encounters — if the last three eligible friendly encounters
+	# were all pets, this one IS a treat. Long-run rate ≈ 1 in 3
+	# encounters, and no player can meet four friendly people in
+	# a row without one of them offering the biscuit.
+	if eligible and s_eligible_since_treat >= 3:
+		s_eligible_since_treat = 0
+		return "treat"
+	if randf() < 0.25:
+		if eligible:
+			s_eligible_since_treat = 0
+		return "treat"
+	if eligible:
+		s_eligible_since_treat += 1
+	return "pet"
+
 func react_to_attention() -> String:
 	# v0.7 (items 13+15): the cat just PAWED or MEOWED at this
 	# person — INSTANT attention, the notice meter is bypassed.
@@ -1708,13 +2049,14 @@ func react_to_attention() -> String:
 		# cat!", then the full acted sequence: walk over, KNEEL down,
 		# and stroke him with a hand that's really on his back (+1),
 		# or offer a treat from the hand that he eats (+5). Points
-		# land mid-action on confirmed contact (25s cooldown keeps
-		# one person from being farmed). No notice meter, ever.
+		# land mid-action, once the action has genuinely run
+		# (25s cooldown keeps one person from being farmed). No
+		# notice meter, ever.
 		_spot_cat()
 		if interact_state == "":
-			interact_kind = "pet" if randf() < 0.75 else "treat"
 			award_pending = interact_cooldown <= 0.0
 			award_fired = false
+			interact_kind = _roll_interact_kind(award_pending)
 			if award_pending:
 				interact_cooldown = 25.0
 				pending_award = interact_kind
@@ -1742,3 +2084,410 @@ func stop_pursuit() -> void:
 	_pick_wander_target()
 	set_expression("neutral")
 	joy_shown = false
+
+
+# =====================================================================
+# v1.0.15 MESHY NPC SWAP (Michael, 2026-11-18: "get them into the
+# game as soon as possible") — the same GHOST RIG pattern as the
+# cat (cat.gd _attach_meshy / _mirror_meshy): this class's logic,
+# pivots and pose contracts stay authoritative and keep posing
+# the (now invisible) code-built body; the imported Meshy model
+# is what renders. Two pose sources, cross-faded per frame by
+# _update_meshy:
+#   * the GLB's own Mixamo clips (Walking / Running) drive pure
+#     locomotion — the model's own gait, better than the code
+#     swing;
+#   * the ghost mirror (global-pose overrides composed from the
+#     skeleton's rest pose, parent-first, with the ghost pivots'
+#     rotations folded in — the cat's maths) drives everything
+#     the clips cannot do: idle standing (the GLBs have no idle
+#     clip), the petting kneel + aimed stroking arm, treats, the
+#     capture scoop / cradle, the RUN tell, the phone pose, the
+#     dog walker's leash hand, and the chase reach (arms only —
+#     the legs keep the Running clip through a chase).
+# The officer's net moves onto his skeleton hand via a
+# BoneAttachment3D, so set_net_visible / update_net_grip keep
+# working untouched. Left/right are matched by POSITION, as with
+# the cat: the ghost's "l" pivots sit at model -X, which is the
+# skeleton's Right chain. Types without a model (pedestrian)
+# skip all of this — zero behaviour change. To light up a future
+# model, add its type -> GLB line in _meshy_scene_for_type.
+
+func _meshy_scene_for_type() -> PackedScene:
+	match npc_type:
+		"poundworker":
+			return preload("res://assets/models/officer.glb")
+		"woman":
+			return preload("res://assets/models/young_woman.glb")
+		"kid":
+			return preload("res://assets/models/excited_kid.glb")
+		"dogwalker":
+			return preload("res://assets/models/dog_walker.glb")
+		"shopkeeper":
+			return preload("res://assets/models/shopkeeper.glb")
+	return null
+
+func _attach_meshy() -> void:
+	var ps := _meshy_scene_for_type()
+	if ps == null or model == null:
+		return
+	var inst: Node = ps.instantiate()
+	meshy_root = Node3D.new()
+	meshy_root.name = "MeshyRoot"
+	model.add_child(meshy_root)
+	meshy_root.add_child(inst)
+	meshy_root.scale = Vector3.ONE * mscale
+	var stack: Array = [inst]
+	while not stack.is_empty():
+		var cur: Node = stack.pop_back()
+		if cur is Skeleton3D:
+			meshy_skel = cur as Skeleton3D
+		elif cur is AnimationPlayer:
+			meshy_ap = cur as AnimationPlayer
+		elif cur is MeshInstance3D and (cur as MeshInstance3D).name.to_lower().contains("icosphere"):
+			(cur as MeshInstance3D).visible = false # stock-scene placeholder guard (the cat's lesson)
+		for ch in cur.get_children():
+			stack.append(ch)
+	if meshy_skel == null:
+		meshy_root.visible = false
+		meshy_root = null
+		return
+	if meshy_ap != null:
+		for an in meshy_ap.get_animation_list():
+			if an == "Walking" or an == "Running":
+				var a := meshy_ap.get_animation(an)
+				if not _meshy_loops_set.has(a):
+					a.loop_mode = Animation.LOOP_LINEAR
+					_meshy_loops_set[a] = true
+	var want := {
+		"hips": "mixamorig_Hips", "spine": "mixamorig_Spine", "spine1": "mixamorig_Spine1", "spine2": "mixamorig_Spine2",
+		"neck": "mixamorig_Neck", "head": "mixamorig_Head",
+		"sh_l": "mixamorig_LeftShoulder", "arm_l": "mixamorig_LeftArm", "fore_l": "mixamorig_LeftForeArm", "hand_l": "mixamorig_LeftHand",
+		"sh_r": "mixamorig_RightShoulder", "arm_r": "mixamorig_RightArm", "fore_r": "mixamorig_RightForeArm", "hand_r": "mixamorig_RightHand",
+		"uleg_l": "mixamorig_LeftUpLeg", "leg_l": "mixamorig_LeftLeg", "foot_l": "mixamorig_LeftFoot",
+		"uleg_r": "mixamorig_RightUpLeg", "leg_r": "mixamorig_RightLeg", "foot_r": "mixamorig_RightFoot",
+	}
+	for role in want.keys():
+		var bi: int = meshy_skel.find_bone(str(want[role]))
+		if bi >= 0:
+			meshy_bone[role] = bi
+	var count: int = meshy_skel.get_bone_count()
+	var depths: Array = []
+	depths.resize(count)
+	for bi in range(count):
+		var gr: Transform3D = meshy_skel.get_bone_global_rest(bi)
+		meshy_rest[bi] = gr
+		var bp: int = meshy_skel.get_bone_parent(bi)
+		if bp >= 0:
+			meshy_local_rest[bi] = meshy_skel.get_bone_global_rest(bp).affine_inverse() * gr
+		else:
+			meshy_local_rest[bi] = gr
+		var d: int = 0
+		var p: int = bp
+		while p >= 0:
+			d += 1
+			p = meshy_skel.get_bone_parent(p)
+		depths[bi] = d
+	meshy_order = []
+	for bi in range(count):
+		meshy_order.append(bi)
+	meshy_order.sort_custom(func(a: int, b: int) -> bool: return depths[a] < depths[b])
+	meshy_arm_chain.resize(count)
+	var arm_roots: Array = [int(meshy_bone.get("arm_l", -1)), int(meshy_bone.get("arm_r", -1)), int(meshy_bone.get("sh_l", -1)), int(meshy_bone.get("sh_r", -1))]
+	for bi in range(count):
+		var p2: int = bi
+		meshy_arm_chain[bi] = false
+		while p2 >= 0:
+			if arm_roots.has(p2):
+				meshy_arm_chain[bi] = true
+				break
+			p2 = meshy_skel.get_bone_parent(p2)
+	# The officer's net: re-hang it on the skeleton's left hand
+	# (ghost arm_r's side, position-matched) so it follows the
+	# VISIBLE hand through clips and mirror alike.
+	if net_root != null and meshy_bone.has("hand_l"):
+		var hand_bi: int = int(meshy_bone["hand_l"])
+		var att := BoneAttachment3D.new()
+		att.bone_name = meshy_skel.get_bone_name(hand_bi)
+		meshy_skel.add_child(att)
+		var old_parent: Node = net_root.get_parent()
+		if old_parent != null:
+			old_parent.remove_child(net_root)
+		att.add_child(net_root)
+		# Offset chosen so that, at rest, the net sits exactly
+		# where the ghost arm put it: ghost arm_r rests at design
+		# (0.36, 1.48, 0) with identity basis (design units —
+		# meshy_root's scale converts). The net's geometry was
+		# authored in model units, so counter-scale it back.
+		var g_rest := Transform3D(Basis.IDENTITY, Vector3(0.36, 1.48, 0))
+		att.transform = (meshy_rest[hand_bi] as Transform3D).affine_inverse() * g_rest
+		net_root.transform = Transform3D(Basis.IDENTITY.scaled(Vector3.ONE / mscale), Vector3.ZERO)
+	# Hide the code-built body (the ghost nodes/pivots stay live).
+	_hide_ghost_meshes(model)
+	_attach_dog_meshy()
+
+func _meshy_keep_visible(mi: MeshInstance3D) -> bool:
+	if treat_mi != null and (mi == treat_mi or treat_mi.is_ancestor_of(mi)):
+		return true # the biscuit (and its chips) ride the ghost hand as before
+	return phone_mis.has(mi)
+
+func _hide_ghost_meshes(root: Node) -> void:
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var cur: Node = stack.pop_back()
+		if cur == meshy_root:
+			continue
+		if cur is MeshInstance3D and not _meshy_keep_visible(cur as MeshInstance3D):
+			(cur as MeshInstance3D).visible = false
+		for ch in cur.get_children():
+			stack.append(ch)
+
+func _attach_dog_meshy() -> void:
+	if npc_type != "dogwalker" or dog_model == null:
+		return
+	var ps: PackedScene = preload("res://assets/models/little_dog.glb")
+	if ps == null:
+		return
+	# The code dog's meshes retire. (His leash cylinder on `model`
+	# was already hidden by the generic pass above — the model's
+	# OWN leash, skinned into his mesh, takes over: it leaves his
+	# collar curving up and back toward the walker's hand side.)
+	var stack: Array = [dog_model]
+	while not stack.is_empty():
+		var cur: Node = stack.pop_back()
+		if cur is MeshInstance3D:
+			(cur as MeshInstance3D).visible = false
+		for ch in cur.get_children():
+			stack.append(ch)
+	var inst: Node = ps.instantiate()
+	dog_meshy_root = Node3D.new()
+	dog_meshy_root.name = "DogMeshyRoot"
+	dog_model.add_child(dog_meshy_root)
+	dog_meshy_root.add_child(inst)
+	# The GLB dog stands with his feet at y -0.46 in his own
+	# units; lift him so they land on dog_model's ground, sized
+	# to match the code dog he replaces.
+	var sd := 1.02
+	dog_meshy_root.scale = Vector3.ONE * sd
+	dog_meshy_root.position.y = 0.46 * sd
+	var stack2: Array = [inst]
+	while not stack2.is_empty():
+		var cur2: Node = stack2.pop_back()
+		if cur2 is Skeleton3D:
+			dog_skel = cur2 as Skeleton3D
+		for ch in cur2.get_children():
+			stack2.append(ch)
+	if dog_skel == null:
+		dog_meshy_root.visible = false
+		dog_meshy_root = null
+		return
+	var dwant := {"fl": "joint_27", "fr": "joint_32", "rl": "joint_17", "rr": "joint_22", "tail": "joint_07"}
+	for role in dwant.keys():
+		var bi: int = dog_skel.find_bone(str(dwant[role]))
+		if bi >= 0:
+			dog_bone[role] = bi
+	var dcount: int = dog_skel.get_bone_count()
+	var ddepths: Array = []
+	ddepths.resize(dcount)
+	for bi in range(dcount):
+		var gr: Transform3D = dog_skel.get_bone_global_rest(bi)
+		dog_rest[bi] = gr
+		var bp: int = dog_skel.get_bone_parent(bi)
+		if bp >= 0:
+			dog_local_rest[bi] = dog_skel.get_bone_global_rest(bp).affine_inverse() * gr
+		else:
+			dog_local_rest[bi] = gr
+		var d: int = 0
+		var p: int = bp
+		while p >= 0:
+			d += 1
+			p = dog_skel.get_bone_parent(p)
+		ddepths[bi] = d
+	dog_order = []
+	for bi in range(dcount):
+		dog_order.append(bi)
+	dog_order.sort_custom(func(a: int, b: int) -> bool: return ddepths[a] < ddepths[b])
+
+func _update_meshy(delta: float, speed2d: float) -> void:
+	_update_dog_meshy(speed2d)
+	if meshy_skel == null or meshy_root == null:
+		return
+	if model != null and not model.visible:
+		return # distance-hidden: nothing to pose; state resumes on show
+	# The phone only reads while she's actually holding it up:
+	# put away during pets, treats, scoops, tells and chases —
+	# her hands are busy then, and a phone floating at her chest
+	# while her arms reach would give the game away.
+	if not phone_mis.is_empty():
+		var phone_ok: bool = interact_state == "" and scoop_reach_a <= 0.001 and scoop_cradle_a <= 0.001 and scoop_kneel_a <= 0.001 and mode != "chase" and mode != "pursue" and mode != "tell"
+		for mi in phone_mis:
+			(mi as MeshInstance3D).visible = phone_ok
+	# --- the model's own clips drive pure locomotion ---
+	if meshy_ap != null:
+		var want_clip := ""
+		if speed2d > 4.2:
+			want_clip = "Running"
+		elif speed2d > 0.3:
+			want_clip = "Walking"
+		if want_clip != "" and meshy_ap.has_animation(want_clip) and meshy_clip != want_clip:
+			meshy_ap.play(want_clip, 0.18)
+			meshy_clip = want_clip
+		if want_clip == "":
+			meshy_ap.speed_scale = 0.0 # frozen under the idle mirror
+		elif meshy_clip == "Walking":
+			meshy_ap.speed_scale = clampf(speed2d / (1.5 * mscale), 0.75, 2.2)
+		elif meshy_clip == "Running":
+			meshy_ap.speed_scale = clampf(speed2d / (4.2 * mscale), 0.75, 1.9)
+	# --- regime weights: the ghost mirror takes the body for
+	# idle + every interaction; it takes the ARMS additionally
+	# for the phone pose and the chase reach (legs keep the
+	# Running clip through a chase). ---
+	var overlay: bool = interact_state != "" or scoop_reach_a > 0.001 or scoop_cradle_a > 0.001 or scoop_kneel_a > 0.001 or mode == "tell"
+	var body_t := 0.0
+	var arm_t := 0.0
+	if overlay:
+		body_t = 1.0
+		arm_t = 1.0
+	else:
+		if speed2d <= 0.3:
+			body_t = 1.0 # no idle clip exists: the mirrored rest IS the idle
+			arm_t = 1.0
+		if hold_pose or mode == "chase" or mode == "pursue":
+			arm_t = 1.0
+	meshy_w_body = move_toward(meshy_w_body, body_t, delta * 5.5)
+	meshy_w_arms = move_toward(meshy_w_arms, arm_t, delta * 5.5)
+	# Petting lean-in: the skeleton's arms are shorter than the
+	# ghost's, so the whole model settles a touch toward the cat
+	# as the kneel forms (the ghost's own settle is in
+	# model.position.z, inherited — this is the extra the shorter
+	# arms need; the spine pitch in _meshy_compose adds the rest).
+	meshy_root.position.z = 0.07 * bend_a
+	if meshy_w_body <= 0.001 and meshy_w_arms <= 0.001:
+		if meshy_overrides_on:
+			for bi in range(meshy_skel.get_bone_count()):
+				meshy_skel.set_bone_global_pose_override(bi, Transform3D(), 0.0, false)
+			meshy_overrides_on = false
+		return
+	_meshy_compose()
+	meshy_overrides_on = true
+
+func _meshy_drv(drv: Dictionary, role: String, b: Basis) -> void:
+	var bi: int = int(meshy_bone.get(role, -1))
+	if bi >= 0:
+		drv[bi] = b
+
+func _meshy_arm(drv: Dictionary, side: String, ghost_arm: Node3D, aimed: bool) -> void:
+	if ghost_arm == null:
+		return
+	var arm_role := "arm_" + side
+	var fore_role := "fore_" + side
+	if aimed:
+		# Rotate the skeleton arm's rest direction onto the
+		# ghost's aim direction: the visible hand lands on the
+		# cat, not wherever the A-pose rest would have put it.
+		# The forearm inherits the rotation through the composed
+		# chain (straight arm, like the ghost's one-piece arm).
+		var arm_bi: int = int(meshy_bone.get(arm_role, -1))
+		var fore_bi: int = int(meshy_bone.get(fore_role, -1))
+		if arm_bi >= 0 and fore_bi >= 0:
+			var want_dir: Vector3 = (ghost_arm.transform.basis * Vector3(0, -1, 0)).normalized()
+			var rest_dir: Vector3 = ((meshy_rest[fore_bi] as Transform3D).origin - (meshy_rest[arm_bi] as Transform3D).origin).normalized()
+			if rest_dir.length() > 0.01 and want_dir.length() > 0.01:
+				_meshy_drv(drv, arm_role, Basis(Quaternion(rest_dir, want_dir)))
+				return
+	# Mirrored basis + a state-based elbow bend (the ghost arm
+	# is one piece; the skeleton's elbow needs the hint).
+	_meshy_drv(drv, arm_role, ghost_arm.transform.basis)
+	var bend := -0.12
+	if scoop_cradle_a > 0.01:
+		bend = -0.55 * scoop_cradle_a
+	elif hold_pose:
+		bend = -0.5
+	elif interact_state == "pet" or interact_state == "treat":
+		bend = -0.2
+	_meshy_drv(drv, fore_role, Basis.from_euler(Vector3(bend, 0, 0)))
+
+func _meshy_compose() -> void:
+	var drv: Dictionary = {}
+	# Legs (position-matched: ghost -X pivots drive the Right chain)
+	if leg_l != null:
+		_meshy_drv(drv, "uleg_r", leg_l.transform.basis)
+	if shin_l != null:
+		_meshy_drv(drv, "leg_r", shin_l.transform.basis)
+		_meshy_drv(drv, "foot_r", Basis.from_euler(Vector3(-shin_l.rotation.x * 0.35, 0, 0)))
+	if leg_r != null:
+		_meshy_drv(drv, "uleg_l", leg_r.transform.basis)
+	if shin_r != null:
+		_meshy_drv(drv, "leg_l", shin_r.transform.basis)
+		_meshy_drv(drv, "foot_l", Basis.from_euler(Vector3(-shin_r.rotation.x * 0.35, 0, 0)))
+	# Head + a share of the nod in the neck (carries the
+	# expression tilts and the kneel's look-down).
+	if head_node != null:
+		_meshy_drv(drv, "head", head_node.transform.basis)
+		_meshy_drv(drv, "neck", Basis.from_euler(head_node.rotation * 0.35))
+	# Petting lean (see _update_meshy): pitch the chest toward
+	# the cat as the kneel forms.
+	if bend_a > 0.02 and (interact_state == "pet" or interact_state == "treat"):
+		_meshy_drv(drv, "spine2", Basis.from_euler(Vector3(0.20 * bend_a, 0, 0)))
+		_meshy_drv(drv, "spine1", Basis.from_euler(Vector3(0.10 * bend_a, 0, 0)))
+	# Arms. The petting / treat arm and the scoop's reaching
+	# arms are AIMED by the ghost (_aim_arm points the pivot's
+	# -Y at the cat): those go by direction. Everything else
+	# mirrors the ghost pivot's basis.
+	var aim_r: bool = ((interact_state == "pet" or interact_state == "treat") and bend_a > 0.25) or (scoop_reach_a > 0.01 and scoop_cradle_a < 0.6)
+	var aim_l: bool = scoop_reach_a > 0.01 and scoop_cradle_a < 0.6
+	_meshy_arm(drv, "l", arm_r, aim_r) # ghost arm_r (+X) -> skeleton Left chain
+	_meshy_arm(drv, "r", arm_l, aim_l) # ghost arm_l (-X) -> skeleton Right chain
+	# Compose parent-first from rest, fold the drivers in, and
+	# apply with the per-chain weights.
+	var desired: Array = []
+	desired.resize(meshy_skel.get_bone_count())
+	for bi in meshy_order:
+		var bp: int = meshy_skel.get_bone_parent(bi)
+		var g: Transform3D
+		if bp >= 0 and desired[bp] != null:
+			g = (desired[bp] as Transform3D) * (meshy_local_rest[bi] as Transform3D)
+		else:
+			g = meshy_local_rest[bi] as Transform3D
+		if drv.has(bi):
+			g = Transform3D((drv[bi] as Basis) * g.basis, g.origin)
+		desired[bi] = g
+		var w: float = meshy_w_arms if bool(meshy_arm_chain[bi]) else meshy_w_body
+		meshy_skel.set_bone_global_pose_override(bi, g, w, true)
+
+func _update_dog_meshy(speed2d: float) -> void:
+	if dog_skel == null or dog_meshy_root == null:
+		return
+	if dog_model != null and not dog_model.visible:
+		return
+	var t: float = Time.get_ticks_msec() / 1000.0
+	var drv: Dictionary = {}
+	var swing := 0.0
+	if speed2d > 0.3:
+		swing = 0.5
+	# Trot: diagonal pairs (front-left with rear-right), swung
+	# from the same walk_phase the code dog used.
+	var ph: float = walk_phase * 1.7
+	if dog_bone.has("fl"):
+		drv[int(dog_bone["fl"])] = Basis.from_euler(Vector3(sin(ph) * swing, 0, 0))
+	if dog_bone.has("rr"):
+		drv[int(dog_bone["rr"])] = Basis.from_euler(Vector3(sin(ph) * swing, 0, 0))
+	if dog_bone.has("fr"):
+		drv[int(dog_bone["fr"])] = Basis.from_euler(Vector3(sin(ph + PI) * swing, 0, 0))
+	if dog_bone.has("rl"):
+		drv[int(dog_bone["rl"])] = Basis.from_euler(Vector3(sin(ph + PI) * swing, 0, 0))
+	if dog_bone.has("tail"):
+		drv[int(dog_bone["tail"])] = Basis.from_euler(Vector3(0, sin(t * 6.0) * 0.4, 0))
+	var desired: Array = []
+	desired.resize(dog_skel.get_bone_count())
+	for bi in dog_order:
+		var bp: int = dog_skel.get_bone_parent(bi)
+		var g: Transform3D
+		if bp >= 0 and desired[bp] != null:
+			g = (desired[bp] as Transform3D) * (dog_local_rest[bi] as Transform3D)
+		else:
+			g = dog_local_rest[bi] as Transform3D
+		if drv.has(bi):
+			g = Transform3D((drv[bi] as Basis) * g.basis, g.origin)
+		desired[bi] = g
+		dog_skel.set_bone_global_pose_override(bi, g, 1.0, true)

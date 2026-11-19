@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bnorthstar1shot"]
+
+[ext_resource type="Script" path="res://tests/shot_runner_northstar.gd" id="1"]
+
+[node name="ShotRunnerNorthStar" type="Node"]
+script = ExtResource("1")

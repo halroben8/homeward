@@ -26,6 +26,13 @@ func _ready() -> void:
 	var ps: PackedScene = load("res://scenes/Main.tscn")
 	main = ps.instantiate()
 	add_child(main)
+	# v1.0.9 harness plumbing: Main now builds its world across frames
+	# behind the splash — wait for build_complete before driving it,
+	# exactly as the title flow does. No assertion is changed.
+	var _bw109: int = 0
+	while not bool(main.get("build_complete")) and _bw109 < 21600:
+		await get_tree().process_frame
+		_bw109 += 1
 	await get_tree().create_timer(1.0).timeout
 	main.call("dismiss_splash")
 	await get_tree().create_timer(0.3).timeout
@@ -38,10 +45,12 @@ func _ready() -> void:
 		i += 1
 	(player as Node3D).global_position = Vector3(30, 0.2, 64)
 	await get_tree().create_timer(0.5).timeout
-	# Full-push joystick sprint, same drive as the test suite.
+	# RUN-hold sprint (v1.0.14: full push alone no longer sprints),
+	# same drive as the test suite.
 	main.set("joy_mouse", true)
 	main.set("joy_origin", Vector2(200, 400))
 	main.set("joy_current", Vector2(200, 300)) # offset (0,-100) = full push
+	player.set("touch_sprint", true) # RUN held
 	await get_tree().create_timer(0.8).timeout # reach top speed
 	phys_start = Engine.get_physics_frames()
 	sampling = true
