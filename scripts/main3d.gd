@@ -75,6 +75,15 @@ var home_address: String = ""
 var player: CharacterBody3D = null
 var npcs: Array = []
 var town_cats: Array = [] # v1.0.22: the eight Meshy town cats wandering the streets
+var playground_model: Node3D = null # v1.0.23: the Meshy playground structure in the park (suite handle)
+# v1.0.23: where the park kids play — spots AROUND the playground
+# structure (its collision box spans x 83.4..88.6, z 28.05..31.95
+# at the park, centre (86, 30)): by the swings end, by the tower
+# end, in front of the bridge, at both ends, and on the path.
+const PARK_SPOTS: Array = [
+	Vector3(88.8, 0, 32.8), Vector3(83.2, 0, 32.8), Vector3(86, 0, 33.6),
+	Vector3(91.4, 0, 29.6), Vector3(80.6, 0, 29.6), Vector3(86, 0, 25.8),
+]
 var pickup_street: String = "" # v1.0.22: street of the officer's latest capture — feeds the intake card only
 var intake_card_label: Label3D = null # v1.0.22: the card on Zander's cage front (see _build_intake_card)
 var hide_points: Array = [] # Vector3 bush / car centres
@@ -748,17 +757,38 @@ func _grass_tuft(parent: Node, pos: Vector3, seed_i: int) -> void:
 # texture and becomes a surface the cat stands IN. Normals point
 # straight up so blades shade exactly like the lawn beneath them.
 func _blade_mesh() -> ArrayMesh:
+	# v1.0.23 (was: two crossed quads with straight-up normals and
+	# a double-sided material): THE BLACK SPIKES Michael saw on
+	# every lawn in v1.0.21 were these blades. Diagnosis (bisected
+	# in a scratch scene under the game's own dusk rig): the
+	# quads' winding makes one side of each quad a BACK face; a
+	# double-sided material flips a back face's normal, so the
+	# up normal became (0,-1,0) and the face was lit only by the
+	# sky's dark ground side — pure black from most viewpoints,
+	# while the tuft cones and the lawn (real outward normals)
+	# shaded green. The blade is now a slim 4-sided cone with
+	# proper outward normals — the same construction as the tuft
+	# blades — and shades like grass from every side. (Instance
+	# colours were never the problem: the flower instances on the
+	# same path always rendered correctly.)
 	var verts := PackedVector3Array()
 	var normals := PackedVector3Array()
 	var uvs := PackedVector2Array()
 	var indices := PackedInt32Array()
+	var rb := 0.038
+	var rt := 0.004
+	var bh := 0.26
 	var vi: int = 0
-	for ang in [0.0, PI * 0.5]:
-		var dx := Vector3(cos(ang), 0, sin(ang)) * 0.032
-		var lean := Vector3(sin(ang), 0, -cos(ang)) * 0.04
-		verts.append_array([-dx, dx, lean + Vector3(0, 0.26, 0) + dx * 0.22, lean + Vector3(0, 0.26, 0) - dx * 0.22])
+	for s in range(4):
+		var a0 := float(s) * PI * 0.5 + PI * 0.25
+		var a1 := float(s + 1) * PI * 0.5 + PI * 0.25
+		var d0 := Vector3(cos(a0), 0, sin(a0))
+		var d1 := Vector3(cos(a1), 0, sin(a1))
+		verts.append_array([d0 * rb, d1 * rb, d1 * rt + Vector3(0, bh, 0), d0 * rt + Vector3(0, bh, 0)])
+		var n := (d0 + d1).normalized()
+		var nn := Vector3(n.x, (rb - rt) / bh, n.z).normalized()
 		for k in range(4):
-			normals.append(Vector3(0, 1, 0))
+			normals.append(nn)
 			uvs.append(Vector2(0, 0))
 		indices.append_array([vi, vi + 1, vi + 2, vi, vi + 2, vi + 3])
 		vi += 4
@@ -1832,7 +1862,9 @@ func _build_world() -> void:
 	var blade_mat := StandardMaterial3D.new()
 	blade_mat.albedo_color = Color.WHITE
 	blade_mat.roughness = 1.0
-	blade_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	# v1.0.23: no CULL_DISABLED here any more — the blade is a cone
+	# now (see _blade_mesh); double-sided rendering was half of
+	# the black-spike bug.
 	blade_mat.vertex_color_use_as_albedo = true
 	await _scatter_multimesh(world, detail_rng, _blade_mesh(), 12000 if LEGACY_TOWN_ONLY else 24000, blade_mat, [Color(0.34, 0.56, 0.22), Color(0.3, 0.5, 0.19), Color(0.39, 0.61, 0.25), Color(0.32, 0.53, 0.2)], 0.02, 0.6, 1.1, 60.0) # PERF: blades drawn only within 60m (chunked cells); MAP DOUBLING: count doubled with the area (cells keep the draw cost flat) (BISECT: pre-doubling count in legacy mode)
 	var flower_mesh := SphereMesh.new()
@@ -2442,54 +2474,59 @@ func _apply_clutter_ranges(n: Node) -> void:
 
 func _build_fill_features(world: Node3D, srng: RandomNumberGenerator) -> void:
 	await _build_tick() # v1.0.11 chunking: sub-section boundary
-	# ============ PLAYGROUND (east block, Oak/Willow, x 88..112) ====
-	# Kept south of z=38: 29 Willow Crescent's front fence line is
-	# at z=38.8 — nothing here touches the house.
-	var pg := Vector3(97, 0, 30)
-	var mat1 := _box(world, pg + Vector3(0, 0.03, 0), Vector3(19, 0.06, 15), Color.WHITE)
-	mat1.material_override = _mat_tex(TEX_GRASS_PARK, Color(0.85, 0.92, 0.72), Vector3(6, 5, 1))
-	# Swing set: two A-frames + top bar + two swings
-	for sx in [88.5, 96.5]:
-		for sz in [-1.1, 1.1]:
-			var leg := _cyl(world, Vector3(sx, 1.1, 23.5 + sz), 0.05, 0.05, 2.4, Color(0.35, 0.5, 0.65), true)
-			leg.rotation_degrees = Vector3(sz * 18.0, 0, 0)
-	_cyl(world, Vector3(92.5, 2.25, 23.5), 0.05, 0.05, 8.6, Color(0.35, 0.5, 0.65)).rotation_degrees = Vector3(0, 0, 90)
-	for swx in [90.7, 94.3]:
-		for chx in [-0.22, 0.22]:
-			_cyl(world, Vector3(swx + chx, 1.55, 23.5), 0.015, 0.015, 1.35, Color(0.4, 0.4, 0.45))
-		_box(world, Vector3(swx, 0.85, 23.5), Vector3(0.55, 0.07, 0.3), Color(0.85, 0.4, 0.3), true)
-	content_points.append(Vector3(92.5, 0, 23.5))
-	# Slide: steps up, a long chute down, side rails
-	for sti in range(4):
-		_box(world, Vector3(106.5, 0.25 + float(sti) * 0.42, 34.0 - float(sti) * 0.1), Vector3(1.1, 0.12, 0.7), Color(0.5, 0.55, 0.6), true)
-	var chute := _box(world, Vector3(103.8, 1.05, 33.9), Vector3(4.6, 0.1, 0.85), Color(0.9, 0.55, 0.2), true)
-	chute.rotation_degrees = Vector3(0, 0, 22)
-	for rz in [-0.45, 0.45]:
-		var rail := _box(world, Vector3(103.8, 1.3, 33.9 + rz), Vector3(4.6, 0.28, 0.06), Color(0.85, 0.45, 0.18))
-		rail.rotation_degrees = Vector3(0, 0, 22)
-	content_points.append(Vector3(104, 0, 34))
-	# Sandbox with buckets
-	for b_edge in [Vector4(89, 31.2, 4.6, 0.35), Vector4(89, 34.8, 4.6, 0.35), Vector4(86.9, 33.0, 0.35, 4.0), Vector4(91.1, 33.0, 0.35, 4.0)]:
-		_box(world, Vector3(b_edge.x, 0.22, b_edge.y), Vector3(b_edge.z, 0.45, b_edge.w), Color(0.75, 0.6, 0.4), true)
-	var sand := _box(world, Vector3(89, 0.12, 33.0), Vector3(4.2, 0.2, 3.6), Color(0.93, 0.85, 0.62))
-	sand.material_override = _mat(Color(0.93, 0.85, 0.62), 1.0)
-	_cyl(world, Vector3(88.2, 0.32, 32.3), 0.16, 0.12, 0.25, Color(0.9, 0.35, 0.3))
-	_cyl(world, Vector3(90.1, 0.3, 33.9), 0.14, 0.1, 0.22, Color(0.3, 0.55, 0.85))
-	content_points.append(Vector3(89, 0, 33))
-	# Seesaw + merry-go-round
-	_cyl(world, Vector3(104, 0.35, 26.5), 0.3, 0.35, 0.7, Color(0.5, 0.4, 0.3), true)
-	var plank := _box(world, Vector3(104, 0.85, 26.5), Vector3(4.4, 0.09, 0.45), Color(0.85, 0.65, 0.25), true)
-	plank.rotation_degrees = Vector3(0, 0, -9)
-	for hx in [-1.9, 1.9]:
-		_box(world, Vector3(104 + hx, 0.98 - (0.3 if hx < 0.0 else -0.3) * 0.5, 26.5), Vector3(0.3, 0.07, 0.4), Color(0.4, 0.4, 0.45))
-	_cyl(world, Vector3(95, 0.3, 35.5), 1.5, 1.5, 0.18, Color(0.8, 0.4, 0.45), true)
-	_cyl(world, Vector3(95, 0.75, 35.5), 0.06, 0.06, 0.8, Color(0.45, 0.45, 0.5))
-	for ha in range(4):
-		var hang: float = float(ha) * PI * 0.5
-		_cyl(world, Vector3(95 + cos(hang) * 1.3, 0.85, 35.5 + sin(hang) * 1.3), 0.035, 0.035, 0.5, Color(0.45, 0.45, 0.5))
-	content_points.append(Vector3(95, 0, 35.5))
-	_label3d(world, "🛝 PLAYGROUND", Vector3(97, 3.4, 21.8), 52, Color(1.0, 0.95, 0.75))
-	_cyl(world, Vector3(97, 1.6, 21.8), 0.06, 0.08, 3.2, Color(0.5, 0.42, 0.32), true)
+	# ============ PLAYGROUND PARK (west side of the Oak block) ====
+	# v1.0.23 (Michael's direction): the old code-built playground
+	# equipment (swing frame, slide steps + chute, seesaw, sandbox,
+	# merry-go-round) is REMOVED — in his v1.0.21 play it stood in
+	# 40 Oak Avenue's side yard, a metre or two from its walls, and
+	# read as the house's own porch/stairs broken apart and
+	# floating. In its place, a proper park on the block's OPEN
+	# west side (verified by an occupancy probe: 40 Oak's walls
+	# span x 93.9..102.1, z 29.4..36.6 and the neighbouring lots
+	# are empty; the park's ground x 76.5..93.5, z 22.5..36.5
+	# touches nothing): a defined lawn, a path in from the Oak Ave
+	# sidewalk, benches and trees, and the Meshy playground
+	# structure (assets/models/playground.glb — slimmed from
+	# 27 MB / 717k tris to ~1.5 MB / 30k tris; static prop)
+	# grounded at kid scale: 2.6x its modelled size = ~4.9 x 3.7 m
+	# footprint, ~2.7 m tall against the Excited Kid's 1.15 m. One
+	# solid collision box over the footprint so the cat (and the
+	# kids) can't walk through it; the kids play AROUND it at
+	# PARK_SPOTS (see _spawn_npcs / person.gd park dwell).
+	var pg := Vector3(85, 0, 29.5)
+	var mat1 := _box(world, pg + Vector3(0, 0.03, 0), Vector3(17, 0.06, 14), Color.WHITE)
+	mat1.material_override = _mat_tex(TEX_GRASS_PARK, Color(0.85, 0.92, 0.72), Vector3(7, 5, 1))
+	# Path: from the Oak Ave sidewalk to the structure.
+	var ppath := _box(world, Vector3(86, 0.045, 24.0), Vector3(2.6, 0.03, 9.5), Color(0.88, 0.84, 0.74))
+	ppath.material_override = _mat(Color(0.88, 0.84, 0.74), 1.0)
+	# The playground structure. The GLB's origin sits mid-height
+	# (its AABB spans y -0.528..0.52), so the instance is lifted
+	# by 0.528 * scale to rest its base exactly on the ground.
+	var pg_root := Node3D.new()
+	pg_root.position = Vector3(86, 0, 30)
+	world.add_child(pg_root)
+	var pg_model := (preload("res://assets/models/playground.glb") as PackedScene).instantiate() as Node3D
+	pg_model.scale = Vector3.ONE * 2.6
+	pg_model.position.y = 0.528 * 2.6
+	pg_root.add_child(pg_model)
+	playground_model = pg_model
+	var pg_body := StaticBody3D.new()
+	var pg_cs := CollisionShape3D.new()
+	var pg_shape := BoxShape3D.new()
+	pg_shape.size = Vector3(5.2, 2.4, 3.9)
+	pg_cs.shape = pg_shape
+	pg_cs.position = Vector3(0, 1.2, 0)
+	pg_body.add_child(pg_cs)
+	pg_root.add_child(pg_body)
+	content_points.append(Vector3(86, 0, 30))
+	# Benches watching the structure + trees at the park corners.
+	_fill_bench(world, Vector3(80.5, 0, 24.8), 0.0)
+	_fill_bench(world, Vector3(91.5, 0, 24.8), 0.0)
+	_build_tree(world, Vector3(80.0, 0, 35.5))
+	_build_tree(world, Vector3(92.0, 0, 36.5))
+	_build_tree(world, Vector3(79.5, 0, 23.0))
+	_label3d(world, "PLAYGROUND", Vector3(86, 3.3, 21.6), 52, Color(1.0, 0.95, 0.75))
+	_cyl(world, Vector3(86, 1.55, 21.6), 0.06, 0.08, 3.1, Color(0.5, 0.42, 0.32), true)
 	await _build_tick()
 	await _build_tick() # v1.0.11 chunking: sub-section boundary
 	# ============ COMMUNITY GARDEN (south-west band) =================
@@ -2845,17 +2882,13 @@ func _build_town_fill(world: Node3D, srng: RandomNumberGenerator) -> void:
 	_fill_lamp(world, Vector3(-63, 0, 24))
 	await _build_tick()
 	await _build_tick() # v1.0.11 chunking: sub-section boundary
-	# ============ PLAYGROUND north-east corner: climbing frame
-	for ax in [99.5, 104.5]:
-		for az in [-0.9, 0.9]:
-			var aleg := _cyl(world, Vector3(ax, 1.15, 24.5 + az), 0.05, 0.05, 2.5, Color(0.4, 0.55, 0.4), true)
-			aleg.rotation_degrees = Vector3(az * 16.0, 0, 0)
-	_cyl(world, Vector3(102, 2.35, 24.5), 0.05, 0.05, 5.6, Color(0.4, 0.55, 0.4)).rotation_degrees = Vector3(0, 0, 90)
-	for rung in range(5):
-		_cyl(world, Vector3(100.2 + float(rung) * 0.9, 1.5, 23.55), 0.025, 0.025, 1.7, Color(0.55, 0.6, 0.55))
+	# ============ PLAYGROUND PARK south edge: bench + lamp ======
+	# v1.0.23: the old code-built climbing frame that stood here is
+	# removed with the rest of the old playground equipment (see
+	# the park build in _build_fill_features); the bench and lamp
+	# stay — they front the new park.
 	_fill_bench(world, Vector3(101, 0, 21.9), 0.0)
 	_fill_lamp(world, Vector3(110, 0, 28))
-	content_points.append(Vector3(102, 0, 24.5))
 	await _build_tick()
 	await _build_tick() # v1.0.11 chunking: sub-section boundary
 	# ============ RIVERSIDE corner shops + lot (Birch/Riverside, Maple/Oak)
@@ -5537,6 +5570,17 @@ func _spawn_npcs() -> void:
 		add_child(npc)
 		npc.set("main_ref", self)
 		npc.set("player_ref", player)
+		# v1.0.23 PARK DWELL: kids and the skateboarder who spawn
+		# in the playground park's block (the kid at (93, 25), the
+		# kid at (108, 38), the skateboarder at (100, 20)) are park
+		# dwellers — person.gd walks them between the park's play
+		# spots and lingers there, instead of only wandering the
+		# streets. Matched on the FINAL spawn position (after the
+		# legacy-mode relocation above), so it holds in both towns.
+		var sp: Vector3 = d[1]
+		if (d[0] == "kid" or d[0] == "skateboarder") and sp.x > 74.0 and sp.x < 118.0 and sp.z > 17.0 and sp.z < 42.0:
+			npc.set("park_dweller", true)
+			npc.set("park_spots", PARK_SPOTS)
 		npcs.append(npc)
 		await _build_tick()
 
@@ -6113,33 +6157,105 @@ func _build_hud() -> void:
 	title_panel.offset_right = 400
 	title_panel.offset_top = -280
 	title_panel.offset_bottom = 280
-	_hud_label(title_panel, "🐾  ZANDER'S RUN  🐾", Vector2(170, 18), 44)
-	# v1.0.16: the old pixel-art cat sprite is replaced by the new
-	# render art (Zander's face — the app icon art), bigger and
-	# centred with the collar tag beside it. (cat.png itself is
-	# untouched — the 3D fallback in _spawn_player still uses it.)
+	# v1.0.23 TITLE RESTYLE (Michael's mockup): the opaque navy
+	# panel becomes frosted glass — translucent blue-grey, strongly
+	# rounded corners, a pale rim and a soft drop shadow, the town
+	# glowing through it at dusk.
+	var tp_style := StyleBoxFlat.new()
+	tp_style.bg_color = Color(0.40, 0.48, 0.64, 0.60)
+	tp_style.set_corner_radius_all(36)
+	tp_style.set_border_width_all(2)
+	tp_style.border_color = Color(0.88, 0.92, 1.0, 0.40)
+	tp_style.shadow_size = 28
+	tp_style.shadow_color = Color(0.02, 0.03, 0.08, 0.45)
+	tp_style.shadow_offset = Vector2(0, 8)
+	title_panel.add_theme_stylebox_override("panel", tp_style)
+	# Title with real paw prints flanking it (the mockup's orange
+	# paws — the old brownish emoji glyphs are gone).
+	var title_lbl := _hud_label(title_panel, "ZANDER'S RUN", Vector2(190, 20), 46)
+	title_lbl.size = Vector2(420, 64)
+	title_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	for paw_x in [150.0, 594.0]:
+		var paw_tr := TextureRect.new()
+		if ResourceLoader.exists("res://assets/sprites/paw_print.png"):
+			paw_tr.texture = load("res://assets/sprites/paw_print.png")
+		paw_tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		paw_tr.position = Vector2(paw_x, 26); paw_tr.size = Vector2(56, 56)
+		paw_tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		title_panel.add_child(paw_tr)
+	# The art (the same cover illustration as before — icon.png's
+	# scene) in a rounded-corner frame: a pale rim panel behind a
+	# landscape crop whose corners are rounded in the texture
+	# itself (assets/sprites/title_art.png, generated from
+	# icon.png). (cat.png itself is untouched — the 3D fallback in
+	# _spawn_player still uses it.)
+	var art_frame := Panel.new()
+	var af_style := StyleBoxFlat.new()
+	af_style.bg_color = Color(0.93, 0.95, 0.98, 0.85)
+	af_style.set_corner_radius_all(26)
+	art_frame.add_theme_stylebox_override("panel", af_style)
+	art_frame.position = Vector2(54, 100); art_frame.size = Vector2(404, 256)
+	title_panel.add_child(art_frame)
 	var cat_tr := TextureRect.new()
-	if ResourceLoader.exists("res://assets/icon/icon.png"):
-		cat_tr.texture = load("res://assets/icon/icon.png")
-	cat_tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE # else the 512px texture's min size swallows the 230 rect
-	cat_tr.position = Vector2(160, 82); cat_tr.size = Vector2(230, 230)
-	cat_tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	if ResourceLoader.exists("res://assets/sprites/title_art.png"):
+		cat_tr.texture = load("res://assets/sprites/title_art.png")
+	cat_tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	cat_tr.position = Vector2(59, 105); cat_tr.size = Vector2(394, 246)
+	cat_tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
 	title_panel.add_child(cat_tr)
-	var tag_tr := TextureRect.new()
-	if ResourceLoader.exists("res://assets/sprites/collar_tag.png"):
-		tag_tr.texture = load("res://assets/sprites/collar_tag.png")
-	tag_tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	tag_tr.position = Vector2(420, 87); tag_tr.size = Vector2(220, 220)
-	tag_tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	title_panel.add_child(tag_tr)
+	# v1.0.23: the collar-tag graphic is REMOVED (Michael's
+	# mockup) — in its place a clean glowing paw-print medallion:
+	# a cream disc with an orange paw and a soft warm glow, drawn
+	# into assets/sprites/paw_medallion.png.
+	var med_tr := TextureRect.new()
+	if ResourceLoader.exists("res://assets/sprites/paw_medallion.png"):
+		med_tr.texture = load("res://assets/sprites/paw_medallion.png")
+	med_tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	med_tr.position = Vector2(541, 140); med_tr.size = Vector2(176, 176)
+	med_tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	title_panel.add_child(med_tr)
 	# v1.0.17: the "Your collar tag says your home is:" line and the
 	# gold address label are REMOVED (Michael's direction) — the
 	# panel now goes straight from the art row to the instructions,
 	# which no longer tell the player to memorise an address.
-	_hud_label(title_panel, "Find your way home — and don't let kind people\ntake you home with them.", Vector2(70, 344), 23)
+	_hud_label(title_panel, "Find your way home — and don't let kind people\ntake you home with them.", Vector2(70, 372), 23)
+	# v1.0.23: the START button gets the mockup's treatment — a
+	# soft orange glow halo behind a gradient-orange pill
+	# (assets/sprites/start_btn.png). The pill is a plain
+	# TextureRect layered under an invisible button: a
+	# StyleBoxTexture's texture margins would force the button
+	# far bigger than its rect (its minimum size is the margins'
+	# sum), which is exactly what the first v1.0.23 pass did.
+	var glow_panel := Panel.new()
+	var glow_style := StyleBoxFlat.new()
+	glow_style.bg_color = Color(1.0, 0.55, 0.12, 0.32)
+	glow_style.set_corner_radius_all(54)
+	glow_panel.add_theme_stylebox_override("panel", glow_style)
+	glow_panel.position = Vector2(186, 422); glow_panel.size = Vector2(428, 108)
+	glow_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	title_panel.add_child(glow_panel)
+	var start_pill := TextureRect.new()
+	if ResourceLoader.exists("res://assets/sprites/start_btn.png"):
+		start_pill.texture = load("res://assets/sprites/start_btn.png")
+	start_pill.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	start_pill.stretch_mode = TextureRect.STRETCH_SCALE
+	start_pill.position = Vector2(200, 436); start_pill.size = Vector2(400, 80)
+	start_pill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	title_panel.add_child(start_pill)
 	var start_btn := Button.new()
 	start_btn.focus_mode = Control.FOCUS_NONE # v1.0.22: no focus square
 	start_btn.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	start_btn.add_theme_stylebox_override("normal", StyleBoxEmpty.new())
+	start_btn.add_theme_stylebox_override("hover", StyleBoxEmpty.new())
+	start_btn.add_theme_stylebox_override("pressed", StyleBoxEmpty.new())
+	if ResourceLoader.exists("res://assets/sprites/start_btn.png") and ResourceLoader.exists("res://assets/sprites/start_btn_pressed.png"):
+		var pill_up: Texture2D = load("res://assets/sprites/start_btn.png")
+		var pill_dn: Texture2D = load("res://assets/sprites/start_btn_pressed.png")
+		start_btn.button_down.connect(func(): start_pill.texture = pill_dn)
+		start_btn.button_up.connect(func(): start_pill.texture = pill_up)
+	start_btn.add_theme_color_override("font_color", Color.WHITE)
+	start_btn.add_theme_color_override("font_hover_color", Color.WHITE)
+	start_btn.add_theme_color_override("font_pressed_color", Color.WHITE)
 	start_btn.text = "▶  START  —  Find Home!"
 	start_btn.position = Vector2(200, 436)
 	start_btn.size = Vector2(400, 80)
@@ -6148,8 +6264,8 @@ func _build_hud() -> void:
 	title_panel.add_child(start_btn)
 	# v1.0.10: subtle build tag so Michael can confirm which build
 	# he is running from the title screen itself.
-	var ver := _hud_label(title_panel, "v1.0.22", Vector2(706, 522), 16)
-	ver.label_settings.font_color = Color(0.65, 0.7, 0.85)
+	var ver := _hud_label(title_panel, "v1.0.23", Vector2(706, 522), 16)
+	ver.label_settings.font_color = Color(0.78, 0.83, 0.95)
 	win_panel = _make_panel(hud_layer, Vector2(290, 130), Vector2(700, 460), Color(0.12, 0.2, 0.12, 0.97))
 	win_panel.set_anchors_preset(Control.PRESET_CENTER)
 	win_panel.offset_left = -350

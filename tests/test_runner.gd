@@ -11,6 +11,13 @@ extends Node
 ## per-captor pronoun consistency across all generated escape text (v1.0.19),
 ## the v1.0.20 indoor camera (room profile: entry pitch, orbit/FOV,
 ## cat share bounds mid-room and in a corner, the pull-in lift),
+## the v1.0.23 set: a full house-parts audit (no detached or
+## floating house parts anywhere in town), the grass blades as
+## outward-normal cones (the black-spike fix), the park with the
+## Meshy playground (grounded, kid-scale, solid) with the old
+## equipment removed and park-dweller kids playing there, and
+## the frosted title panel (medallion instead of the collar tag,
+## gradient START, no address),
 ## the v1.0.21 set: HOP while sprinting through the real
 ## three-finger touch path (momentum preserved, lands running),
 ## the escape combination as a randomly rolled A/B sequence
@@ -2153,6 +2160,199 @@ func run_tests() -> void:
 	var paw_b: Button = main.get("paw_btn")
 	check("v1.0.22 buttons: B (PAW) sits LEFT of A (HOP) in the cluster, as it was", paw_b.get_global_rect().position.x < hop_b.get_global_rect().position.x, str(paw_b.get_global_rect().position) + " vs " + str(hop_b.get_global_rect().position))
 	check("v1.0.22 buttons: no focus square — every touch button is FOCUS_NONE", hop_b.focus_mode == Control.FOCUS_NONE and paw_b.focus_mode == Control.FOCUS_NONE and (main.get("meow_btn") as Button).focus_mode == Control.FOCUS_NONE and (main.get("run_btn") as Button).focus_mode == Control.FOCUS_NONE)
+
+	# ---------- v1.0.23: house-parts audit (nothing detached/floating) ----------
+	# Michael's v1.0.21 screenshot showed what looked like a house
+	# with its porch/stairs broken apart. The audit below is the
+	# standing proof for EVERY house: each part's centre stays
+	# inside the lot envelope, and each part is either grounded
+	# (bottom near the lawn) or physically touching another part
+	# (roof on walls, porch roof on posts, bay on the wall...).
+	var world_node: Node = main.get_node("World")
+	var v23_audit_houses := 0
+	var v23_audit_parts := 0
+	var v23_audit_bad: Array = []
+	for h in main.get("houses"):
+		var hpos: Vector3 = h["pos"]
+		var grp: Node3D = null
+		var v23_grp_meshes := -1
+		for ch in world_node.get_children():
+			if ch is Node3D and not (ch is MultiMeshInstance3D) and (ch as Node3D).position.distance_to(hpos) < 0.6:
+				var cnt := count_meshes(ch)
+				if cnt > v23_grp_meshes:
+					v23_grp_meshes = cnt
+					grp = ch as Node3D
+		if grp == null or v23_grp_meshes < 20:
+			v23_audit_bad.append(str(h["address"]) + ": group not found")
+			continue
+		v23_audit_houses += 1
+		var boxes: Array = []
+		var stack2: Array = [grp]
+		while not stack2.is_empty():
+			var cur2: Node = stack2.pop_back()
+			for ch2 in cur2.get_children():
+				stack2.append(ch2)
+			if cur2 is MeshInstance3D:
+				boxes.append((cur2 as MeshInstance3D).global_transform * (cur2 as MeshInstance3D).get_aabb())
+		for bi in range(boxes.size()):
+			var ab: AABB = boxes[bi]
+			v23_audit_parts += 1
+			var ctr: Vector3 = ab.get_center()
+			if absf(ctr.x - hpos.x) > 8.2 or absf(ctr.z - hpos.z) > 8.2:
+				v23_audit_bad.append(str(h["address"]) + ": part outside lot at " + str(ctr))
+				continue
+			if ab.position.y <= 0.42:
+				continue # grounded
+			var supported := false
+			for bj in range(boxes.size()):
+				if bj != bi and ab.grow(0.28).intersects(boxes[bj]):
+					supported = true
+					break
+			if not supported:
+				v23_audit_bad.append(str(h["address"]) + ": floating part at " + str(ctr) + " size " + str(ab.size))
+	check("v1.0.23 house audit: every house group found and audited", v23_audit_houses == (main.get("houses") as Array).size(), str(v23_audit_houses))
+	check("v1.0.23 house audit: NO detached or floating house parts in town", v23_audit_bad.is_empty(), str(v23_audit_bad.slice(0, 4)))
+	check("v1.0.23 house audit: the audit covered the whole town's parts", v23_audit_parts > 1500, str(v23_audit_parts))
+
+	# ---------- v1.0.23: grass blades are cones, not backface quads ----------
+	# The black spikes were the blade quads' back faces (flipped
+	# normals under the dusk sky). The blade mesh is now a cone
+	# with outward normals — assert no blade-cell mesh is the old
+	# all-normals-up quad (every normal at |y| ~ 1).
+	var blade_normals_ok := false
+	var blade_cells := 0
+	for ch in world_node.get_children():
+		if ch is MultiMeshInstance3D:
+			var mmi := ch as MultiMeshInstance3D
+			if mmi.multimesh != null and mmi.multimesh.instance_count > 100 and mmi.multimesh.mesh is ArrayMesh:
+				blade_cells += 1
+				var arrs: Array = (mmi.multimesh.mesh as ArrayMesh).surface_get_arrays(0)
+				var ns: PackedVector3Array = arrs[Mesh.ARRAY_NORMAL]
+				var has_outward := false
+				for nv in ns:
+					if absf(nv.y) < 0.9:
+						has_outward = true
+						break
+				if has_outward:
+					blade_normals_ok = true
+	check("v1.0.23 blades: blade cells exist and use outward-normal cone geometry (no black-spike quads)", blade_cells > 0 and blade_normals_ok, "cells=" + str(blade_cells))
+
+	# ---------- v1.0.23: the park + Meshy playground + kids playing ----------
+	var v23_pgm: Node3D = main.get("playground_model")
+	check("v1.0.23 park: the Meshy playground structure is in the world", v23_pgm != null and v23_pgm.scene_file_path == "res://assets/models/playground.glb", v23_pgm.scene_file_path if v23_pgm != null else "none")
+	var pg_aabb := AABB()
+	var pg_first := true
+	if v23_pgm != null:
+		var pstack: Array = [v23_pgm]
+		while not pstack.is_empty():
+			var pc: Node = pstack.pop_back()
+			for pch in pc.get_children():
+				pstack.append(pch)
+			if pc is MeshInstance3D:
+				var pab: AABB = (pc as MeshInstance3D).global_transform * (pc as MeshInstance3D).get_aabb()
+				if pg_first:
+					pg_aabb = pab
+					pg_first = false
+				else:
+					pg_aabb = pg_aabb.merge(pab)
+	check("v1.0.23 park: the playground sits ON the ground (base within 15cm)", v23_pgm != null and pg_aabb.position.y > -0.05 and pg_aabb.position.y < 0.15, "base y=" + str(pg_aabb.position.y))
+	check("v1.0.23 park: the playground is kid-scale (2.2-3.2m tall, 4-6m wide)", v23_pgm != null and pg_aabb.size.y > 2.2 and pg_aabb.size.y < 3.2 and pg_aabb.size.x > 4.0 and pg_aabb.size.x < 6.0, "size=" + str(pg_aabb.size))
+	var pq := PhysicsPointQueryParameters3D.new()
+	pq.position = Vector3(86, 1.0, 30)
+	var v23_phit: Array = main.get_world_3d().direct_space_state.intersect_point(pq)
+	check("v1.0.23 park: the playground is SOLID to walk into (collision at its centre)", not v23_phit.is_empty() and v23_pgm != null and (v23_phit[0]["collider"] as Node).get_parent() == v23_pgm.get_parent())
+	# The old code-built equipment is gone: nothing may sit at the
+	# old slide chute / seesaw / swing bar / climbing frame spots.
+	var old_spots: Array = [Vector3(103.8, 1.05, 33.9), Vector3(104, 0.85, 26.5), Vector3(92.5, 2.25, 23.5), Vector3(102, 2.35, 24.5)]
+	var old_left := 0
+	var ostack: Array = [world_node]
+	while not ostack.is_empty():
+		var oc: Node = ostack.pop_back()
+		for och in oc.get_children():
+			ostack.append(och)
+		if oc is MeshInstance3D:
+			var oab: AABB = (oc as MeshInstance3D).global_transform * (oc as MeshInstance3D).get_aabb()
+			var oc2: Vector3 = oab.get_center()
+			for os in old_spots:
+				if oc2.distance_to(os) < 0.75:
+					old_left += 1
+	check("v1.0.23 park: the OLD playground equipment is fully removed", old_left == 0, "left=" + str(old_left))
+	# Park v23_dwellers: the kids at the park spend their time there.
+	var v23_dwellers: Array = []
+	for n in main.get("npcs"):
+		if bool(n.get("park_dweller")):
+			v23_dwellers.append(n)
+	check("v1.0.23 park: at least 3 park dwellers (2 kids + the skateboarder)", v23_dwellers.size() >= 3, str(v23_dwellers.size()))
+	var v23_dwell_ok := v23_dwellers.size() > 0
+	for n in v23_dwellers:
+		if (n.get("park_spots") as Array).size() < 5:
+			v23_dwell_ok = false
+	check("v1.0.23 park: every dweller has the park's play spots", v23_dwell_ok)
+	if v23_dwellers.size() > 0:
+		seed(7)
+		var d0: Node = v23_dwellers[0]
+		var v23_spots0: Array = d0.get("park_spots")
+		var hits := 0
+		var v23_long_wait := false
+		for k in range(20):
+			d0.call("_pick_wander_target")
+			if v23_spots0.has(d0.get("wander_target")):
+				hits += 1
+				if float(d0.get("wander_wait")) >= 4.0:
+					v23_long_wait = true
+		check("v1.0.23 park: a dweller's wander picks are mostly play spots (playing, not street-wandering)", hits >= 12, "hits=" + str(hits) + "/20")
+		check("v1.0.23 park: a dweller LINGERS at a play spot (wait >= 4s)", v23_long_wait)
+
+	# ---------- v1.0.23: title panel restyle ----------
+	var v23_tpanel: Control = main.get("title_panel")
+	var v23_tp_sb: StyleBox = v23_tpanel.get_theme_stylebox("panel") if v23_tpanel != null else null
+	check("v1.0.23 title: the panel is frosted glass (translucent, strongly rounded)", v23_tp_sb is StyleBoxFlat and (v23_tp_sb as StyleBoxFlat).bg_color.a < 0.85 and (v23_tp_sb as StyleBoxFlat).corner_radius_top_left >= 30, str((v23_tp_sb as StyleBoxFlat).bg_color) if v23_tp_sb is StyleBoxFlat else "no stylebox")
+	var v23_tex_paths: Array = []
+	var v23_start_ok := false
+	var v23_ver_ok := false
+	var v23_addr_leak := false
+	if v23_tpanel != null:
+		var tstack: Array = [v23_tpanel]
+		while not tstack.is_empty():
+			var tc: Node = tstack.pop_back()
+			for tch in tc.get_children():
+				tstack.append(tch)
+			if tc is TextureRect and (tc as TextureRect).texture != null:
+				v23_tex_paths.append((tc as TextureRect).texture.resource_path)
+			if tc is Button and (tc as Button).text.contains("START"):
+				# v1.0.23: the pill is a layered TextureRect under an
+				# invisible button (a StyleBoxTexture's margins would
+				# inflate the button); the texture path scan below
+				# covers it — here just confirm the button exists.
+				v23_start_ok = true
+			if tc is Label:
+				var lt: String = (tc as Label).text
+				if lt == "v1.0.23":
+					v23_ver_ok = true
+				if lt.contains("Crescent") or lt.contains("Avenue") or lt.contains("Street") or lt.contains("Drive"):
+					v23_addr_leak = true
+	var v23_has_tag := false
+	var v23_has_medallion := false
+	var v23_has_art := false
+	var v23_paw_count := 0
+	for p in v23_tex_paths:
+		var ps: String = str(p)
+		if ps.ends_with("collar_tag.png"):
+			v23_has_tag = true
+		if ps.ends_with("paw_medallion.png"):
+			v23_has_medallion = true
+		if ps.ends_with("title_art.png"):
+			v23_has_art = true
+		if ps.ends_with("paw_print.png"):
+			v23_paw_count += 1
+	check("v1.0.23 title: the collar tag is GONE, replaced by the paw medallion", not v23_has_tag and v23_has_medallion, str(v23_tex_paths))
+	check("v1.0.23 title: the art is in its rounded frame and paw prints flank the title", v23_has_art and v23_paw_count >= 2, str(v23_tex_paths))
+	var v23_has_pill := false
+	for p in v23_tex_paths:
+		if str(p).ends_with("start_btn.png"):
+			v23_has_pill = true
+	check("v1.0.23 title: START wears the gradient pill", v23_start_ok and v23_has_pill, str(v23_tex_paths))
+	check("v1.0.23 title: version tag reads v1.0.23 and NO address is shown", v23_ver_ok and not v23_addr_leak)
 
 	# ---------- idle purr retained (v0.6) ----------
 	park_npcs_far()

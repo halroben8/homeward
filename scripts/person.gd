@@ -36,6 +36,15 @@ var notice: float = 0.0
 var mode: String = "wander" # wander | chase | pursue
 var wander_target: Vector3 = Vector3.ZERO
 var wander_wait: float = 0.0
+# --- v1.0.23 PARK DWELL: kids who live at the playground park
+# (main sets park_dweller + park_spots for the ones who spawn
+# there) spend their time playing at the park — most wander picks
+# are play spots around the structure, with a long linger on
+# arrival, instead of another street corner. They still roam off
+# sometimes, and every cat interaction (pet / treat / chase)
+# overrides dwell exactly as it overrides ordinary wandering.
+var park_dweller: bool = false
+var park_spots: Array = []
 var main_ref: Node = null
 var player_ref: Node3D = null
 var bark_timer: float = 0.0
@@ -1266,6 +1275,13 @@ func _build_dog() -> void:
 	dog_tail.rotation_degrees = Vector3(-35, 0, 0)
 
 func _pick_wander_target() -> void:
+	# v1.0.23 PARK DWELL: a park kid's next stop is usually another
+	# play spot at the playground (and they stay there a while —
+	# playing), not a random street corner.
+	if park_dweller and park_spots.size() > 0 and randf() < 0.8:
+		wander_target = park_spots[randi() % park_spots.size()]
+		wander_wait = randf_range(5.0, 12.0)
+		return
 	wander_target = Vector3(randf_range(-112.0, wander_x_max), 0, randf_range(-84.0, 84.0)) # MAP DOUBLING: wander range covers the east district too (wander_x_max = 366; BISECT: 112 in legacy mode)
 	wander_wait = randf_range(0.0, 1.5)
 
