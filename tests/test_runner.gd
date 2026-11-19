@@ -7,6 +7,7 @@ extends Node
 ## + friendly bend-down pet/treat on paw/meow only (item 5), plus the
 ## retained v0.7 set: no minimap, roles (population step: 9 of 34 seek the cat — 25% of everyone, rounded up),
 ## flat sign text, camera far plane, RUN-hold sprint + winded drop (v1.0.14),
+## RUN hold driven through the REAL two-finger touch path (v1.0.18),
 ## collar check removed (v1.0.8: button/zoom gone, tag print kept),
 ## single-mechanism escapes (v1.4: the back
 ## door for EVERY capture — the carrier is transport only),
@@ -886,6 +887,90 @@ func run_tests() -> void:
 	check("RUN off: button fill returns to grey", run_off_style != null and run_off_style.bg_color == Color(0.35, 0.38, 0.42, 0.85), str(run_off_style.bg_color) if run_off_style != null else "no normal style")
 	clear_joy()
 	await wait_sec(0.3)
+
+	# ---------- v1.0.18: RUN hold through the REAL touch path ----------
+	# Michael's S26 report on v1.0.16: "the run button isn't working"
+	# — with the joystick thumb down, the RUN thumb never engaged, so
+	# every chase ended in an instant capture. Root cause: the hold
+	# was wired ONLY to the Button's button_down/button_up signals,
+	# which ride the touch->mouse emulation channel — a
+	# single-pointer channel. A raw InputEventScreenTouch landing
+	# square on a Button fires nothing (verified headless); only an
+	# (emulated) mouse press fires it, and emulation can only be one
+	# finger at a time. The section above cannot see this: it emits
+	# the button's signals directly. THIS section drives the real
+	# viewport input pipeline with two simultaneous touch indices —
+	# joystick finger first, RUN as the second finger — exactly the
+	# failing play pattern. (Input.parse_input_event events are
+	# dropped by the headless display server, so the events go
+	# through Viewport.push_input, which runs the same _input ->
+	# GUI -> _unhandled_input pipeline the OS events take.)
+	park_npcs_far()
+	(player as Node3D).global_position = Vector3(30, 0.2, 40)
+	player.set("stamina", 100.0)
+	player.set("winded", false)
+	await wait_sec(0.2)
+	var vp18: Vector2 = get_viewport().get_visible_rect().size
+	var joy_pos18 := Vector2(vp18.x * 0.15, vp18.y * 0.55)
+	var run_pos18: Vector2 = (main.get("run_btn") as Button).get_global_rect().get_center()
+	var tev := InputEventScreenTouch.new()
+	tev.index = 0
+	tev.pressed = true
+	tev.position = joy_pos18
+	get_viewport().push_input(tev, true)
+	await wait_sec(0.15)
+	var dev := InputEventScreenDrag.new()
+	dev.index = 0
+	dev.position = joy_pos18 + Vector2(0, -100)
+	dev.relative = Vector2(0, -100)
+	get_viewport().push_input(dev, true)
+	await wait_sec(0.4)
+	check("v1.0.18 touch path: joystick finger claims the stick (real events)", int(main.get("joy_id")) == 0, str(main.get("joy_id")))
+	check("v1.0.18 touch path: full push alone walks at 5.6 (joystick never sprints — v1.0.14)", not bool(player.get("is_sprinting")) and Vector2((player as CharacterBody3D).velocity.x, (player as CharacterBody3D).velocity.z).length() > 5.0, str(Vector2((player as CharacterBody3D).velocity.x, (player as CharacterBody3D).velocity.z).length()))
+	var tev2 := InputEventScreenTouch.new()
+	tev2.index = 1
+	tev2.pressed = true
+	tev2.position = run_pos18
+	get_viewport().push_input(tev2, true)
+	await wait_sec(0.15)
+	check("v1.0.18 touch path: second finger on RUN engages the hold (run_on)", bool(main.get("run_on")))
+	check("v1.0.18 touch path: RUN hold reaches the cat (touch_sprint)", bool(player.get("touch_sprint")))
+	await wait_sec(0.5)
+	check("v1.0.18 touch path: joystick + RUN held = sprinting", bool(player.get("is_sprinting")))
+	var spd18: float = Vector2((player as CharacterBody3D).velocity.x, (player as CharacterBody3D).velocity.z).length()
+	check("v1.0.18 touch path: sprint speed through real events (> 9.5)", spd18 > 9.5, str(spd18))
+	check("v1.0.18 touch path: stamina draining while sprinting", float(player.get("stamina")) < 99.0, str(player.get("stamina")))
+	var tev3 := InputEventScreenTouch.new()
+	tev3.index = 1
+	tev3.pressed = false
+	tev3.position = run_pos18
+	get_viewport().push_input(tev3, true)
+	await wait_sec(0.3)
+	check("v1.0.18 touch path: RUN finger lifts -> hold clears, back to walk", not bool(main.get("run_on")) and not bool(player.get("is_sprinting")) and Vector2((player as CharacterBody3D).velocity.x, (player as CharacterBody3D).velocity.z).length() <= 5.7, str(Vector2((player as CharacterBody3D).velocity.x, (player as CharacterBody3D).velocity.z).length()))
+	check("v1.0.18 touch path: joystick still owned by finger 0 after RUN release", int(main.get("joy_id")) == 0, str(main.get("joy_id")))
+	var tev4 := InputEventScreenTouch.new()
+	tev4.index = 0
+	tev4.pressed = false
+	tev4.position = joy_pos18 + Vector2(0, -100)
+	get_viewport().push_input(tev4, true)
+	await wait_sec(0.2)
+	# Single-finger parity: RUN as the ONLY finger must also engage
+	# through the touch channel (it never could through the Button).
+	player.set("stamina", 100.0)
+	var tev5 := InputEventScreenTouch.new()
+	tev5.index = 0
+	tev5.pressed = true
+	tev5.position = run_pos18
+	get_viewport().push_input(tev5, true)
+	await wait_sec(0.15)
+	check("v1.0.18 touch path: RUN as the only finger also engages", bool(main.get("run_on")) and bool(player.get("touch_sprint")))
+	var tev6 := InputEventScreenTouch.new()
+	tev6.index = 0
+	tev6.pressed = false
+	tev6.position = run_pos18
+	get_viewport().push_input(tev6, true)
+	await wait_sec(0.2)
+	check("v1.0.18 touch path: solo RUN release clears the hold", not bool(main.get("run_on")) and not bool(player.get("touch_sprint")))
 
 	# ---------- collar (v1.0.8: the in-play collar check is REMOVED) ----------
 	# Michael's direction: under the new story the collar falls off

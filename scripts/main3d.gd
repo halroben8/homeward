@@ -302,6 +302,7 @@ var pound_return_has_target: bool = false
 var action_buttons: Array = [] # touch buttons (live rects block look drags)
 var run_btn: Button = null # RUN hold button (sits beside MEOW)
 var run_on: bool = false # v1.0.14: RUN HELD state: true only while the button is physically held down
+var run_touch_id: int = -999 # v1.0.18: touch index currently holding RUN (-999 = none) — RUN is claimed/released on the raw touch channel in _input (see the v1.0.18 note there), not only via the Button's emulated-mouse signals
 var shelf_zone := Rect2(546, -9, 6, 5) # XZ rect (MAP DOUBLING: +360 with escape_origin)
 var sofa_zone := Rect2(556, 3, 7, 3)
 var window_zone := Rect2(557, -9.5, 6, 3)
@@ -5547,6 +5548,31 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
 		var t := event as InputEventScreenTouch
 		var vp := get_viewport().get_visible_rect().size
+		# v1.0.18 RUN FIX (Michael's S26 report: "the run button isn't
+		# working" — he could never run, so every chase ended in an
+		# instant capture): the RUN hold is claimed and released HERE,
+		# on the raw multi-touch channel — the same channel the
+		# joystick and the look drags use — instead of relying on the
+		# Button's button_down/button_up signals. Those signals ride
+		# the touch->mouse emulation channel (the project leaves
+		# emulate_mouse_from_touch at its default true), which is a
+		# SINGLE-pointer channel: while the left thumb holds the
+		# joystick, the right thumb's press on RUN never reaches the
+		# Button as a GUI press. Verified headless: a raw
+		# InputEventScreenTouch landing square on a Button fires
+		# nothing at all; only an (emulated) mouse press fires it.
+		# RUN is the one control that MUST work while another finger
+		# is down, so it is driven by touch index, like the joystick.
+		# The Button stays as the visual and the desktop-mouse path;
+		# both routes call _on_run_hold, which is idempotent, and the
+		# release is matched by touch index wherever the finger lifts.
+		if t.pressed:
+			if state == "play" and run_touch_id == -999 and run_btn != null and run_btn.is_visible_in_tree() and run_btn.get_global_rect().has_point(t.position):
+				run_touch_id = t.index
+				_on_run_hold(true)
+		elif t.index == run_touch_id:
+			run_touch_id = -999
+			_on_run_hold(false)
 		if t.pressed:
 			if t.position.x < vp.x * 0.45 and joy_id == -999:
 				joy_id = t.index
@@ -5907,7 +5933,7 @@ func _build_hud() -> void:
 	title_panel.add_child(start_btn)
 	# v1.0.10: subtle build tag so Michael can confirm which build
 	# he is running from the title screen itself.
-	var ver := _hud_label(title_panel, "v1.0.17", Vector2(706, 522), 16)
+	var ver := _hud_label(title_panel, "v1.0.18", Vector2(706, 522), 16)
 	ver.label_settings.font_color = Color(0.65, 0.7, 0.85)
 	win_panel = _make_panel(hud_layer, Vector2(290, 130), Vector2(700, 460), Color(0.12, 0.2, 0.12, 0.97))
 	win_panel.set_anchors_preset(Control.PRESET_CENTER)
@@ -6337,8 +6363,11 @@ func _apply_joystick() -> void:
 	# v1.0.14: RUN is momentary — if play ends mid-hold (capture,
 	# escape, win) and a button_up never reaches the hidden button,
 	# force the release here so touch_sprint can never stick on.
-	if run_on and state != "play":
+	# v1.0.18: the touch claim gets the same treatment — a release
+	# swallowed by the state change must not mute the next RUN press.
+	if state != "play" and (run_on or run_touch_id != -999):
 		run_on = false
+		run_touch_id = -999
 		player.set("touch_sprint", false)
 		_refresh_run_button()
 	var active_joy: bool = joy_id != -999 or joy_mouse
