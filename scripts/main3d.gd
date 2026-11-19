@@ -5440,8 +5440,11 @@ func _spawn_npcs() -> void:
 # cam_yaw value this script publishes every frame), so turning the
 # camera turns movement sensibly. At yaw=0 the camera sits behind the
 # cat on +Z exactly like v0.3, so up = away from camera by default.
-# Escape room: slightly farther orbit (5.4) so the room still frames;
-# the collision pull-in below keeps the camera inside its walls.
+# Escape room: its own indoor profile since v1.0.20 (orbit 3.0, FOV
+# 70, pitch floored at 26, and a pull-in that lifts instead of
+# pinning the camera to the cat) — see the v1.0.20 note in
+# _update_camera. The collision pull-in below keeps the camera
+# inside its walls.
 # v1.2 READABILITY (Michael's v1.0.4 playtest — the real-scale cat was
 # hard to see): orbit back in toward the old perspective. Pre-scale-fix
 # the cat filled ~0.40 of the frame height ratio (1.5m at 3.7m); the
@@ -5480,14 +5483,21 @@ func _spawn_npcs() -> void:
 # which is the point. (An intermediate tuning at dist 2.2 / FOV 72
 # measured the cat at only 0.18 — pulled back in: distance is the
 # one lever that shrinks him, so it moved least.) The ESCAPE room
-# keeps its exact old framing (CAM_LOOK_HEIGHT 0.38, FOV 62, dist
-# 5.0); the capture cutscene keeps FOV 62 too.
+# kept its old framing (CAM_LOOK_HEIGHT 0.38, FOV 62, dist 5.0)
+# until v1.0.20, which gave the room its own indoor profile (dist
+# 3.0, FOV 70, pitch floor 26, pull-in lift — see _update_camera);
+# the room's 0.38 look anchor is unchanged, and the capture
+# cutscene keeps FOV 62.
 const CAM_TOWN_DIST := 2.0
-const CAM_ESCAPE_DIST := 5.0
+const CAM_ESCAPE_DIST := 3.0 # v1.0.20: was 5.0 — the indoor profile (see the v1.0.20 note in _update_camera)
 const CAM_LOOK_HEIGHT := 0.38 # escape-room look anchor (unchanged)
 const CAM_TOWN_LOOK_HEIGHT := 1.15 # town/chase look anchor (v1.3)
-const CAM_FOV := 62.0 # escape / cutscene FOV (unchanged)
+const CAM_FOV := 62.0 # cutscene FOV (unchanged)
+const CAM_ESCAPE_FOV := 70.0 # v1.0.20: the escape room uses the town's wider FOV (was CAM_FOV 62)
 const CAM_TOWN_FOV := 70.0 # town play FOV (v1.3)
+const CAM_ESCAPE_PITCH := 26.0 # v1.0.20: indoor pitch — set on room entry, and the escape camera never rides below it
+const CAM_ESCAPE_MIN_DIST := 2.0 # v1.0.20: indoors the pull-in lifts instead of pinning the camera closer than this to the cat
+const CAM_ESCAPE_LIFT_MAX := 3.9 # v1.0.20: the indoor lift's cap, metres above the look anchor (the ward ceiling's underside is ~4.6)
 const CHASE_CAM_DIST := 6.4 # the close-chase orbit (v1.2: 6.8 -> 6.4 for the smaller cat so he AND the pursuer read clearly; v1.3: the aim raise below keeps the pursuer's CHASE/GRAB bar in frame — y=0.15 at 5m behind, ShotRunnerCamera)
 const CHASE_AIM_MAX := 1.5 # v1.0.13: max metres the chase aim may drift from the cat toward the chaser (see the pursuit-camera note in _update_camera)
 const CHASE_DIST_NEAR := 8.0 # v1.0.13: at or below this cat<->chaser gap the full chase distance applies (ordinary chases live here)
@@ -5690,16 +5700,41 @@ func _update_camera(delta: float) -> void:
 			dist = lerpf(CAM_TOWN_DIST, CHASE_CAM_DIST, close_w)
 			look_target = player.global_position + aim_off + Vector3(0, _look_height() + 0.45 * close_w, 0)
 	current_cam_dist = dist
-	var pitch_rad: float = deg_to_rad(look_pitch_deg)
+	# v1.0.20 INDOOR CAMERA (Michael's v1.0.17 play screenshot: the
+	# camera jammed right up behind Zander indoors — the cat filling
+	# roughly half the screen, a bare wall corner and a strip of
+	# carpet, the room, the captor, the props and the back door out
+	# of view). The room inherited the town's 4-degree pitch, so the
+	# camera rode at ~0.7 m — furniture height — and the collision
+	# pull-in below spent the whole escape squeezing it in behind
+	# the cat (measured 1.68 m from him in a corner staging, 0.4 m
+	# at the limit). Indoors the camera now has its own profile: a
+	# closer orbit (CAM_ESCAPE_DIST 3.0), the town's wider FOV
+	# (CAM_ESCAPE_FOV) and this pitch floor — the escape camera
+	# never rides below CAM_ESCAPE_PITCH, so it looks down into the
+	# room over the furniture instead of along the floor.
+	# _enter_escape also SETS look_pitch_deg to CAM_ESCAPE_PITCH so
+	# the stored value starts there; the floor covers a pitch the
+	# player dragged down in town and carried through the door.
+	# Outdoors nothing changes: the floor applies to "escape" only,
+	# and the town/chase framing above is untouched.
+	var pitch_deg: float = look_pitch_deg
+	if state == "escape":
+		pitch_deg = maxf(pitch_deg, CAM_ESCAPE_PITCH)
+	var pitch_rad: float = deg_to_rad(pitch_deg)
 	var behind: Vector3 = Basis(Vector3.UP, look_yaw) * Vector3(0, 0, 1)
 	var desired: Vector3 = look_target + behind * (cos(pitch_rad) * dist) + Vector3(0, sin(pitch_rad) * dist, 0)
 	desired.y = maxf(desired.y, 0.35) # never sink under the ground when looking up
 	# v1.3 FOV by state: town play runs the wider 70 so people + their
-	# overhead bars fit at conversational distance; the escape room
-	# and the capture cutscene keep the 62 they were verified with.
+	# overhead bars fit at conversational distance. v1.0.20: the
+	# escape room joins it (CAM_ESCAPE_FOV) — a small room needs the
+	# width more than the street does; the capture cutscene keeps
+	# the 62 it was verified with.
 	# (v1.0.8: the collar-zoom FOV blend is gone with the collar check.)
-	if state == "escape" or state == "cutscene":
+	if state == "cutscene":
 		cam.fov = CAM_FOV
+	elif state == "escape":
+		cam.fov = CAM_ESCAPE_FOV
 	else:
 		cam.fov = CAM_TOWN_FOV
 	# ESCAPE CAMERA (v1.1): while the visible escape plays, frame the
@@ -5770,12 +5805,34 @@ func _update_camera(delta: float) -> void:
 					# Cat is backed right up against the obstacle: squeeze
 					# the camera into the small gap that remains.
 					cam_pos = look_target + dir.normalized() * 0.4
+	# v1.0.20 INDOOR LIFT: the pull-in above can still squeeze the
+	# room camera to 0.4 m when the cat backs into a corner — and
+	# the mechanisms are IN the walls (the back-door bolt, the cage
+	# latch), so he works them with his back to the room, exactly
+	# when he needs to see the captor coming. Indoors, a pull that
+	# would pin the camera closer than CAM_ESCAPE_MIN_DIST to the
+	# cat lifts it instead: straight up from the pulled (in-room)
+	# point until the gap is made up, capped under the ward's
+	# ceiling. The cat stays framed and the floor around him —
+	# captor, props, door — opens up beneath the camera.
+	var aim_target: Vector3 = look_target
+	if state == "escape" and not escape_cam_active:
+		if cam_pos.distance_to(look_target) < CAM_ESCAPE_MIN_DIST:
+			var horiz_gap: float = Vector2(cam_pos.x - look_target.x, cam_pos.z - look_target.z).length()
+			var lift_y: float = sqrt(maxf(CAM_ESCAPE_MIN_DIST * CAM_ESCAPE_MIN_DIST - horiz_gap * horiz_gap, 0.49))
+			cam_pos.y = minf(maxf(cam_pos.y, look_target.y + lift_y), look_target.y + CAM_ESCAPE_LIFT_MAX)
+			# A lifted camera looks down steeply, which pushes a
+			# standing captor across the room out of the top of the
+			# frame — the one person the player is watching for.
+			# Raise the aim with the lift so she stays in frame; the
+			# cat drops to the lower third, still fully readable.
+			aim_target.y += (cam_pos.y - look_target.y) * 0.35
 	cam.position = cam_pos
 	# v1.5: 0.3 -> 0.12 — a tight dead zone, so the camera keeps
 	# re-aiming during close approaches instead of holding a stale
 	# angle (the old 0.3 left it un-aimed inside 0.3 of the target).
-	if cam.position.distance_to(look_target) > 0.12:
-		cam.look_at(look_target, Vector3.UP)
+	if cam.position.distance_to(aim_target) > 0.12:
+		cam.look_at(aim_target, Vector3.UP)
 
 # ---------------------------------------------------------------- HUD (same layout as v0.1)
 func _hud_label(parent: Node, text: String, pos: Vector2, size: int) -> Label:
@@ -5933,7 +5990,7 @@ func _build_hud() -> void:
 	title_panel.add_child(start_btn)
 	# v1.0.10: subtle build tag so Michael can confirm which build
 	# he is running from the title screen itself.
-	var ver := _hud_label(title_panel, "v1.0.19", Vector2(706, 522), 16)
+	var ver := _hud_label(title_panel, "v1.0.20", Vector2(706, 522), 16)
 	ver.label_settings.font_color = Color(0.65, 0.7, 0.85)
 	win_panel = _make_panel(hud_layer, Vector2(290, 130), Vector2(700, 460), Color(0.12, 0.2, 0.12, 0.97))
 	win_panel.set_anchors_preset(Control.PRESET_CENTER)
@@ -7473,6 +7530,15 @@ func _enter_escape() -> void:
 	# carrier (the carrier is transport dressing, not a puzzle).
 	player.global_position = escape_origin + Vector3(0, 0.3, 6)
 	if player: player.set("frozen", false)
+	# v1.0.20: start the room on the indoor camera — the pitch goes
+	# to the indoor default and the camera starts behind the cat.
+	# This mirrors the handoff _complete_escape performs on the way
+	# out (it restores the town pitch/yaw there); the 0.6 s fade
+	# above covers the swing, and the escape-state pitch floor in
+	# _update_camera holds the framing from there.
+	look_pitch_deg = CAM_ESCAPE_PITCH
+	if player:
+		look_yaw = wrapf(player.rotation.y + PI, -PI, PI)
 	# v1.2: the captor is IN THE ROOM with the cat (Michael's design) —
 	# settling him in, tidying up. The captor ambles between the room
 	# anchors (see _update_captor_room); their town chase state is

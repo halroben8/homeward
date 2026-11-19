@@ -9,6 +9,8 @@ extends Node
 ## flat sign text, camera far plane, RUN-hold sprint + winded drop (v1.0.14),
 ## RUN hold driven through the REAL two-finger touch path (v1.0.18),
 ## per-captor pronoun consistency across all generated escape text (v1.0.19),
+## the v1.0.20 indoor camera (room profile: entry pitch, orbit/FOV,
+## cat share bounds mid-room and in a corner, the pull-in lift),
 ## collar check removed (v1.0.8: button/zoom gone, tag print kept),
 ## single-mechanism escapes (v1.4: the back
 ## door for EVERY capture — the carrier is transport only),
@@ -1426,6 +1428,62 @@ func run_tests() -> void:
 		var n_joined: String = "\n".join(PackedStringArray(n_texts))
 		check("v1.0.19: the " + t19 + " (no established gender) gets NO gendered pronouns", rx_fem.search(n_joined) == null and rx_masc.search(n_joined) == null, n_joined)
 		check("v1.0.19: the " + t19 + "'s text refers by name instead", n_joined.contains(str(cap19.get("display_name"))), n_joined)
+	# Leave the room the intended way so later sections start clean.
+	main.set("captor", woman19)
+	main.call("_enter_escape")
+	distract_captor()
+	(player as Node3D).global_position = Vector3(573.4, 0.3, 3.4)
+	drive_escape_panel()
+	walk_cat_out()
+	main.call("_process", 30.1) # drain the pursuit
+
+	# ---------- v1.0.20 INDOOR CAMERA (Michael's v1.0.17 play screenshot) ----------
+	# Indoors the follow camera inherited the town profile (pitch 4,
+	# orbit 5.0, FOV 62): it rode at ~0.7 m — furniture height — and
+	# the collision pull-in squeezed it in behind the cat; his
+	# screenshot has the cat at half the screen against a bare wall
+	# corner, the room and the captor out of view. The room now has
+	# its own profile: entering sets the indoor pitch (26), the
+	# escape camera never rides below it, the orbit is 3.0 at FOV
+	# 70, and a pull that would pin the camera closer than 2.0 m to
+	# the cat lifts it instead (aim raised with the lift, so a
+	# captor across the room stays in frame). Measured with the
+	# REAL camera, the way the v1.3 section measures the town.
+	main.set("captor", woman19)
+	main.call("_enter_escape")
+	check("v1.0.20: entering a room sets the indoor pitch (26)", absf(float(main.get("look_pitch_deg")) - 26.0) < 0.01, str(main.get("look_pitch_deg")))
+	(player as Node3D).global_position = Vector3(562, 0.3, -2) # mid-room
+	main.set("look_yaw", -PI * 0.75)
+	await wait_sec(1.2) # camera settle
+	var icam: Camera3D = main.get("cam")
+	var ivp: Vector2 = get_viewport().get_visible_rect().size
+	check("v1.0.20: the room runs the indoor profile (orbit 3.0, FOV 70)", absf(float(main.get("current_cam_dist")) - 3.0) < 0.01 and absf(icam.fov - 70.0) < 0.01, "dist=" + str(main.get("current_cam_dist")) + " fov=" + str(icam.fov))
+	var cat_share_now = func() -> float:
+		var a := AABB()
+		var fst := true
+		for mi in (player as Node3D).find_children("*", "MeshInstance3D", true, false):
+			var ga: AABB = (mi as MeshInstance3D).global_transform * (mi as MeshInstance3D).get_aabb()
+			a = ga if fst else a.merge(ga)
+			fst = false
+		var b: Vector3 = (player as Node3D).global_position
+		return absf(icam.unproject_position(Vector3(b.x, a.position.y, b.z)).y - icam.unproject_position(Vector3(b.x, a.position.y + a.size.y, b.z)).y) / ivp.y
+	var mid_share: float = cat_share_now.call()
+	check("v1.0.20: mid-room the cat is readable but not filling the screen (share 0.10-0.35)", mid_share >= 0.10 and mid_share <= 0.35, str(mid_share))
+	(woman19 as Node3D).global_position = Vector3(565.5, 0.25, 1.5) # across the room, in the view direction
+	await wait_sec(0.35)
+	var whead: Vector3 = (woman19 as Node3D).global_position + Vector3(0, 1.55, 0)
+	var whead_in: bool = not icam.is_position_behind(whead) and Rect2(Vector2.ZERO, ivp).has_point(icam.unproject_position(whead))
+	check("v1.0.20: the captor across the room is in frame", whead_in, str(icam.unproject_position(whead) / ivp))
+	# The corner case from the screenshot: the cat backed into the
+	# south-west corner, the camera pushed into the corner behind
+	# him. The pull-in must lift the camera, never pin it to him.
+	(player as Node3D).global_position = Vector3(547.6, 0.3, 8.4)
+	main.set("look_yaw", -PI * 0.25)
+	await wait_sec(1.2) # camera settle
+	var corner_gap: float = icam.global_position.distance_to((player as Node3D).global_position + Vector3(0, 0.38, 0))
+	check("v1.0.20: backed into a corner the camera lifts instead of pinning to the cat (>= 1.9m from him)", corner_gap >= 1.9, str(corner_gap))
+	var corner_share: float = cat_share_now.call()
+	check("v1.0.20: in the corner the cat still does not fill the screen (share <= 0.35)", corner_share <= 0.35, str(corner_share))
 	# Leave the room the intended way so later sections start clean.
 	main.set("captor", woman19)
 	main.call("_enter_escape")
