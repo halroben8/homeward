@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://u5qnf67orc1k"
-path="res://.godot/imported/tortoiseshell_cat_texture_0.jpg-0bdf53f9f61ef0ec57b197a16c970f72.ctex"
+path.s3tc="res://.godot/imported/tortoiseshell_cat_texture_0.jpg-0bdf53f9f61ef0ec57b197a16c970f72.s3tc.ctex"
+path.etc2="res://.godot/imported/tortoiseshell_cat_texture_0.jpg-0bdf53f9f61ef0ec57b197a16c970f72.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "455ed0ae1e01849a08fead5116d84c0b"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/tortoiseshell_cat_texture_0.jpg"
-dest_files=["res://.godot/imported/tortoiseshell_cat_texture_0.jpg-0bdf53f9f61ef0ec57b197a16c970f72.ctex"]
+dest_files=["res://.godot/imported/tortoiseshell_cat_texture_0.jpg-0bdf53f9f61ef0ec57b197a16c970f72.s3tc.ctex", "res://.godot/imported/tortoiseshell_cat_texture_0.jpg-0bdf53f9f61ef0ec57b197a16c970f72.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

@@ -15,7 +15,7 @@ dest_files=["res://.godot/imported/foliage_normal.png-c9fd3079fbfb3128a5b3f4e813
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

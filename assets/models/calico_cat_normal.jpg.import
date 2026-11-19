@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://bv0s1eqn8rw5i"
-path="res://.godot/imported/calico_cat_normal.jpg-e3931eb095749dfe8e81556ddc775615.ctex"
+path.s3tc="res://.godot/imported/calico_cat_normal.jpg-e3931eb095749dfe8e81556ddc775615.s3tc.ctex"
+path.etc2="res://.godot/imported/calico_cat_normal.jpg-e3931eb095749dfe8e81556ddc775615.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "886d6b8b5833fd32da065b88b29f2a82"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/calico_cat_normal.jpg"
-dest_files=["res://.godot/imported/calico_cat_normal.jpg-e3931eb095749dfe8e81556ddc775615.ctex"]
+dest_files=["res://.godot/imported/calico_cat_normal.jpg-e3931eb095749dfe8e81556ddc775615.s3tc.ctex", "res://.godot/imported/calico_cat_normal.jpg-e3931eb095749dfe8e81556ddc775615.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

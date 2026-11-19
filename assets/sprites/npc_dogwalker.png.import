@@ -15,7 +15,7 @@ dest_files=["res://.godot/imported/npc_dogwalker.png-612fd377f24e82716113774dc40
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

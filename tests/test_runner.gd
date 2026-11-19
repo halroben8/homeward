@@ -40,6 +40,7 @@ var main: Node = null
 var player: Node = null
 var passed: int = 0
 var failed: int = 0
+var v25_spawn_snapshot: Array = [] # v1.0.25: inhabitant positions at boot (true spawns, before any section moves them)
 
 func check(name: String, cond: bool, detail: String = "") -> void:
 	if cond:
@@ -253,6 +254,11 @@ func run_tests() -> void:
 		_bw109 += 1
 	await wait_sec(0.6)
 	player = main.get("player")
+	# v1.0.25: snapshot the true spawn positions NOW (state is
+	# "splash", so nobody has wandered yet) for the late
+	# spawn-validity check.
+	for n25s in main.get("npcs"):
+		v25_spawn_snapshot.append((n25s as Node3D).global_position)
 
 	# ---------- static / build-time checks ----------
 	check("boot: starts on splash", str(main.get("state")) == "splash", str(main.get("state")))
@@ -1846,26 +1852,13 @@ func run_tests() -> void:
 		if te["node"] == tcar_v:
 			tcars_arr.erase(te)
 	tcar_v.queue_free()
-	# the light bar (Michael's order: meter fills -> LIGHTS ON ->
-	# van stops -> he gets out): dark on patrol; in an encounter
-	# the two lamps alternate, never both, never neither.
-	var lamp_l: MeshInstance3D = main.get("pound_light_lamp_l")
-	var lamp_r: MeshInstance3D = main.get("pound_light_lamp_r")
-	check("v1.0.21 lights: the van carries the flashing light rig", lamp_l != null and lamp_r != null)
-	main.set("pound_state", "patrol")
-	main.set("pound_notice", 0.0) # v1.0.22: an empty meter is part of "on patrol" now (a building meter lights the bar)
-	main.call("_pound_update_lights", 0.1)
-	check("v1.0.21 lights: DARK on patrol", not lamp_l.visible and not lamp_r.visible)
-	main.set("pound_state", "chase")
-	main.call("_pound_update_lights", 0.1)
-	var one_lit: bool = lamp_l.visible != lamp_r.visible
-	var first_lamp_l: bool = lamp_l.visible
-	main.call("_pound_update_lights", 0.3)
-	var swapped: bool = lamp_l.visible != first_lamp_l and lamp_l.visible != lamp_r.visible
-	check("v1.0.21 lights: in an encounter exactly one lamp is lit, alternating", one_lit and swapped, str(lamp_l.visible) + "/" + str(lamp_r.visible))
-	main.set("pound_state", "patrol")
-	main.call("_pound_update_lights", 0.1)
-	check("v1.0.21 lights: dark again when the patrol resumes", not lamp_l.visible and not lamp_r.visible)
+	# v1.0.25: the flashing light bar is REMOVED (Michael reversed
+	# the v1.0.21/22 order — "not working, really weird, get rid
+	# of it"). The rig, its lamps and its update are gone; the
+	# proximity meter behaviour itself is untouched (checked by
+	# the pound sections elsewhere).
+	check("v1.0.25 lights: the flashing light rig is GONE (no lamp nodes)", main.get("pound_light_lamp_l") == null and main.get("pound_light_lamp_r") == null)
+	check("v1.0.25 lights: no light-update method remains", not main.has_method("_pound_update_lights") and not main.has_method("_build_pound_light_rig") and not main.has_method("_pound_lights_active"))
 	# ---------- v1.0.22: cars drive NOSE-FIRST ----------
 	# The gap that shipped v1.0.21's backwards cars: no check ever
 	# compared a car's facing with its motion. Sample the REAL
@@ -1894,22 +1887,18 @@ func run_tests() -> void:
 		sc.queue_free()
 	check("v1.0.22: every spawned traffic car points its nose along its travel direction", nose_bad == 0, "bad=" + str(nose_bad))
 	check("v1.0.22: the nose sample covered several travel directions", nose_dirs.size() >= 3, str(nose_dirs.keys()))
-	# ---------- v1.0.22: lights start WITH the meter + the siren ----------
-	# Michael: the bar lights as soon as the meter starts building
-	# (proximity), not only once it fills — and a soft two-tone
-	# whoop sounds while the bar is live, stopping with it.
-	main.set("pound_state", "patrol")
-	main.set("pound_notice", 0.3) # building, nowhere near full
-	main.call("_pound_update_lights", 0.1)
-	check("v1.0.22 lights: lit while the notice meter is still BUILDING (patrol, notice 0.3)", lamp_l.visible != lamp_r.visible, str(lamp_l.visible) + "/" + str(lamp_r.visible))
-	var siren: AudioStreamPlayer = main.get("sfx_siren")
-	check("v1.0.22 siren: the van has its siren player", siren != null and siren.stream != null)
-	check("v1.0.22 siren: playing while the lights are active", siren != null and siren.playing)
+	# ---------- v1.0.25: the siren is GONE with the lights ----------
+	# (Was the v1.0.22 block asserting the whoop rides the meter;
+	# Michael removed the whole feature in v1.0.25.) The meter
+	# itself still builds on proximity — that behaviour is covered
+	# by the pound proximity sections; here we assert ABSENCE:
+	# no siren player, nothing sounds in any pound state.
+	check("v1.0.25 siren: the van has NO siren player", main.get("sfx_siren") == null)
+	main.set("pound_state", "chase")
+	main.set("pound_notice", 0.6)
+	check("v1.0.25 siren: still no siren (and no lamps) with a building meter in a chase state", main.get("sfx_siren") == null and main.get("pound_light_lamp_l") == null)
 	main.set("pound_notice", 0.0)
 	main.set("pound_state", "patrol")
-	main.call("_pound_update_lights", 0.1)
-	check("v1.0.22 lights: dark again once the meter empties on patrol", not lamp_l.visible and not lamp_r.visible)
-	check("v1.0.22 siren: stopped when the lights go out", siren != null and not siren.playing)
 	# patrol: he drives the loop, on the lanes, worker riding inside
 	main.set("pound_state", "patrol")
 	pvan.position = Vector3(-60, 0, 16.8)
@@ -2327,7 +2316,7 @@ func run_tests() -> void:
 				v23_start_ok = true
 			if tc is Label:
 				var lt: String = (tc as Label).text
-				if lt == "v1.0.24":
+				if lt == "v1.0.26":
 					v23_ver_ok = true
 				if lt.contains("Crescent") or lt.contains("Avenue") or lt.contains("Street") or lt.contains("Drive"):
 					v23_addr_leak = true
@@ -2352,7 +2341,7 @@ func run_tests() -> void:
 		if str(p).ends_with("start_btn.png"):
 			v23_has_pill = true
 	check("v1.0.23 title: START wears the gradient pill", v23_start_ok and v23_has_pill, str(v23_tex_paths))
-	check("v1.0.23 title: version tag reads v1.0.24 and NO address is shown", v23_ver_ok and not v23_addr_leak)
+	check("v1.0.23 title: version tag reads v1.0.26 and NO address is shown", v23_ver_ok and not v23_addr_leak)
 
 	# ---------- v1.0.24: ONE TAP = ONE COMBO STEP (Michael's v1.0.22 play report) ----------
 	# "I hit B once and multiple Bs were hit… then when I hit A it
@@ -2469,11 +2458,260 @@ func run_tests() -> void:
 	main.call("_process", 0.1)
 	check("v1.0.24 panel: the post-escape pursuit is run out (cleanup for the next section)", not (main.get("pursuers") as Dictionary).has(woman), str(main.get("pursuers")))
 
+	# ---------- v1.0.25: the seven play-report fixes ----------
+	# ITEM 1/4 structural checks first (any state): nobody and no
+	# cat home may sit inside a house footprint.
+	var v25_spawn_bad := 0
+	for sp25 in v25_spawn_snapshot:
+		if bool(main.call("point_in_house_footprint", sp25, 0.3)):
+			v25_spawn_bad += 1
+	check("v1.0.25 spawns: NO inhabitant spawns inside a house footprint (one was entombed in 22 Willow Crescent)", v25_spawn_bad == 0, "bad=" + str(v25_spawn_bad))
+	var v25_home_bad := 0
+	for c25 in main.get("town_cats"):
+		if bool(main.call("point_in_house_footprint", c25.get("home"), 0.3)):
+			v25_home_bad += 1
+	check("v1.0.25 town cats: NO cat home inside a house footprint (two were)", v25_home_bad == 0, "bad=" + str(v25_home_bad))
+	# ITEM 2: every vehicle's IMPORTED mesh must span the full
+	# texture atlas — the sedan's UVs came out of Godot's mesh
+	# compression remapped into one quadrant (u' = 0.5 + 0.5u),
+	# which rendered its paint as camouflage while the same GLB
+	# rendered clean in Blender.
+	var v25_veh_paths: Array = ["car_sedan", "car_compact", "car_police", "car_sports", "suv", "truck_pickup", "van_delivery", "van_animal_control"]
+	var v25_uv_bad: Array = []
+	for vp in v25_veh_paths:
+		var vinst: Node = (load("res://assets/models/" + vp + ".glb") as PackedScene).instantiate()
+		var vmi: MeshInstance3D = null
+		var v25_stack: Array = [vinst]
+		while not v25_stack.is_empty():
+			var v25_cur: Node = v25_stack.pop_back()
+			if v25_cur is MeshInstance3D and vmi == null:
+				vmi = v25_cur as MeshInstance3D
+			for v25_ch in v25_cur.get_children():
+				v25_stack.append(v25_ch)
+		var vok := false
+		if vmi != null and vmi.mesh != null:
+			var varrs: Array = vmi.mesh.surface_get_arrays(0)
+			var vuvs: PackedVector2Array = varrs[Mesh.ARRAY_TEX_UV]
+			var vumn := Vector2(1e9, 1e9)
+			var vumx := Vector2(-1e9, -1e9)
+			for vu in vuvs:
+				vumn = Vector2(minf(vumn.x, vu.x), minf(vumn.y, vu.y))
+				vumx = Vector2(maxf(vumx.x, vu.x), maxf(vumx.y, vu.y))
+			vok = (vumx.x - vumn.x) >= 0.9 and (vumx.y - vumn.y) >= 0.9
+		if not vok:
+			v25_uv_bad.append(vp)
+		vinst.free()
+	check("v1.0.25 vehicles: all 8 imported UV sets span the full atlas (no compression remap / camouflage paint)", v25_uv_bad.is_empty(), str(v25_uv_bad))
+	# ITEM 3: the gable audit — part presence per gable house,
+	# plus a raycast at the triangle from outside each gable:
+	# an open gable lets the ray cross the whole house.
+	var v25_gable_houses := 0
+	for h25g in main.get("houses"):
+		if (h25g as Dictionary).has("gable"):
+			v25_gable_houses += 1
+	var v25_infill_found := 0
+	var v25_gstack: Array = [main]
+	while not v25_gstack.is_empty():
+		var gcn: Node = v25_gstack.pop_back()
+		if gcn.name == "GableInfill":
+			v25_infill_found += 1
+		for gch in gcn.get_children():
+			v25_gstack.append(gch)
+	check("v1.0.25 gables: every gable-roofed house carries its gable infill", v25_gable_houses > 0 and v25_infill_found == v25_gable_houses, "houses=" + str(v25_gable_houses) + " infills=" + str(v25_infill_found))
+	var space25: PhysicsDirectSpaceState3D = (player as Node3D).get_world_3d().direct_space_state
+	var v25_ray_bad := 0
+	var v25_ray_n := 0
+	for h25r in main.get("houses"):
+		if not (h25r as Dictionary).has("gable"):
+			continue
+		var hp25: Vector3 = h25r["pos"]
+		var gd25: Dictionary = h25r["gable"]
+		var y25: float = float(gd25["eave"]) + (float(gd25["apex"]) - float(gd25["eave"])) * 0.55
+		for s25 in [-1.0, 1.0]:
+			for xo25 in [0.0, 0.8]:
+				v25_ray_n += 1
+				var from25 := Vector3(hp25.x + xo25, y25, hp25.z + s25 * (float(gd25["wd"]) * 0.5 + 2.5))
+				var q25 := PhysicsRayQueryParameters3D.create(from25, from25 + Vector3(0, 0, -s25 * 6.0))
+				var hit25: Dictionary = space25.intersect_ray(q25)
+				if hit25.is_empty() or from25.distance_to(hit25["position"]) > 3.4:
+					v25_ray_bad += 1
+	check("v1.0.25 gables: rays at every gable triangle hit the wall envelope (no see-through houses)", v25_ray_bad == 0, "bad=" + str(v25_ray_bad) + "/" + str(v25_ray_n))
+	# ITEM 7: the escape exterior — the street outside the rooms.
+	var ext25: Node = main.get_node_or_null("EscapeExterior")
+	check("v1.0.25 doorway: an exterior street scene stands outside the escape rooms", ext25 != null and ext25.get_child_count() >= 10, "children=" + (str(ext25.get_child_count()) if ext25 != null else "none"))
+	var o25: Vector3 = main.get("escape_origin")
+	var door_ray := PhysicsRayQueryParameters3D.create(o25 + Vector3(10, 1.3, 3.4), o25 + Vector3(50, 1.3, 3.4))
+	var door_hit: Dictionary = space25.intersect_ray(door_ray)
+	# STRONG form (the first version of this check passed while
+	# a near-black plug panel still filled the doorway — the
+	# plug itself was the hit): the first thing the sightline
+	# meets must be BEYOND the room's east wall, out in the
+	# street scene — nothing may plug the doorway itself.
+	check("v1.0.25 doorway: looking out the back door, the first hit is the street scene beyond the wall (no black plug)", not door_hit.is_empty() and (door_hit["position"] as Vector3).x > o25.x + 16.0, "hit=" + str(door_hit.get("position", "none")))
+	# v1.0.26: the pet-door ray starts JUST PAST the wall plane.
+	# The closed translucent flap legitimately occupies the wall
+	# plane (hit z = o.z-9.75), so the v1.0.25 form of this check
+	# ("first hit beyond the north wall" from inside the room)
+	# failed on the flap itself. Starting beyond the flap, the
+	# sightline must still meet the street scene (a diorama house
+	# front across the road) — and the plugs were collisionless,
+	# so plug absence itself is proven by the doorway screenshot,
+	# not by any raycast.
+	var pet_ray := PhysicsRayQueryParameters3D.create(o25 + Vector3(6, 0.7, -10.4), o25 + Vector3(6, 0.7, -46))
+	var pet_hit: Dictionary = space25.intersect_ray(pet_ray)
+	check("v1.0.25 doorway: past the pet-door flap, the view out meets the street scene (no black plug)", not pet_hit.is_empty() and (pet_hit["position"] as Vector3).z < o25.z - 12.0, "hit=" + str(pet_hit.get("position", "none")))
+	var win_ray := PhysicsRayQueryParameters3D.create(o25 + Vector3(0, 1.6, -6), o25 + Vector3(0, 1.6, -46))
+	var win_hit: Dictionary = space25.intersect_ray(win_ray)
+	check("v1.0.25 doorway: looking out the window hits the street's houses, not void", not win_hit.is_empty() and (o25 + Vector3(0, 1.6, -6)).distance_to(win_hit["position"]) < 30.0, "hit=" + str(win_hit.get("position", "none")))
+	# ITEMS 1+4 WARM-UP: the real town in real time. Every
+	# inhabitant is placed at a house FRONT (the report's exact
+	# tableau), the cat waits at the pound slot so most of the
+	# town is distance-throttled (the field condition), and for
+	# 150 game-seconds nobody may linger within 2 m of one spot
+	# for 20+ game-seconds outside a legitimate state; then the
+	# cat sits in the town centre for the cats' own 90.
+	main.set("state", "play")
+	main.set("pursuers", {})
+	(player as Node3D).global_position = Vector3(560, 0.3, 0)
+	var houses25: Array = main.get("houses")
+	var npcs25: Array = main.get("npcs")
+	var ni25 := 0
+	for n25 in npcs25:
+		var hd25: Dictionary = houses25[ni25 % houses25.size()]
+		(n25 as Node3D).global_position = (hd25["door"] as Vector3) + Vector3(0, 0.2, 0)
+		n25.set("active", true)
+		n25.set("mode", "wander")
+		n25.set("notice", 0.0)
+		n25.set("interact_state", "")
+		n25.set("grab_progress", 0.0)
+		n25.set("far_timer", 0.0)
+		n25.set("los_timer", 0.0)
+		n25.set("notice_cooldown", 0.0)
+		n25.set("velocity", Vector3.ZERO)
+		n25.call("_pick_wander_target")
+		ni25 += 1
+	Engine.time_scale = 3.0
+	Engine.max_physics_steps_per_frame = 16
+	var v25_anchor: Dictionary = {}
+	var v25_linger: Dictionary = {}
+	var v25_worst: Dictionary = {}
+	var v25_path: Dictionary = {}
+	var v25_last: Dictionary = {}
+	var v25_start: Dictionary = {}
+	for n25b in npcs25:
+		v25_anchor[n25b] = (n25b as Node3D).global_position
+		v25_linger[n25b] = 0.0
+		v25_worst[n25b] = 0.0
+		v25_path[n25b] = 0.0
+		v25_last[n25b] = (n25b as Node3D).global_position
+		v25_start[n25b] = (n25b as Node3D).global_position
+	var v25_t := 0.0
+	while v25_t < 150.0:
+		await wait_sec(5.0)
+		v25_t += 5.0
+		for n25c in npcs25:
+			n25c.set("notice_cooldown", 999.0)
+			n25c.set("notice", 0.0)
+			var p25: Vector3 = (n25c as Node3D).global_position
+			v25_path[n25c] = float(v25_path[n25c]) + p25.distance_to(v25_last[n25c])
+			v25_last[n25c] = p25
+			var legit25: bool = str(n25c.get("interact_state")) != "" or str(n25c.get("mode")) != "wander" or (bool(n25c.get("park_dweller")) and p25.x > 74.0 and p25.x < 118.0 and p25.z > 17.0 and p25.z < 42.0)
+			if legit25:
+				v25_anchor[n25c] = p25
+				v25_linger[n25c] = 0.0
+			elif p25.distance_to(v25_anchor[n25c]) > 2.0:
+				v25_anchor[n25c] = p25
+				v25_linger[n25c] = 0.0
+			else:
+				v25_linger[n25c] = float(v25_linger[n25c]) + 5.0
+				v25_worst[n25c] = maxf(float(v25_worst[n25c]), float(v25_linger[n25c]))
+	var v25_worst_overall := 0.0
+	var v25_walkers := 0
+	var v25_spread := 0
+	var v25_end_bad := 0
+	for n25d in npcs25:
+		v25_worst_overall = maxf(v25_worst_overall, float(v25_worst[n25d]))
+		if float(v25_path[n25d]) >= 25.0:
+			v25_walkers += 1
+		if (n25d as Node3D).global_position.distance_to(v25_start[n25d]) > 8.0:
+			v25_spread += 1
+		# Positions are tested DEEP inside (the canonical rect is
+		# wider than the narrowest houses — standing at a side
+		# wall is lawful; being inside the building is not).
+		# Targets are tested against the full rect: a wander
+		# target must never be in or against a house at all.
+		if bool(main.call("point_in_house_footprint", (n25d as Node3D).global_position, -1.2)):
+			v25_end_bad += 1
+		if bool(main.call("point_in_house_footprint", n25d.get("wander_target"), 0.3)):
+			v25_end_bad += 100
+	check("v1.0.25 warm-up: NO inhabitant lingers in one spot >20 game-s outside a legitimate state (the frozen-standing bug)", v25_worst_overall < 20.0, "worst=" + str(v25_worst_overall))
+	check("v1.0.25 warm-up: at least 44 of 48 inhabitants actually WALK (>=25 m in 150 game-s)", v25_walkers >= 44, "walkers=" + str(v25_walkers))
+	check("v1.0.25 warm-up: inhabitants spread out (>=40 end >8 m from their house-front start)", v25_spread >= 40, "spread=" + str(v25_spread))
+	check("v1.0.25 warm-up: nobody ends up inside a house and no wander target sits in a footprint", v25_end_bad == 0, "bad=" + str(v25_end_bad))
+	# The cats' turn: the player cat sits in the town centre.
+	(player as Node3D).global_position = Vector3(0, 0.3, 0)
+	var cats25: Array = main.get("town_cats")
+	var v25_cpath: Dictionary = {}
+	var v25_clast: Dictionary = {}
+	for tc25 in cats25:
+		v25_cpath[tc25] = 0.0
+		v25_clast[tc25] = (tc25 as Node3D).global_position
+	var v25_ct := 0.0
+	while v25_ct < 90.0:
+		await wait_sec(5.0)
+		v25_ct += 5.0
+		for n25e in npcs25:
+			n25e.set("notice_cooldown", 999.0)
+			n25e.set("notice", 0.0)
+		for tc25b in cats25:
+			var cp25: Vector3 = (tc25b as Node3D).global_position
+			v25_cpath[tc25b] = float(v25_cpath[tc25b]) + cp25.distance_to(v25_clast[tc25b])
+			v25_clast[tc25b] = cp25
+	Engine.time_scale = 1.0
+	Engine.max_physics_steps_per_frame = 8
+	var v25_cat_bad: Array = []
+	var v25_cat_vis := 0
+	for tc25c in cats25:
+		var cpos25: Vector3 = (tc25c as Node3D).global_position
+		var chome25: Vector3 = tc25c.get("home")
+		if float(v25_cpath[tc25c]) < 4.0 or cpos25.distance_to(chome25) > 23.0 or absf(cpos25.x) > 117.0 or absf(cpos25.z) > 89.0:
+			v25_cat_bad.append(str(tc25c.get("home")) + " path=" + str(v25_cpath[tc25c]) + " pos=" + str(cpos25))
+		var wrap25: Node = tc25c.get("_wrap")
+		if wrap25 != null and (wrap25 as Node3D).visible:
+			v25_cat_vis += 1
+	check("v1.0.25 town cats: all 8 roam near home, inside the town, and move (>=4 m in 90 game-s)", v25_cat_bad.is_empty(), str(v25_cat_bad))
+	check("v1.0.25 town cats: at least 6 of 8 are VISIBLE with the player in town", v25_cat_vis >= 6, "visible=" + str(v25_cat_vis))
+
 	# ---------- idle purr retained (v0.6) ----------
 	park_npcs_far()
 	(player as Node3D).global_position = Vector3(110, 0.2, 84)
 	await wait_sec(3.6)
 	check("idle purr starts after ~3s still", bool(main.get("purr_active")))
+
+	# ---------- v1.0.25 ITEM 6: the opening must survive the START tap ----------
+	# The real flow: start_game() (what the button calls), then the
+	# tap's second half — its emulated-mouse echo — arrives through
+	# the real dispatcher while the state has just become
+	# "opening". On v1.0.13–v1.0.24 that echo skipped the whole
+	# opening. A deliberate tap after the grace must still skip.
+	var story25: Node = main.get("story")
+	main.call("start_game")
+	check("v1.0.25 opening: START begins the opening cutscene", str(main.get("state")) == "opening", str(main.get("state")))
+	var echo25 := InputEventMouseButton.new()
+	echo25.button_index = MOUSE_BUTTON_LEFT
+	echo25.pressed = true
+	echo25.position = Vector2(640, 360)
+	get_viewport().push_input(echo25)
+	await wait_sec(0.3)
+	check("v1.0.25 opening: the START tap's own echo does NOT skip the opening", str(main.get("state")) == "opening" and not bool(story25.get("finished")), str(main.get("state")) + " finished=" + str(story25.get("finished")))
+	await wait_sec(1.2)
+	var tap25 := InputEventMouseButton.new()
+	tap25.button_index = MOUSE_BUTTON_LEFT
+	tap25.pressed = true
+	tap25.position = Vector2(640, 360)
+	get_viewport().push_input(tap25)
+	await wait_sec(0.3)
+	check("v1.0.25 opening: a deliberate tap after the grace period still skips to the pound", bool(story25.get("finished")) or str(main.get("state")) != "opening", str(main.get("state")) + " finished=" + str(story25.get("finished")))
 
 	print("TESTS: %d/%d passed" % [passed, passed + failed])
 	get_tree().quit(0 if failed == 0 else 1)

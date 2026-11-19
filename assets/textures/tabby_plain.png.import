@@ -15,7 +15,7 @@ dest_files=["res://.godot/imported/tabby_plain.png-d27eb1666ff3cf3a74ec24caa6cf9
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

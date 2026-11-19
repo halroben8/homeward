@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://bkjphgxl7hf8w"
-path="res://.godot/imported/shopkeeper_Image_2.jpg-4f30e02d43a831c0804d03455b7e84d3.ctex"
+path.s3tc="res://.godot/imported/shopkeeper_Image_2.jpg-4f30e02d43a831c0804d03455b7e84d3.s3tc.ctex"
+path.etc2="res://.godot/imported/shopkeeper_Image_2.jpg-4f30e02d43a831c0804d03455b7e84d3.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "c623a13e6461c6aed86d62397439e4cc"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/shopkeeper_Image_2.jpg"
-dest_files=["res://.godot/imported/shopkeeper_Image_2.jpg-4f30e02d43a831c0804d03455b7e84d3.ctex"]
+dest_files=["res://.godot/imported/shopkeeper_Image_2.jpg-4f30e02d43a831c0804d03455b7e84d3.s3tc.ctex", "res://.godot/imported/shopkeeper_Image_2.jpg-4f30e02d43a831c0804d03455b7e84d3.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

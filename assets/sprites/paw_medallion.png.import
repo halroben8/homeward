@@ -15,7 +15,7 @@ dest_files=["res://.godot/imported/paw_medallion.png-81cfc2df15ea0b211f8a4994a34
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

@@ -15,7 +15,7 @@ dest_files=["res://.godot/imported/start_btn_pressed.png-73c13b9935d47591b41ab88
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

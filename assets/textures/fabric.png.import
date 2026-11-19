@@ -15,7 +15,7 @@ dest_files=["res://.godot/imported/fabric.png-8a984c4bc1f589812119bc671f8e8301.c
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

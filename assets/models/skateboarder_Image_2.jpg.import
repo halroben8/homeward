@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://ui3prrrabd54"
-path="res://.godot/imported/skateboarder_Image_2.jpg-243f7c6b771d52135666adfd62e77bf9.ctex"
+path.s3tc="res://.godot/imported/skateboarder_Image_2.jpg-243f7c6b771d52135666adfd62e77bf9.s3tc.ctex"
+path.etc2="res://.godot/imported/skateboarder_Image_2.jpg-243f7c6b771d52135666adfd62e77bf9.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "65ced72ee14ec1be548a2604e1c94327"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/skateboarder_Image_2.jpg"
-dest_files=["res://.godot/imported/skateboarder_Image_2.jpg-243f7c6b771d52135666adfd62e77bf9.ctex"]
+dest_files=["res://.godot/imported/skateboarder_Image_2.jpg-243f7c6b771d52135666adfd62e77bf9.s3tc.ctex", "res://.godot/imported/skateboarder_Image_2.jpg-243f7c6b771d52135666adfd62e77bf9.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

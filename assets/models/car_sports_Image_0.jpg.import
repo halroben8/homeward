@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://bb7ifhqbgmhpg"
-path="res://.godot/imported/car_sports_Image_0.jpg-cda0d87540ec3e0ac28c33e8c9ff3732.ctex"
+path.s3tc="res://.godot/imported/car_sports_Image_0.jpg-cda0d87540ec3e0ac28c33e8c9ff3732.s3tc.ctex"
+path.etc2="res://.godot/imported/car_sports_Image_0.jpg-cda0d87540ec3e0ac28c33e8c9ff3732.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "5c495128f93d03fdfe5e60c44ec72192"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/car_sports_Image_0.jpg"
-dest_files=["res://.godot/imported/car_sports_Image_0.jpg-cda0d87540ec3e0ac28c33e8c9ff3732.ctex"]
+dest_files=["res://.godot/imported/car_sports_Image_0.jpg-cda0d87540ec3e0ac28c33e8c9ff3732.s3tc.ctex", "res://.godot/imported/car_sports_Image_0.jpg-cda0d87540ec3e0ac28c33e8c9ff3732.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

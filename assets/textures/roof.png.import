@@ -15,7 +15,7 @@ dest_files=["res://.godot/imported/roof.png-3735cf19bc66422b8e57bf8b83a894cb.cte
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

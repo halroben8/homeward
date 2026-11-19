@@ -15,7 +15,7 @@ dest_files=["res://.godot/imported/tabby_body_normal.png-c796ecc17bfe5febf7187a9
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

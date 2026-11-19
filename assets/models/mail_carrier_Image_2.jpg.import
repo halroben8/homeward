@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://00i48sxuy75k"
-path="res://.godot/imported/mail_carrier_Image_2.jpg-e50f0a3d3a563c695fca8cfc691790d1.ctex"
+path.s3tc="res://.godot/imported/mail_carrier_Image_2.jpg-e50f0a3d3a563c695fca8cfc691790d1.s3tc.ctex"
+path.etc2="res://.godot/imported/mail_carrier_Image_2.jpg-e50f0a3d3a563c695fca8cfc691790d1.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "a37d65a2073a982ba536227c11166995"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/mail_carrier_Image_2.jpg"
-dest_files=["res://.godot/imported/mail_carrier_Image_2.jpg-e50f0a3d3a563c695fca8cfc691790d1.ctex"]
+dest_files=["res://.godot/imported/mail_carrier_Image_2.jpg-e50f0a3d3a563c695fca8cfc691790d1.s3tc.ctex", "res://.godot/imported/mail_carrier_Image_2.jpg-e50f0a3d3a563c695fca8cfc691790d1.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

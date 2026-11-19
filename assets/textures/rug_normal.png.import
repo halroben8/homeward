@@ -15,7 +15,7 @@ dest_files=["res://.godot/imported/rug_normal.png-7c810843f3f2cd385fb398a2c36ab4
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://dmiml83hwu2f6"
-path="res://.godot/imported/excited_kid_Image_0.jpg-9751985378462c0fde51fdcce71f3abe.ctex"
+path.s3tc="res://.godot/imported/excited_kid_Image_0.jpg-9751985378462c0fde51fdcce71f3abe.s3tc.ctex"
+path.etc2="res://.godot/imported/excited_kid_Image_0.jpg-9751985378462c0fde51fdcce71f3abe.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "d59b6bd69b5796c2e004530337ea576b"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/excited_kid_Image_0.jpg"
-dest_files=["res://.godot/imported/excited_kid_Image_0.jpg-9751985378462c0fde51fdcce71f3abe.ctex"]
+dest_files=["res://.godot/imported/excited_kid_Image_0.jpg-9751985378462c0fde51fdcce71f3abe.s3tc.ctex", "res://.godot/imported/excited_kid_Image_0.jpg-9751985378462c0fde51fdcce71f3abe.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

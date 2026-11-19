@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://e44wvrprg8ox"
-path="res://.godot/imported/coffee_shop_owner_Image_2.jpg-87bb1cbf3d5de6994840b85654636003.ctex"
+path.s3tc="res://.godot/imported/coffee_shop_owner_Image_2.jpg-87bb1cbf3d5de6994840b85654636003.s3tc.ctex"
+path.etc2="res://.godot/imported/coffee_shop_owner_Image_2.jpg-87bb1cbf3d5de6994840b85654636003.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "f9c4531c0cba7fe84e54f00bd831b8f8"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/coffee_shop_owner_Image_2.jpg"
-dest_files=["res://.godot/imported/coffee_shop_owner_Image_2.jpg-87bb1cbf3d5de6994840b85654636003.ctex"]
+dest_files=["res://.godot/imported/coffee_shop_owner_Image_2.jpg-87bb1cbf3d5de6994840b85654636003.s3tc.ctex", "res://.godot/imported/coffee_shop_owner_Image_2.jpg-87bb1cbf3d5de6994840b85654636003.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

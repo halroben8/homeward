@@ -15,7 +15,7 @@ dest_files=["res://.godot/imported/tabby_northstar.png-9dc7b2c72f5104784328c7a1d
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

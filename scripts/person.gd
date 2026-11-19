@@ -215,8 +215,64 @@ var body_h: float = 1.7
 # time: wander speed, timers and cooldowns all keep exact wall-clock
 # rates at any stride. _perf_skip counts down the ticks still to
 # skip before the next executed tick.
+# --- v1.0.25 FIX (Michael's frozen inhabitants): the banking above
+# was only HALF true. Timers consumed the banked delta, but
+# move_and_slide() always advances by the ENGINE's single-tick
+# delta — it takes no delta argument — so a throttled NPC's
+# DISPLACEMENT ran at 1/stride of its walk speed (a neighbour 80m+
+# from the cat crept at ~0.2 m/s: to a player, a statue). The
+# executed tick now slides once per banked tick (_perf_steps,
+# _slide_banked), which restores exact wall-clock movement at any
+# stride without tunnelling through thin fences.
 var _perf_accum: float = 0.0
 var _perf_skip: int = 0
+var _perf_steps: int = 1 # banked ticks the executed tick must slide for
+var _perf_carry: int = 0 # v1.0.26: banked slide steps owed past the per-tick cap (see _slide_banked)
+# --- v1.0.25 STUCK WATCHDOG: while walking to a wander target, if
+# the NPC has not moved 0.6 m from the anchor in 2.5 s of commanded
+# walking it is wedged (house corner, fence, parked car) — re-pick.
+var _stall_anchor := Vector3.ZERO
+var _stall_t: float = 0.0
+# v1.0.25: pocket escape. Re-picking alone cannot free an NPC
+# wedged in a porch pocket (wall + step + hedge + side block):
+# every new target still aims through a face. After repeated
+# stalls the NPC walks to main's escape point instead —
+# radially out from the nearest house, or a clear ring point.
+var _stall_fires: int = 0
+var _escape_target := Vector3.ZERO
+var _escape_t: float = 0.0
+# v1.0.25: the disc rescue — pacing a small disc (shuffling
+# along a fence, circling a pocket mouth) resets the stall
+# anchor without ever leaving the spot. If an NPC has been
+# commanded to walk for 12 s without leaving a 2 m disc, it
+# steps out bodily, same as the last-resort below.
+var _disc_anchor := Vector3.ZERO
+var _disc_t: float = 0.0
+
+# v1.0.25: step bodily out to main's escape point (see the
+# watchdog). Shared by the stall last-resort and the disc
+# rescue. Returns the destination to walk to next.
+func _step_out() -> Vector3:
+	var out_p: Vector3 = main_ref.call("escape_point_from_houses", global_position)
+	out_p = main_ref.call("push_out_of_houses", out_p, 0.8)
+	global_position = Vector3(out_p.x, global_position.y, out_p.z)
+	velocity = Vector3.ZERO
+	_stall_fires = 0
+	_stall_t = 0.0
+	_escape_t = 0.0
+	_stall_anchor = global_position
+	_disc_anchor = global_position
+	_disc_t = 0.0
+	_pick_wander_target()
+	return wander_target
+# v1.0.25: the same wedge can trap a CHASER (corner pockets —
+# the pound van's rear corner caught its own worker in the
+# suite: full-speed chase, zero displacement, grab range
+# never reached). Chase movement gets a sidestep rescue.
+var _chase_stall_anchor := Vector3.ZERO
+var _chase_stall_t: float = 0.0
+var _detour_t: float = 0.0
+var _detour_side: float = 1.0
 
 const SKIN := Color(0.96, 0.76, 0.6)
 const HAIR_BROWN := Color(0.35, 0.22, 0.13)
@@ -271,6 +327,12 @@ func _cyl(parent: Node, pos: Vector3, r_top: float, r_bot: float, h: float, c: C
 
 func _ready() -> void:
 	add_to_group("npc")
+	# v1.0.26: randomize the distance-throttle phase at spawn, so
+	# neighbours don't all execute their brains on the same tick
+	# (a whole street at stride 12 in lockstep = a CPU spike every
+	# 12th tick). The banked-delta path makes the offset free: the
+	# first executed tick advances by the full elapsed time.
+	_perf_skip = randi() % 12
 	_apply_type()
 	_build_collision()
 	_build_model()
@@ -1282,8 +1344,52 @@ func _pick_wander_target() -> void:
 		wander_target = park_spots[randi() % park_spots.size()]
 		wander_wait = randf_range(5.0, 12.0)
 		return
-	wander_target = Vector3(randf_range(-112.0, wander_x_max), 0, randf_range(-84.0, 84.0)) # MAP DOUBLING: wander range covers the east district too (wander_x_max = 366; BISECT: 112 in legacy mode)
+	# v1.0.25 FIX (frozen inhabitants): the old pick threw a dart at
+	# the WHOLE town — targets regularly landed INSIDE a house
+	# footprint or behind a row of houses, and with arrival checked
+	# only within 1.6 m and no timeout, the NPC walked into the wall
+	# and pressed there forever, facing the house (Michael's report:
+	# "standing in front of their houses, looking at the wall, not
+	# moving at all"). Now: a leg of at most ~55 m from where the
+	# NPC stands (shorter legs cross fewer house rows, and the town
+	# still fills up over time as legs chain), and any candidate
+	# inside a house footprint is re-rolled (up to 8 tries). The
+	# stuck watchdog in _physics_process covers the rest (a target
+	# can still sit behind a fence or a corner from here).
+	var cand := global_position
+	for attempt in range(8):
+		cand = Vector3(clampf(global_position.x + randf_range(-55.0, 55.0), -112.0, wander_x_max), 0, clampf(global_position.z + randf_range(-55.0, 55.0), -84.0, 84.0)) # MAP DOUBLING: wander range covers the east district too (wander_x_max = 366; BISECT: 112 in legacy mode)
+		if main_ref != null and main_ref.has_method("point_in_house_footprint") and bool(main_ref.call("point_in_house_footprint", cand, 0.7)):
+			continue
+		break
+	wander_target = cand
 	wander_wait = randf_range(0.0, 1.5)
+	_stall_anchor = global_position
+	_stall_t = 0.0
+
+func _slide_banked() -> void:
+	# v1.0.25: move_and_slide() advances by the ENGINE's tick delta
+	# only — on a throttled (banked) tick, slide once per banked
+	# tick so displacement matches the banked time exactly. One
+	# slide per tick also keeps each step at walk-speed size, so
+	# nothing tunnels through fences or walls.
+	# v1.0.26: cap the burst at 4 slides per tick; the remainder
+	# carries over (_perf_carry) and is worked off on the following
+	# ticks — including skipped ones (see the throttle gate) — so a
+	# far neighbour's stride spreads evenly instead of spiking
+	# every 12th tick. Debt owed while standing still is forgiven:
+	# sliding a zero velocity is a no-op anyway, and keeping it
+	# would lurch the first step of the next walk.
+	var owed: int = _perf_steps + _perf_carry
+	if velocity.x * velocity.x + velocity.z * velocity.z < 0.0025 and is_on_floor():
+		_perf_carry = 0
+		for i in range(mini(_perf_steps, 4)):
+			move_and_slide()
+		return
+	var n: int = mini(owed, 4)
+	_perf_carry = owed - n
+	for i in range(n):
+		move_and_slide()
 
 func _physics_process(delta: float) -> void:
 	if not active or main_ref == null or player_ref == null:
@@ -1314,6 +1420,16 @@ func _physics_process(delta: float) -> void:
 	_perf_accum += delta
 	if _perf_skip > 0 and not engaged_now:
 		_perf_skip -= 1
+		# v1.0.26: work off banked slide debt on skipped ticks too
+		# (see _slide_banked) — the velocity the last executed tick
+		# set persists on the body, so the neighbour keeps gliding
+		# at full rate instead of bursting once per stride. Same
+		# 4-per-tick cap as the executed path.
+		if _perf_carry > 0 and (velocity.x * velocity.x + velocity.z * velocity.z > 0.01 or not is_on_floor()):
+			var n_c: int = mini(_perf_carry, 4)
+			_perf_carry -= n_c
+			for i in range(n_c):
+				move_and_slide()
 		return
 	var pdist: float = global_position.distance_to(player_ref.global_position)
 	var stride: int = 1
@@ -1323,6 +1439,9 @@ func _physics_process(delta: float) -> void:
 		elif pdist > 35.0:
 			stride = 3
 	_perf_skip = stride - 1
+	# v1.0.25: how many engine ticks the banked delta spans — the
+	# movement below must slide this many times (see _slide_banked).
+	_perf_steps = clampi(int(round(_perf_accum / delta)), 1, 12)
 	delta = _perf_accum
 	_perf_accum = 0.0
 	if model:
@@ -1354,7 +1473,7 @@ func _physics_process(delta: float) -> void:
 		velocity.z = 0.0
 		if not is_on_floor():
 			velocity.y -= 24.0 * delta
-		move_and_slide()
+		_slide_banked()
 		_animate(delta, 0.0)
 		_update_labels()
 		return
@@ -1384,7 +1503,7 @@ func _physics_process(delta: float) -> void:
 			velocity.y -= 24.0 * delta
 		else:
 			velocity.y = -0.5
-		move_and_slide()
+		_slide_banked()
 		_animate(delta, 0.0)
 		_update_labels()
 		if tell_t <= 0.0:
@@ -1476,10 +1595,91 @@ func _physics_process(delta: float) -> void:
 			velocity.z = 0.0
 			if not is_on_floor():
 				velocity.y -= 24.0 * delta
-			move_and_slide()
+			_slide_banked()
 			_animate(delta, 0.0)
 			_update_labels()
 			return
+		# v1.0.25 STUCK WATCHDOG + POCKET ESCAPE: walking toward
+		# the target but not actually getting anywhere (wedged
+		# on a house corner, a fence, a parked car — or inside
+		# a PORCH POCKET: wall behind, step and hedge and side
+		# block around, every direction cancelled). First stall:
+		# give this target up and pick another. Still stuck:
+		# walk OUT — to the escape point main computes (radially
+		# away from the nearest house / a clear ring point),
+		# which is the one direction a pocket always has.
+		if _escape_t > 0.0:
+			_escape_t -= delta
+			dest = _escape_target
+			if global_position.distance_to(_escape_target) < 1.2:
+				_escape_t = 0.0
+		if global_position.distance_to(_stall_anchor) > 0.6:
+			_stall_anchor = global_position
+			_stall_t = 0.0
+			_stall_fires = 0
+		else:
+			_stall_t += delta
+			if _stall_t >= 2.0:
+				_stall_t = 0.0
+				_stall_anchor = global_position
+				_stall_fires += 1
+				var rescued := false
+				if _stall_fires >= 4 and main_ref != null and main_ref.has_method("escape_point_from_houses"):
+					# LAST RESORT (v1.0.25): ~8 s wedged and even
+					# the walk-out failed — the body is OVERLAP-
+					# wedged between two faces (porch step against
+					# hedge was the measured case) and the physics
+					# recovery cancels every commanded move. Step
+					# the NPC bodily out to the escape point; at
+					# porch scale this reads as squeezing out, and
+					# it makes a permanent freeze impossible.
+					dest = _step_out()
+					rescued = true
+				elif _stall_fires >= 2 and main_ref != null and main_ref.has_method("escape_point_from_houses"):
+					_escape_target = main_ref.call("escape_point_from_houses", global_position)
+					_escape_t = 4.0
+					dest = _escape_target
+					rescued = true
+				if not rescued:
+					_pick_wander_target()
+					dest = wander_target
+	# v1.0.25 DISC RESCUE (see the vars): commanded to walk
+	# but still inside a 2 m disc after 12 s — pacing or
+	# shuffling that keeps resetting the stall anchor. Step
+	# out bodily. (The arrival-wait returns earlier, so a
+	# legitimate pause never feeds this clock.)
+	if not chasing and mode == "wander" and main_ref != null and main_ref.has_method("escape_point_from_houses"):
+		if global_position.distance_to(_disc_anchor) > 2.0:
+			_disc_anchor = global_position
+			_disc_t = 0.0
+		else:
+			_disc_t += delta
+			if _disc_t >= 12.0:
+				dest = _step_out()
+	# v1.0.25 CHASE WEDGE RESCUE (see the vars): barely moved
+	# for a second while the cat is still out of grab range ->
+	# aim sideways of the cat for a short burst, alternating
+	# sides, until he slides out of the pocket.
+	if chasing and dist > grab_range + 0.25:
+		if global_position.distance_to(_chase_stall_anchor) > 0.5:
+			_chase_stall_anchor = global_position
+			_chase_stall_t = 0.0
+		else:
+			_chase_stall_t += delta
+			if _chase_stall_t >= 1.0:
+				_chase_stall_t = 0.0
+				_detour_t = 0.6
+				_detour_side = -_detour_side
+	else:
+		_chase_stall_anchor = global_position
+		_chase_stall_t = 0.0
+	if _detour_t > 0.0:
+		_detour_t -= delta
+		var fwd_d: Vector3 = dest - global_position
+		fwd_d.y = 0.0
+		if fwd_d.length() > 0.05:
+			fwd_d = fwd_d.normalized()
+			dest += Vector3(fwd_d.z, 0.0, -fwd_d.x) * _detour_side * 1.6
 	var dir: Vector3 = dest - global_position
 	dir.y = 0.0
 	if dir.length() > 0.3:
@@ -1499,7 +1699,7 @@ func _physics_process(delta: float) -> void:
 		velocity.y -= 24.0 * delta
 	else:
 		velocity.y = -0.5
-	move_and_slide()
+	_slide_banked()
 	global_position.x = clamp(global_position.x, -117.0, 369.0 if wide_bounds else 117.0)
 	global_position.z = clamp(global_position.z, -89.0, 89.0)
 	_animate(delta, Vector2(velocity.x, velocity.z).length())

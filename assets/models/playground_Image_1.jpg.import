@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://cn48as2aerdq5"
-path="res://.godot/imported/playground_Image_1.jpg-6e608a2833aab8bb6e0d342c7e0300e6.ctex"
+path.s3tc="res://.godot/imported/playground_Image_1.jpg-6e608a2833aab8bb6e0d342c7e0300e6.s3tc.ctex"
+path.etc2="res://.godot/imported/playground_Image_1.jpg-6e608a2833aab8bb6e0d342c7e0300e6.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "63fd4f45a6bc5bf1e2d2117c5d9baf89"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/playground_Image_1.jpg"
-dest_files=["res://.godot/imported/playground_Image_1.jpg-6e608a2833aab8bb6e0d342c7e0300e6.ctex"]
+dest_files=["res://.godot/imported/playground_Image_1.jpg-6e608a2833aab8bb6e0d342c7e0300e6.s3tc.ctex", "res://.godot/imported/playground_Image_1.jpg-6e608a2833aab8bb6e0d342c7e0300e6.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

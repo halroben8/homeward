@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://dk27hpehd72wh"
-path="res://.godot/imported/russian_blue_cat_Image_1.jpg-66f2cf0bb17fb1e984ba85bde445dfd2.ctex"
+path.s3tc="res://.godot/imported/russian_blue_cat_Image_1.jpg-66f2cf0bb17fb1e984ba85bde445dfd2.s3tc.ctex"
+path.etc2="res://.godot/imported/russian_blue_cat_Image_1.jpg-66f2cf0bb17fb1e984ba85bde445dfd2.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "1d188de4953e493de2a5a51d2024ae7a"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/russian_blue_cat_Image_1.jpg"
-dest_files=["res://.godot/imported/russian_blue_cat_Image_1.jpg-66f2cf0bb17fb1e984ba85bde445dfd2.ctex"]
+dest_files=["res://.godot/imported/russian_blue_cat_Image_1.jpg-66f2cf0bb17fb1e984ba85bde445dfd2.s3tc.ctex", "res://.godot/imported/russian_blue_cat_Image_1.jpg-66f2cf0bb17fb1e984ba85bde445dfd2.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

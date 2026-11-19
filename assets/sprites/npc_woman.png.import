@@ -15,7 +15,7 @@ dest_files=["res://.godot/imported/npc_woman.png-b421de707ee84b043d2d5c3d2c6f7c5
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

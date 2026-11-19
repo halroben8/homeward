@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://8pnayso4g1dv"
-path="res://.godot/imported/suv_Image_1.jpg-e195bd37ea2a8cb7b3de46ab47480096.ctex"
+path.s3tc="res://.godot/imported/suv_Image_1.jpg-e195bd37ea2a8cb7b3de46ab47480096.s3tc.ctex"
+path.etc2="res://.godot/imported/suv_Image_1.jpg-e195bd37ea2a8cb7b3de46ab47480096.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "701c21d0a6db2474f9733c78036d3716"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/suv_Image_1.jpg"
-dest_files=["res://.godot/imported/suv_Image_1.jpg-e195bd37ea2a8cb7b3de46ab47480096.ctex"]
+dest_files=["res://.godot/imported/suv_Image_1.jpg-e195bd37ea2a8cb7b3de46ab47480096.s3tc.ctex", "res://.godot/imported/suv_Image_1.jpg-e195bd37ea2a8cb7b3de46ab47480096.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

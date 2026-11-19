@@ -15,7 +15,7 @@ dest_files=["res://.godot/imported/chainlink.png-1cd0e403006a66c4ca60864d8ae54b4
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

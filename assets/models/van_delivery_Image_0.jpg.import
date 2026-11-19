@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://bd7gehtgohd3d"
-path="res://.godot/imported/van_delivery_Image_0.jpg-53b18d5b5197a4fd7fec652564390a60.ctex"
+path.s3tc="res://.godot/imported/van_delivery_Image_0.jpg-53b18d5b5197a4fd7fec652564390a60.s3tc.ctex"
+path.etc2="res://.godot/imported/van_delivery_Image_0.jpg-53b18d5b5197a4fd7fec652564390a60.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "77abf4fbf209df2ec572e9ea10a0dcc8"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/van_delivery_Image_0.jpg"
-dest_files=["res://.godot/imported/van_delivery_Image_0.jpg-53b18d5b5197a4fd7fec652564390a60.ctex"]
+dest_files=["res://.godot/imported/van_delivery_Image_0.jpg-53b18d5b5197a4fd7fec652564390a60.s3tc.ctex", "res://.godot/imported/van_delivery_Image_0.jpg-53b18d5b5197a4fd7fec652564390a60.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

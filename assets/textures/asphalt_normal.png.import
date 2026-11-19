@@ -15,7 +15,7 @@ dest_files=["res://.godot/imported/asphalt_normal.png-80f069292f80834267999640bc
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

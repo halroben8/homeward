@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://dtnbjkk7vsfym"
-path="res://.godot/imported/zander_0.png-db3823eab4c779b1d9b3bba942ee684d.ctex"
+path.s3tc="res://.godot/imported/zander_0.png-db3823eab4c779b1d9b3bba942ee684d.s3tc.ctex"
+path.etc2="res://.godot/imported/zander_0.png-db3823eab4c779b1d9b3bba942ee684d.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "6f87a251de5d6cc5200e27cb09588e0e"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/zander_0.png"
-dest_files=["res://.godot/imported/zander_0.png-db3823eab4c779b1d9b3bba942ee684d.ctex"]
+dest_files=["res://.godot/imported/zander_0.png-db3823eab4c779b1d9b3bba942ee684d.s3tc.ctex", "res://.godot/imported/zander_0.png-db3823eab4c779b1d9b3bba942ee684d.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

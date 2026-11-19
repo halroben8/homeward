@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://c8c6aw6p438nw"
-path="res://.godot/imported/white_cat_normal.jpg-5dd7d9eaf3e0bdd8ab19ad025b8747db.ctex"
+path.s3tc="res://.godot/imported/white_cat_normal.jpg-5dd7d9eaf3e0bdd8ab19ad025b8747db.s3tc.ctex"
+path.etc2="res://.godot/imported/white_cat_normal.jpg-5dd7d9eaf3e0bdd8ab19ad025b8747db.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "d7816bcdebdb39c5f7363aa3ae1923fb"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/white_cat_normal.jpg"
-dest_files=["res://.godot/imported/white_cat_normal.jpg-5dd7d9eaf3e0bdd8ab19ad025b8747db.ctex"]
+dest_files=["res://.godot/imported/white_cat_normal.jpg-5dd7d9eaf3e0bdd8ab19ad025b8747db.s3tc.ctex", "res://.godot/imported/white_cat_normal.jpg-5dd7d9eaf3e0bdd8ab19ad025b8747db.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

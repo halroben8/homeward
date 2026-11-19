@@ -39,6 +39,7 @@ var van: Node3D = null # the pound van
 
 var active: bool = false # the street beats are running (state "opening")
 var finished: bool = false # the scoop has been triggered
+var began_msec: int = -100000 # v1.0.25: when begin_opening ran (skip-input grace, see _input)
 var phase: String = "" # leave | stroll | wait_van | line
 var phase_t: float = 0.0
 var line_step: int = 0
@@ -107,6 +108,7 @@ func setup(main_ref: Node) -> void:
 # ---------------------------------------------------------------------
 
 func begin_opening() -> void:
+	began_msec = Time.get_ticks_msec() # v1.0.25: the skip grace starts now
 	player = main.get("player")
 	worker = main.get("pound_worker")
 	van = main.get("pound_van")
@@ -476,10 +478,26 @@ func skip_opening() -> void:
 	main.call("skip_cutscene")
 
 
+# v1.0.25 — WHY THE OPENING NEVER PLAYED (Michael's report, every
+# build since v1.0.13): the tap that presses START is delivered
+# TWICE — the touch event and its emulated-mouse echo. The echo
+# arrives AFTER start_game() has run begin_opening(), when the
+# state has just become "opening", and this module's skip handler
+# (which had NO time guard, unlike main's cutscene skip) read the
+# echo as a deliberate tap-to-skip and jumped straight to the
+# pound. Michael saw one frame of street, then the cage. The fix
+# is the guard main's own cutscene skip always had: no skip input
+# is honoured for the first 1.2 s of the opening. A deliberate
+# tap after that still skips, exactly as designed.
+func _skip_input_allowed() -> bool:
+	return Time.get_ticks_msec() - began_msec >= 1200
+
 func _input(event: InputEvent) -> void:
 	if main == null or finished:
 		return
 	if str(main.get("state")) != "opening":
+		return
+	if not _skip_input_allowed():
 		return
 	if event is InputEventMouseButton and (event as InputEventMouseButton).pressed:
 		skip_opening()
@@ -491,6 +509,8 @@ func _unhandled_input(event: InputEvent) -> void:
 	if main == null or finished:
 		return
 	if str(main.get("state")) != "opening":
+		return
+	if not _skip_input_allowed():
 		return
 	if event is InputEventKey and (event as InputEventKey).pressed and not (event as InputEventKey).echo:
 		skip_opening()

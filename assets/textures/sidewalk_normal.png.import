@@ -15,7 +15,7 @@ dest_files=["res://.godot/imported/sidewalk_normal.png-45026f0e1274ac285046a74d1
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

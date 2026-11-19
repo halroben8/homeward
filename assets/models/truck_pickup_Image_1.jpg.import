@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://2vga7sms4hn7"
-path="res://.godot/imported/truck_pickup_Image_1.jpg-3edded0d949e77eac6508604795f2ff8.ctex"
+path.s3tc="res://.godot/imported/truck_pickup_Image_1.jpg-3edded0d949e77eac6508604795f2ff8.s3tc.ctex"
+path.etc2="res://.godot/imported/truck_pickup_Image_1.jpg-3edded0d949e77eac6508604795f2ff8.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "de90ce737b26774e9a9a2564269282d9"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/truck_pickup_Image_1.jpg"
-dest_files=["res://.godot/imported/truck_pickup_Image_1.jpg-3edded0d949e77eac6508604795f2ff8.ctex"]
+dest_files=["res://.godot/imported/truck_pickup_Image_1.jpg-3edded0d949e77eac6508604795f2ff8.s3tc.ctex", "res://.godot/imported/truck_pickup_Image_1.jpg-3edded0d949e77eac6508604795f2ff8.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

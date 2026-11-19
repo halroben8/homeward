@@ -75,6 +75,11 @@ var home_address: String = ""
 var player: CharacterBody3D = null
 var npcs: Array = []
 var town_cats: Array = [] # v1.0.22: the eight Meshy town cats wandering the streets
+var cat_meow_count: int = 0 # v1.0.26 suite handle: town-cat meow-backs played
+var cat_play_count: int = 0 # v1.0.26 suite handle: completed town-cat play sessions that scored
+var town_pops: Array = [] # v1.0.26: floating "+3" pops in town [{node, t, y0}], ticked in _process
+var flower_spots: Array = [] # v1.0.26: scattered wildflower positions (proof/suite handle)
+var placed_flower_spots: Array = [] # v1.0.26 completion: base positions of every _place_flowers site flower (proof handle)
 var playground_model: Node3D = null # v1.0.23: the Meshy playground structure in the park (suite handle)
 # v1.0.23: where the park kids play — spots AROUND the playground
 # structure (its collision box spans x 83.4..88.6, z 28.05..31.95
@@ -209,7 +214,6 @@ var distract_bar_fill: ColorRect = null
 var prop_prompt_btn: Button = null # "🐾 Paw the plant!" near a standing prop
 var crash_labels: Array = [] # [{node, t}]
 var sfx_crash: AudioStreamPlayer = null # notice.wav at a low pitch — the crash cue
-var sfx_siren: AudioStreamPlayer = null # v1.0.22: the pound van's soft two-tone whoop, riding with its light bar
 # --- v1.2 PLAYER-DRIVEN EXIT (Michael's design, 2026-11-16) -----------
 # On combo success the way OPENS and control returns to the player:
 # the cat walks out through it himself. The escape completes when he
@@ -384,9 +388,6 @@ var pound_notice: float = 0.0
 var pound_bar_root: Node3D = null # the notice meter over the VAN (built like person.gd's overhead bar)
 var pound_bar_fill: MeshInstance3D = null
 var pound_bar_label: Label3D = null
-var pound_light_lamp_l: MeshInstance3D = null # v1.0.21: the flashing light bar's two lamps (see _build_pound_light_rig)
-var pound_light_lamp_r: MeshInstance3D = null
-var pound_light_t: float = 0.0 # flash phase accumulator while the bar is live
 # POUND RETURN FIX (2026-11-17): stuck watch for the walk back to
 # the van — see _pound_return_target / the "return" branch. The
 # waypoints are the fix; this watch is belt and braces so a wedge
@@ -745,11 +746,60 @@ func _label3d_flat(parent: Node, text: String, pos: Vector3, size: int, c: Color
 	parent.add_child(l)
 	return l
 
+var _tuft_cone: ArrayMesh = null
+
+func _tuft_cone_mesh() -> ArrayMesh:
+	# The grass-tuft cone (r 0.045 -> 0.004, h 0.44, centred on
+	# its origin exactly like the CylinderMesh it replaces) with
+	# the v1.0.26 steep-lean normals — a cylinder's true outward
+	# normals are near-horizontal and go black on the anti-sun
+	# side under the dusk rig, the same failure as the multimesh
+	# blades (see _blade_mesh). Built once, shared by every tuft.
+	if _tuft_cone != null:
+		return _tuft_cone
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs := PackedVector2Array()
+	var indices := PackedInt32Array()
+	var rb := 0.045
+	var rt := 0.004
+	var hh := 0.22 # half height — the cone is centred, like _cyl's
+	var vi: int = 0
+	for s in range(6):
+		var a0 := float(s) * PI / 3.0
+		var a1 := float(s + 1) * PI / 3.0
+		var d0 := Vector3(cos(a0), 0, sin(a0))
+		var d1 := Vector3(cos(a1), 0, sin(a1))
+		verts.append_array([d0 * rb + Vector3(0, -hh, 0), d1 * rb + Vector3(0, -hh, 0), d1 * rt + Vector3(0, hh, 0), d0 * rt + Vector3(0, hh, 0)])
+		var n := (d0 + d1).normalized()
+		var nn := Vector3(n.x, (rb - rt) / (hh * 2.0), n.z).normalized()
+		nn = (nn * 0.38 + Vector3.UP * 0.62).normalized()
+		for k in range(4):
+			normals.append(nn)
+			uvs.append(Vector2(0, 0))
+		indices.append_array([vi, vi + 1, vi + 2, vi, vi + 2, vi + 3])
+		vi += 4
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_INDEX] = indices
+	_tuft_cone = ArrayMesh.new()
+	_tuft_cone.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return _tuft_cone
+
 func _grass_tuft(parent: Node, pos: Vector3, seed_i: int) -> void:
 	# v0.7 art: crossed blade cones instead of a green ball.
+	# v1.0.26: shared steep-normal cone mesh instead of _cyl
+	# (same silhouette, same spots — see _tuft_cone_mesh).
 	var cols: Array = [Color(0.3, 0.58, 0.28), Color(0.4, 0.66, 0.32), Color(0.34, 0.62, 0.3)]
 	for bi in range(3):
-		var blade := _cyl(parent, pos + Vector3((float(bi) - 1.0) * 0.09, 0.1, (float((bi + seed_i) % 3) - 1.0) * 0.08), 0.004, 0.045, 0.44, cols[(bi + seed_i) % 3])
+		var blade := MeshInstance3D.new()
+		blade.mesh = _tuft_cone_mesh()
+		blade.position = pos + Vector3((float(bi) - 1.0) * 0.09, 0.1, (float((bi + seed_i) % 3) - 1.0) * 0.08)
+		blade.material_override = _mat(cols[(bi + seed_i) % 3])
+		parent.add_child(blade)
 		blade.rotation_degrees = Vector3((float(bi) - 1.0) * 9.0, 0, (float((bi * 2 + seed_i) % 3) - 1.0) * 9.0)
 
 # --- v1.0 step 2 GROUND DETAIL (MultiMesh) ---------------------------
@@ -772,6 +822,23 @@ func _blade_mesh() -> ArrayMesh:
 	# blades — and shades like grass from every side. (Instance
 	# colours were never the problem: the flower instances on the
 	# same path always rendered correctly.)
+	# v1.0.26: AND YET Michael's v1.0.25 play still showed black
+	# spikes. Re-bisected in a scratch scene under this exact dusk
+	# rig (tests/blade_lab.gd): the cone's normals are nearly
+	# HORIZONTAL (y ≈ 0.13), so a blade face turned away from the
+	# low amber sun gets no direct light at all — only the dim
+	# horizon band of the sky ambient — and ACES crushes it to
+	# black. A blade is a thin cone, so from any anti-sun
+	# viewpoint the WHOLE blade reads as a black spike; the lawn
+	# itself never does this because its normal points up into
+	# the sun and the bright sky. (Reversed winding proved to be
+	# the mirror image — black from the sun side instead — so
+	# winding was never the issue.) The normals now lean 62%
+	# toward straight up (y ≈ 0.87): every face keeps some sun
+	# and sky light, blades shade green from every compass
+	# point, and the cone keeps a slight outward lean so it
+	# still has a lit side and a shade side. Same geometry,
+	# same winding, same instance colours.
 	var verts := PackedVector3Array()
 	var normals := PackedVector3Array()
 	var uvs := PackedVector2Array()
@@ -788,6 +855,7 @@ func _blade_mesh() -> ArrayMesh:
 		verts.append_array([d0 * rb, d1 * rb, d1 * rt + Vector3(0, bh, 0), d0 * rt + Vector3(0, bh, 0)])
 		var n := (d0 + d1).normalized()
 		var nn := Vector3(n.x, (rb - rt) / bh, n.z).normalized()
+		nn = (nn * 0.38 + Vector3.UP * 0.62).normalized() # v1.0.26: steep lean (see above)
 		for k in range(4):
 			normals.append(nn)
 			uvs.append(Vector2(0, 0))
@@ -803,7 +871,38 @@ func _blade_mesh() -> ArrayMesh:
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	return mesh
 
+# v1.0.26: PAVED ground that is not a road band — the riverside
+# promenade slab, the parking pads, and the two pocket-park path
+# crosses. Michael, playing v1.0.25: grass tufts were poking up
+# through the promenade concrete ("grass coming out of the
+# sidewalk"). Ground scatter (tufts + the multimesh blades and
+# flowers) must never land on any of it. Rects carry a small
+# margin so nothing sprouts at a slab's edge either.
+func _paved_spot(p: Vector3) -> bool:
+	# The promenade: one long sidewalk slab along the river band.
+	var prom_cx: float = 0.0 if LEGACY_TOWN_ONLY else 126.0
+	var prom_half: float = 122.0 if LEGACY_TOWN_ONLY else 244.0
+	if absf(p.x - prom_cx) <= prom_half + 0.35 and p.z >= -87.05 and p.z <= -82.95:
+		return true
+	# Parking pads: [centre x, centre z, half w, half d] per pad
+	# (the _fill_parking calls in _build_town_fill).
+	for pad in [[84.0, -75.0, 5.0, 3.5], [62.0, 6.5, 4.5, 2.2], [16.0, 79.0, 4.0, 3.0], [234.0, -75.0, 5.0, 3.5]]:
+		if absf(p.x - float(pad[0])) <= float(pad[2]) + 0.35 and absf(p.z - float(pad[1])) <= float(pad[3]) + 0.35:
+			return true
+	# Pocket-park path crosses + their fountain discs: Willow
+	# Green (100, 76) and Sunset Green (296, 79 — doubled town).
+	for pc in [Vector2(100, 76), Vector2(296, 79)]:
+		if absf(p.x - pc.x) <= 8.85 and absf(p.z - pc.y) <= 1.45:
+			return true
+		if absf(p.x - pc.x) <= 1.45 and absf(p.z - pc.y) <= 8.85:
+			return true
+		if Vector2(p.x - pc.x, p.z - pc.y).length() < 2.9:
+			return true
+	return false
+
 func _ground_spot_blocked(p: Vector3) -> bool:
+	if _paved_spot(p): # v1.0.26: promenade / pads / park paths
+		return true
 	for rz in [-55.0, -11.0, 15.0, 55.0]:
 		if absf(p.z - rz) < 6.4:
 			return true
@@ -885,6 +984,212 @@ func _scatter_multimesh(world: Node3D, srng: RandomNumberGenerator, mesh: Mesh, 
 		mmi.custom_aabb = AABB(Vector3(-CELL * 0.5 - 3.0, -1.0, -CELL * 0.5 - 3.0), Vector3(CELL + 6.0, 4.0, CELL + 6.0))
 		if vis_end > 0.0:
 			mmi.visibility_range_end = vis_end
+		world.add_child(mmi)
+
+func _flower_stem_mesh() -> ArrayMesh:
+	# v1.0.26: a wildflower stem — a thin cone (r 0.011 -> 0.006,
+	# h 0.26) standing on the ground plane, with the same
+	# steep-lean normals as the grass blades so it shades green
+	# from every side under the dusk rig.
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs := PackedVector2Array()
+	var indices := PackedInt32Array()
+	var rb := 0.011
+	var rt := 0.006
+	var bh := 0.26
+	var vi: int = 0
+	for s in range(5):
+		var a0 := float(s) * TAU / 5.0
+		var a1 := float(s + 1) * TAU / 5.0
+		var d0 := Vector3(cos(a0), 0, sin(a0))
+		var d1 := Vector3(cos(a1), 0, sin(a1))
+		verts.append_array([d0 * rb, d1 * rb, d1 * rt + Vector3(0, bh, 0), d0 * rt + Vector3(0, bh, 0)])
+		var n := (d0 + d1).normalized()
+		var nn := Vector3(n.x, (rb - rt) / bh, n.z).normalized()
+		nn = (nn * 0.38 + Vector3.UP * 0.62).normalized()
+		for k in range(4):
+			normals.append(nn)
+			uvs.append(Vector2(0, 0))
+		indices.append_array([vi, vi + 1, vi + 2, vi, vi + 2, vi + 3])
+		vi += 4
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_INDEX] = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+func _append_blob(verts: PackedVector3Array, normals: PackedVector3Array, uvs: PackedVector2Array, indices: PackedInt32Array, centre: Vector3, r: float, squash: float) -> void:
+	# One squashed sphere blob for the flower head (petal or
+	# centre), appended into the arrays being built.
+	var lon_steps := 7
+	var lat_steps := 4
+	var base := verts.size()
+	for la in range(lat_steps + 1):
+		var phi := -PI * 0.5 + PI * float(la) / float(lat_steps)
+		for lo in range(lon_steps + 1):
+			var theta := TAU * float(lo) / float(lon_steps)
+			var d := Vector3(cos(phi) * cos(theta), sin(phi), cos(phi) * sin(theta))
+			verts.append(centre + Vector3(d.x * r, d.y * r * squash, d.z * r))
+			normals.append(Vector3(d.x, d.y / maxf(squash, 0.05), d.z).normalized())
+			uvs.append(Vector2(0, 0))
+	for la in range(lat_steps):
+		for lo in range(lon_steps):
+			var a := base + la * (lon_steps + 1) + lo
+			var b := a + lon_steps + 1
+			indices.append_array([a, b, a + 1, b, b + 1, a + 1])
+
+func _flower_head_mesh() -> ArrayMesh:
+	# v1.0.26: a daisy-like head at the top of the stem — a
+	# flattened centre disc with six petal blobs in a ring, all
+	# in local space around y = 0.27. No colour array: the
+	# instance colour tints the whole head via the material's
+	# vertex-colour-as-albedo, exactly like the old spheres.
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs := PackedVector2Array()
+	var indices := PackedInt32Array()
+	_append_blob(verts, normals, uvs, indices, Vector3(0, 0.278, 0), 0.037, 0.5)
+	for k in range(6):
+		var ang := float(k) * PI / 3.0
+		_append_blob(verts, normals, uvs, indices, Vector3(cos(ang) * 0.045, 0.268, sin(ang) * 0.045), 0.030, 0.42)
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_INDEX] = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+func _scatter_flowers(world: Node3D, srng: RandomNumberGenerator, count: int, palette: Array) -> void:
+	# v1.0.26: placements follow _scatter_multimesh's rules
+	# exactly (same ranges, same _ground_spot_blocked lawn-only
+	# rejection — promenade, parking pads and park paths
+	# included), then split into TWO multimeshes per 20 m cell
+	# sharing every placement: stems on a plain green material
+	# (no instance colours, so a pink head never tints its
+	# stem) and heads instance-coloured from the palette. Same
+	# 45 m visibility range as the old bare-sphere scatter.
+	# Positions are kept in flower_spots as a proof handle.
+	var stem_mesh := _flower_stem_mesh()
+	var head_mesh := _flower_head_mesh()
+	var stem_mat := StandardMaterial3D.new()
+	stem_mat.albedo_color = Color(0.30, 0.52, 0.22)
+	stem_mat.roughness = 1.0
+	var head_mat := StandardMaterial3D.new()
+	head_mat.albedo_color = Color.WHITE
+	head_mat.roughness = 0.7
+	head_mat.vertex_color_use_as_albedo = true
+	var xforms: Array = []
+	var cols: Array = []
+	var placed: int = 0
+	var guard: int = 0
+	var scatter_x_max: float = 118.0 if LEGACY_TOWN_ONLY else 372.0
+	while placed < count and guard < count * 40:
+		guard += 1
+		await _build_tick()
+		var p := Vector3(srng.randf_range(-120, scatter_x_max), 0.02, srng.randf_range(-90, 90))
+		if _ground_spot_blocked(p):
+			continue
+		var basis := Basis(Vector3.UP, srng.randf_range(0.0, TAU)).scaled(Vector3.ONE * srng.randf_range(0.8, 1.3))
+		xforms.append(Transform3D(basis, p))
+		cols.append(palette[srng.randi_range(0, palette.size() - 1)])
+		flower_spots.append(p)
+		placed += 1
+	const CELL := 20.0
+	var cells: Dictionary = {}
+	for i in range(xforms.size()):
+		var p2: Vector3 = (xforms[i] as Transform3D).origin
+		var key := Vector2i(floori(p2.x / CELL), floori(p2.z / CELL))
+		if not cells.has(key):
+			cells[key] = []
+		(cells[key] as Array).append(i)
+	for key in cells.keys():
+		var idxs: Array = cells[key]
+		var centre := Vector3((float(key.x) + 0.5) * CELL, 0.0, (float(key.y) + 0.5) * CELL)
+		for part in range(2):
+			var mm := MultiMesh.new()
+			mm.transform_format = MultiMesh.TRANSFORM_3D
+			mm.use_colors = part == 1
+			mm.mesh = stem_mesh if part == 0 else head_mesh
+			mm.instance_count = idxs.size()
+			for j in range(idxs.size()):
+				var t: Transform3D = xforms[idxs[j]]
+				mm.set_instance_transform(j, Transform3D(t.basis, t.origin - centre))
+				if part == 1:
+					mm.set_instance_color(j, cols[idxs[j]])
+			var mmi := MultiMeshInstance3D.new()
+			mmi.multimesh = mm
+			mmi.material_override = stem_mat if part == 0 else head_mat
+			mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			mmi.position = centre + Vector3(0.013, 0, 0.017)
+			mmi.custom_aabb = AABB(Vector3(-CELL * 0.5 - 3.0, -1.0, -CELL * 0.5 - 3.0), Vector3(CELL + 6.0, 4.0, CELL + 6.0))
+			mmi.visibility_range_end = 45.0
+			world.add_child(mmi)
+
+func _place_flowers(world: Node3D, spots: Array) -> void:
+	# v1.0.26 completion: the hand-scattered flower sites (park
+	# scatter, town scatter, park-2 scatter, every _fill_flowerbed,
+	# the park-2 ring bed) used to place BARE COLOURED SPHERES —
+	# Michael asked for proper flowers, so they now share
+	# _scatter_flowers' construction: stems on a plain green
+	# material + instance-coloured daisy heads, two multimeshes
+	# per site (the sites are small; two draw calls each).
+	# spots: Array of [base Vector3, Color, scale float]. Yaw is
+	# derived from the position so callers keep their exact RNG
+	# draw order — placements and colours are unchanged.
+	if spots.is_empty():
+		return
+	var stem_mesh := _flower_stem_mesh()
+	var head_mesh := _flower_head_mesh()
+	var stem_mat := StandardMaterial3D.new()
+	stem_mat.albedo_color = Color(0.30, 0.52, 0.22)
+	stem_mat.roughness = 1.0
+	var head_mat := StandardMaterial3D.new()
+	head_mat.albedo_color = Color.WHITE
+	head_mat.roughness = 0.7
+	head_mat.vertex_color_use_as_albedo = true
+	var centre := Vector3.ZERO
+	for s in spots:
+		centre += (s as Array)[0]
+		placed_flower_spots.append((s as Array)[0])
+	centre /= float(spots.size())
+	centre.y = 0.0
+	var lo := Vector3(1e9, 0, 1e9)
+	var hi := Vector3(-1e9, 0, -1e9)
+	for s2 in spots:
+		var p3: Vector3 = (s2 as Array)[0]
+		lo.x = minf(lo.x, p3.x)
+		lo.z = minf(lo.z, p3.z)
+		hi.x = maxf(hi.x, p3.x)
+		hi.z = maxf(hi.z, p3.z)
+	for part in range(2):
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.use_colors = part == 1
+		mm.mesh = stem_mesh if part == 0 else head_mesh
+		mm.instance_count = spots.size()
+		for j in range(spots.size()):
+			var s3: Array = spots[j]
+			var p4: Vector3 = s3[0]
+			var yaw := fmod(p4.x * 12.9898 + p4.z * 78.233, TAU)
+			var basis := Basis(Vector3.UP, yaw).scaled(Vector3.ONE * float(s3[2]))
+			mm.set_instance_transform(j, Transform3D(basis, p4 - centre))
+			if part == 1:
+				mm.set_instance_color(j, s3[1])
+		var mmi := MultiMeshInstance3D.new()
+		mmi.multimesh = mm
+		mmi.material_override = stem_mat if part == 0 else head_mat
+		mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		mmi.position = centre + Vector3(0.013, 0, 0.017) # same mailbox-audit hair off the grid as the scatters
+		var ext := Vector3(maxf(hi.x - lo.x, 1.0) * 0.5 + 1.5, 0.0, maxf(hi.z - lo.z, 1.0) * 0.5 + 1.5)
+		mmi.custom_aabb = AABB(Vector3(-ext.x, -0.5, -ext.z), Vector3(ext.x * 2.0, 2.0, ext.z * 2.0))
 		world.add_child(mmi)
 
 # ---------------------------------------------------------------- lifecycle
@@ -1027,6 +1332,123 @@ func _log_stage_profile() -> void:
 		_boot_log("profile houses slowest single house %d ms (%s)" % [_houses_max_ms, _houses_max_addr])
 	_stage_max_stretch = 0
 
+# v1.0.25 PERF (Michael's order: compress + preload so the S26 never
+# hitches): every model resource is already preload()ed, but a texture
+# only reaches the GPU the first time its model is DRAWN — which used
+# to happen mid-play, one type at a time, as things scrolled into
+# view. Here, behind the splash, one instance of every distinct
+# person / cat / dog / vehicle model is placed in front of the boot
+# camera for a few frames so every texture upload and shader compile
+# happens during loading instead. Instances are freed before the
+# reveal; nothing about gameplay changes.
+const WARMUP_MODEL_PATHS: Array = [
+	"res://assets/models/officer.glb", "res://assets/models/young_woman.glb",
+	"res://assets/models/excited_kid.glb", "res://assets/models/dog_walker.glb",
+	"res://assets/models/shopkeeper.glb", "res://assets/models/mail_carrier.glb",
+	"res://assets/models/gardener.glb", "res://assets/models/skateboarder.glb",
+	"res://assets/models/baker.glb", "res://assets/models/construction_worker.glb",
+	"res://assets/models/coffee_shop_owner.glb", "res://assets/models/jogger.glb",
+	"res://assets/models/street_musician.glb", "res://assets/models/little_dog.glb",
+	"res://assets/models/car_sports.glb", "res://assets/models/car_sedan.glb",
+	"res://assets/models/car_compact.glb", "res://assets/models/truck_pickup.glb",
+	"res://assets/models/car_police.glb", "res://assets/models/van_delivery.glb",
+	"res://assets/models/suv.glb", "res://assets/models/van_animal_control.glb",
+]
+var warmup_count: int = 0 # suite handle: how many distinct models were warmed
+
+func _warmup_models() -> void:
+	var cam: Camera3D = get_viewport().get_camera_3d()
+	if cam == null:
+		_boot_log("warmup skipped: no camera yet")
+		return
+	var scenes: Array = []
+	for p in WARMUP_MODEL_PATHS:
+		var ps: PackedScene = load(p)
+		if ps != null:
+			scenes.append(ps)
+	for key in TOWN_CAT_SCENES:
+		scenes.append(TOWN_CAT_SCENES[key])
+	var basis_xform: Transform3D = cam.global_transform
+	var fwd: Vector3 = -basis_xform.basis.z
+	var right: Vector3 = basis_xform.basis.x
+	var up: Vector3 = basis_xform.basis.y
+	var nodes: Array = []
+	var i: int = 0
+	for ps in scenes:
+		var inst: Node3D = (ps as PackedScene).instantiate()
+		var col: int = i % 6
+		var row: int = i / 6
+		inst.position = basis_xform.origin + fwd * 12.0 + right * (float(col) - 2.5) * 3.0 + up * (float(row) * 2.6 - 2.0)
+		add_child(inst)
+		nodes.append(inst)
+		i += 1
+	await _build_frame()
+	await _build_frame()
+	await _build_frame()
+	for n in nodes:
+		(n as Node).queue_free()
+	warmup_count = nodes.size()
+	_boot_log("warmup: %d distinct models drawn behind the splash" % warmup_count)
+	await _build_frame()
+
+var gpu_warm_count: int = 0 # suite handle: distinct scenes the v1.0.26 GPU warm-up presented
+
+# v1.0.26 PRELOAD/WARM-UP: the final boot pass, run after the
+# staged reveal with the whole town live. _warmup_models() drew
+# every model once behind the splash, but a model first drawn
+# under the splash's lighting still pays its real shader-variant
+# and upload costs the first time it appears IN PLAY — in the
+# dusk sun on the street, and again under the shelter's interior
+# lights. So: park the boot camera over an open street, stand one
+# of every unique scene in front of it in the sun (every person
+# type + the little dog, all 8 town cats, Zander, all 8 vehicles
+# including the animal-control van, the playground), hold 3
+# presented frames, swing the camera inside the shelter for 2
+# frames so the ward's materials compile too, then free the
+# cluster and put the camera back. Goal: zero first-appearance
+# GPU uploads or shader compiles during play.
+func _warm_up_gpu() -> void:
+	var cam: Camera3D = get_viewport().get_camera_3d()
+	if cam == null:
+		_boot_log("gpu warmup skipped: no camera yet")
+		return
+	var saved_xform: Transform3D = cam.global_transform
+	var scenes: Array = []
+	for p in WARMUP_MODEL_PATHS:
+		var ps: PackedScene = load(p)
+		if ps != null:
+			scenes.append(ps)
+	for key in TOWN_CAT_SCENES:
+		scenes.append(TOWN_CAT_SCENES[key])
+	scenes.append(preload("res://assets/models/zander.glb"))
+	scenes.append(preload("res://assets/models/playground.glb"))
+	var anchor := Vector3(0, 0, -11) # an open stretch of street, full dusk sun
+	cam.global_position = anchor + Vector3(0, 3.4, 14.5)
+	cam.look_at(anchor + Vector3(0, 0.8, 0), Vector3.UP)
+	var nodes: Array = []
+	var i: int = 0
+	for ps in scenes:
+		var inst: Node3D = (ps as PackedScene).instantiate()
+		var col: int = i % 8
+		var row: int = i / 8
+		inst.position = anchor + Vector3((float(col) - 3.5) * 2.8, 0.1, -float(row) * 3.2)
+		add_child(inst)
+		nodes.append(inst)
+		i += 1
+	await _build_frame()
+	await _build_frame()
+	await _build_frame()
+	cam.global_position = escape_origin + Vector3(6.5, 2.1, 6.5)
+	cam.look_at(escape_origin + Vector3(-3, 1.0, -3), Vector3.UP)
+	await _build_frame()
+	await _build_frame()
+	for n in nodes:
+		(n as Node).queue_free()
+	cam.global_transform = saved_xform
+	gpu_warm_count = nodes.size()
+	_boot_log("gpu warmup: %d distinct scenes presented in sun + shelter" % gpu_warm_count)
+	await _build_frame()
+
 func _build_world_async() -> void:
 	_chunk_t0 = Time.get_ticks_msec()
 	_resume_ms = _chunk_t0
@@ -1049,6 +1471,7 @@ func _build_world_async() -> void:
 	await _build_house_room()
 	house_room_set = _capture_room_set(house_room_node)
 	_activate_escape_room(false)
+	_build_escape_exterior() # v1.0.25: the street outside the escape rooms' doors (see below)
 	await _build_frame()
 	await _set_boot_stage("People", 75)
 	await _spawn_npcs()
@@ -1057,7 +1480,11 @@ func _build_world_async() -> void:
 	_build_pound_depot() # v1.0.21: the pound's garage + office at the west end (before the van, so its home exists when it first returns)
 	await _spawn_pound()
 	await _build_frame() # v1.0.11: the van + worker build is its own chunk; don't let it merge into the reveal's first stretch
+	await _set_boot_stage("Warming up", 80)
+	await _warmup_models() # v1.0.25 PERF: draw every model once behind the splash so nothing first-loads mid-play
 	await _staged_reveal()
+	await _set_boot_stage("Warming up the graphics", 97)
+	await _warm_up_gpu() # v1.0.26: last pass — every unique scene presented in sun + shelter before play
 	_log_stage_profile()
 	_stage_name = ""
 	build_complete = true
@@ -1415,11 +1842,6 @@ func _build_audio() -> void:
 	sfx_crash = _make_player("res://assets/audio/notice.wav")
 	sfx_crash.pitch_scale = 0.5
 	sfx_crash.volume_db = -4.0
-	# v1.0.22: the pound van's siren blip — a soft, short two-tone
-	# whoop, kept well under the mix (atmosphere, not an alarm).
-	# _pound_update_lights starts and stops it with the light bar.
-	sfx_siren = _make_player("res://assets/audio/siren_blip.wav")
-	sfx_siren.volume_db = -13.0
 	sfx_win = _make_player("res://assets/audio/win_chime.wav")
 	music = _make_player("res://assets/audio/music_pad.wav")
 	music.volume_db = -14.0
@@ -1848,7 +2270,12 @@ func _build_world() -> void:
 			if abs(tp2.z - rz2) < 6.5: on_road_t = true
 		for rx2 in road_xs:
 			if abs(tp2.x - rx2) < 6.5: on_road_t = true
-		if on_road_t:
+		# v1.0.26: the tufts obey the SAME ground rule as the
+		# multimesh scatter — grass only, never on sidewalks,
+		# paths, parking pads or the promenade (their old check
+		# knew only the road bands, so tufts sprouted through
+		# the promenade concrete).
+		if on_road_t or _ground_spot_blocked(tp2):
 			continue
 		_grass_tuft(world, tp2, i)
 	# v1.0 step 2: instanced ground detail — 8,000 grass blades and
@@ -1868,16 +2295,17 @@ func _build_world() -> void:
 	# the black-spike bug.
 	blade_mat.vertex_color_use_as_albedo = true
 	await _scatter_multimesh(world, detail_rng, _blade_mesh(), 12000 if LEGACY_TOWN_ONLY else 24000, blade_mat, [Color(0.34, 0.56, 0.22), Color(0.3, 0.5, 0.19), Color(0.39, 0.61, 0.25), Color(0.32, 0.53, 0.2)], 0.02, 0.6, 1.1, 60.0) # PERF: blades drawn only within 60m (chunked cells); MAP DOUBLING: count doubled with the area (cells keep the draw cost flat) (BISECT: pre-doubling count in legacy mode)
-	var flower_mesh := SphereMesh.new()
-	flower_mesh.radius = 0.06
-	flower_mesh.height = 0.12
-	flower_mesh.radial_segments = 6
-	flower_mesh.rings = 4
-	var flower_mat := StandardMaterial3D.new()
-	flower_mat.albedo_color = Color.WHITE
-	flower_mat.roughness = 0.75
-	flower_mat.vertex_color_use_as_albedo = true
-	await _scatter_multimesh(world, detail_rng, flower_mesh, 380 if LEGACY_TOWN_ONLY else 760, flower_mat, [Color(0.98, 0.55, 0.65), Color(0.99, 0.85, 0.35), Color(0.97, 0.96, 0.92), Color(0.78, 0.65, 0.95)], 0.1, 0.8, 1.3, 45.0) # PERF: flowers drawn only within 45m (chunked cells); MAP DOUBLING: count doubled with the area (BISECT: pre-doubling count in legacy mode)
+	# v1.0.26 FLOWERS (Michael, playing v1.0.25, asked what the
+	# little coloured balls on the lawn were): this scatter used
+	# to drop bare coloured SPHERES — no stem, no petals — so
+	# they read as balls sitting on the grass. A flower is now a
+	# thin green stem lifting a petal head clear of the blades,
+	# built and scattered by _scatter_flowers: same count, same
+	# 45 m cell range, same lawn-only rejection (promenade and
+	# pads included), two multimeshes per occupied cell — stems
+	# on a plain green material the instance colours never
+	# touch, heads instance-coloured from this same palette.
+	await _scatter_flowers(world, detail_rng, 380 if LEGACY_TOWN_ONLY else 760, [Color(0.98, 0.55, 0.65), Color(0.99, 0.85, 0.35), Color(0.97, 0.96, 0.92), Color(0.78, 0.65, 0.95)])
 	await _set_boot_stage("Building streets", 40) # v1.0.10 boot readout
 	# Roads: FOUR horizontal + NINE vertical (v0.6 had four vertical;
 	# MAP DOUBLING added five east), with sidewalks + dashes
@@ -2161,10 +2589,12 @@ func _build_world() -> void:
 		_box(world, bpos + Vector3(0, 0.45, 0), Vector3(2.2, 0.12, 0.55), Color(0.55, 0.4, 0.25), true)
 		_box(world, bpos + Vector3(-0.8, 0.22, 0), Vector3(0.15, 0.45, 0.5), Color(0.4, 0.3, 0.2))
 		_box(world, bpos + Vector3(0.8, 0.22, 0), Vector3(0.15, 0.45, 0.5), Color(0.4, 0.3, 0.2))
+	var park_flower_spots: Array = []
 	for i in range(26):
 		var fp := Vector3(randf_range(-54, -24.5), 0.16, randf_range(19.2, 32)) # CLUTTER: z<19.2 put flowers on the Oak asphalt (edge 18.6); x>-24.5 put them on Cedar (edge -23.6)
-		_sphere(world, fp, Vector3(0.22, 0.22, 0.22), [Color(0.95, 0.5, 0.6), Color(0.98, 0.85, 0.35), Color(0.9, 0.9, 0.95)][i % 3])
+		park_flower_spots.append([Vector3(fp.x, 0.02, fp.z), [Color(0.95, 0.5, 0.6), Color(0.98, 0.85, 0.35), Color(0.9, 0.9, 0.95)][i % 3], 1.15]) # v1.0.26 completion: stem+daisy via _place_flowers (was a bare sphere)
 		await _build_tick() # v1.0.11 chunking
+	_place_flowers(world, park_flower_spots)
 	await _build_tick()
 	# Crosswalks at the main intersections (BISECT: road_xs is the
 	# legacy four in legacy mode, all nine otherwise)
@@ -2193,6 +2623,7 @@ func _build_world() -> void:
 	_sphere(world, Vector3(-43, 0.32, 26.5), Vector3(0.42, 0.3, 0.55), Color(0.98, 0.97, 0.94)) # duck body
 	_sphere(world, Vector3(-42.7, 0.55, 26.9), Vector3(0.24, 0.24, 0.24), Color(0.98, 0.97, 0.94)) # duck head
 	_box(world, Vector3(-42.55, 0.52, 27.12), Vector3(0.2, 0.07, 0.1), Color(0.95, 0.65, 0.2)) # beak
+	var town_flower_spots: Array = []
 	for i in range(22 if LEGACY_TOWN_ONLY else 44): # MAP DOUBLING: count doubled with the area (BISECT: pre-doubling count in legacy mode)
 		await _build_tick() # v1.0.11 chunking (before the road check, so `continue` can't skip it)
 		var fp2 := Vector3(srng.randf_range(-114, x_hi), 0.16, srng.randf_range(-86, 86))
@@ -2205,7 +2636,8 @@ func _build_world() -> void:
 			if abs(fp2.x - rx6) < 5.0: fon = true
 		if fon:
 			continue
-		_sphere(world, fp2, Vector3(0.2, 0.2, 0.2), [Color(0.95, 0.5, 0.6), Color(0.98, 0.85, 0.35), Color(0.75, 0.6, 0.95)][i % 3])
+		town_flower_spots.append([Vector3(fp2.x, 0.02, fp2.z), [Color(0.95, 0.5, 0.6), Color(0.98, 0.85, 0.35), Color(0.75, 0.6, 0.95)][i % 3], 1.05]) # v1.0.26 completion: stem+daisy via _place_flowers (was a bare sphere)
+	_place_flowers(world, town_flower_spots)
 	await _build_tick()
 	# Lamp posts
 	for lp in [Vector3(-26, 0, -6), Vector3(18, 0, -16), Vector3(-26, 0, 20), Vector3(30, 0, 10), Vector3(-2, 0, -16), Vector3(2, 0, 20), Vector3(-64, 0, -49), Vector3(66, 0, 60), Vector3(-76, 0, 20), Vector3(30, 0, -60), Vector3(84, 0, -6), Vector3(-96, 0, 44)]:
@@ -2234,9 +2666,11 @@ func _build_world() -> void:
 	var gz_roof := _cyl(world, gz_pos + Vector3(0, 3.6, 0), 0.3, 3.5, 1.4, Color.WHITE)
 	gz_roof.material_override = _mat_tex(TEX_ROOF, Color(0.55, 0.35, 0.3), Vector3(3, 1, 1))
 	_sphere(world, gz_pos + Vector3(0, 4.5, 0), Vector3(0.28, 0.28, 0.28), Color(0.9, 0.75, 0.3))
+	var park2_flower_spots: Array = []
 	for i in range(14):
 		var fp3 := Vector3(srng.randf_range(-100, -75), 0.16, srng.randf_range(66, 82)) # CLUTTER: x>-75 put flowers on the Pine asphalt (road edge -73.6)
-		_sphere(world, fp3, Vector3(0.2, 0.2, 0.2), [Color(0.95, 0.5, 0.6), Color(0.98, 0.85, 0.35), Color(0.9, 0.9, 0.95)][i % 3])
+		park2_flower_spots.append([Vector3(fp3.x, 0.03, fp3.z), [Color(0.95, 0.5, 0.6), Color(0.98, 0.85, 0.35), Color(0.9, 0.9, 0.95)][i % 3], 1.05]) # v1.0.26 completion: stem+daisy via _place_flowers (was a bare sphere)
+	_place_flowers(world, park2_flower_spots)
 	await _build_tick()
 	await _build_tick() # v1.0.11 chunking: sub-section boundary
 	# ============ CLOCK TOWER landmark (north centre, by the river road)
@@ -2290,16 +2724,64 @@ func _build_world() -> void:
 			out.append([cur2, hi])
 		return out
 	# NORTH: a RIVER — water, far bank, houses across the water, fence here
-	var river := _box(world, Vector3(town_cx, 0.0, -99.5), Vector3(town_w, 0.25, 13), Color.WHITE)
-	river.material_override = _mat_tex(TEX_WATER, Color(0.85, 0.95, 1.05), Vector3(40.0 if LEGACY_TOWN_ONLY else 80.0, 2, 1), 0.3)
-	var far_bank := _box(world, Vector3(town_cx, -0.05, -115), Vector3(town_w, 0.6, 18), Color.WHITE)
-	far_bank.material_override = _mat_tex(TEX_GRASS, Color(0.66, 0.78, 0.6), Vector3(40.0 if LEGACY_TOWN_ONLY else 80.0, 3, 1))
+	# v1.0.26: the channel (and the far bank) now spans the whole
+	# island width at this latitude (town_w + 76), running out
+	# through the beach to the sea at both ends like a river
+	# mouth — when it was only town-wide, Zander could walk
+	# around its ends and across it (the water box has no
+	# collision; the apron runs beneath it), and the far-bank
+	# houses read as reachable town. Michael, playing v1.0.25:
+	# "there's just a random river... and then houses on the
+	# other side... it needs to be fixed."
+	var river := _box(world, Vector3(town_cx, 0.0, -99.5), Vector3(town_w + 76.0, 0.25, 13), Color.WHITE)
+	river.material_override = _mat_tex(TEX_WATER, Color(0.85, 0.95, 1.05), Vector3(50.0 if LEGACY_TOWN_ONLY else 90.0, 2, 1), 0.3)
+	var far_bank := _box(world, Vector3(town_cx, -0.05, -115), Vector3(town_w + 76.0, 0.6, 18), Color.WHITE)
+	far_bank.material_override = _mat_tex(TEX_GRASS, Color(0.66, 0.78, 0.6), Vector3(50.0 if LEGACY_TOWN_ONLY else 90.0, 3, 1))
+	# v1.0.26: the river's SHORE WALL — the same stop the island
+	# sea shore gives him (IslandShore in _build_island): an
+	# invisible bank along the near shore, so he stands at the
+	# water's edge but never ON the water, anywhere along the
+	# channel. It spans the widened channel end to end, so there
+	# is no flank to walk around inside the island; beyond its
+	# ends is beach and the sea's own shore wall. Traffic is
+	# kinematic and the townsfolk keep their own town bounds, so
+	# nothing else meets this wall.
+	var river_shore := StaticBody3D.new()
+	river_shore.name = "RiverShore"
+	var river_cs := CollisionShape3D.new()
+	var river_shape := BoxShape3D.new()
+	river_shape.size = Vector3(town_w + 76.0, 1.8, 0.8)
+	river_cs.shape = river_shape
+	river_cs.position = Vector3(town_cx, 0.7, -92.55)
+	river_shore.add_child(river_cs)
+	world.add_child(river_shore)
 	for hx in ([-100, -60, -20, 20, 60, 100] if LEGACY_TOWN_ONLY else [-100, -60, -20, 20, 60, 100, 140, 180, 220, 260, 300, 340]):
 		_box(world, Vector3(hx, 2.5, -124), Vector3(10, 5, 8), Color(0.82, 0.78, 0.72))
 		var sr1 := _box(world, Vector3(hx - 2.4, 5.6, -124), Vector3(6.4, 0.25, 9), Color(0.5, 0.42, 0.4))
 		sr1.rotation_degrees = Vector3(0, 0, 34)
 		var sr2 := _box(world, Vector3(hx + 2.4, 5.6, -124), Vector3(6.4, 0.25, 9), Color(0.5, 0.42, 0.4))
 		sr2.rotation_degrees = Vector3(0, 0, -34)
+		# v1.0.26: close this row's gable ends. These backdrop
+		# houses are plain boxes + two roof slabs on their own
+		# build path, so the triangle under the roof stood open
+		# (Michael's v1.0.25 screenshot: the white shore house
+		# hollow under its roof) — the v1.0.25 gable fix covered
+		# the town houses (_build_house) and the escape diorama,
+		# not this row. A wall-coloured prism fills the triangle:
+		# its slope (2.43 over a 3.6 half-span) matches the slabs'
+		# 34 degrees, its base tucks into the wall top and its
+		# edges under the slabs. (Named ShoreGableInfill, not
+		# GableInfill: the suite's gable audit counts nodes named
+		# GableInfill against the town houses one-for-one.)
+		var gable := MeshInstance3D.new()
+		var prism := PrismMesh.new()
+		prism.left_to_right = 0.5
+		prism.size = Vector3(7.2, 2.43, 7.96)
+		gable.mesh = prism
+		gable.position = Vector3(hx, 6.16, -124)
+		gable.material_override = _mat(Color(0.82, 0.78, 0.72))
+		gable.name = "ShoreGableInfill"
+		world.add_child(gable)
 		_build_pine(world, Vector3(hx + 9, 0, -120), 1.1)
 		await _build_tick() # v1.0.11 chunking
 	var fxi: int = 0
@@ -2674,11 +3156,12 @@ func _fill_flowerbed(world: Node3D, pos: Vector3, w: float = 4.2) -> void:
 	soil.material_override = _mat(Color(0.4, 0.3, 0.2), 1.0)
 	var fr := RandomNumberGenerator.new()
 	fr.seed = absi(int(pos.x * 71.0 + pos.z * 113.0)) + 5
+	var bed_spots: Array = []
 	for i in range(9):
 		var fx: float = fr.randf_range(-w * 0.42, w * 0.42)
 		var fz: float = fr.randf_range(-0.55, 0.55)
-		_sphere(world, pos + Vector3(fx, 0.3, fz), Vector3(0.17, 0.17, 0.17), [Color(0.95, 0.5, 0.6), Color(0.98, 0.85, 0.35), Color(0.9, 0.9, 0.95), Color(0.85, 0.45, 0.75)][i % 4])
-		_cyl(world, pos + Vector3(fx, 0.14, fz), 0.02, 0.02, 0.2, Color(0.35, 0.6, 0.3))
+		bed_spots.append([pos + Vector3(fx, 0.10, fz), [Color(0.95, 0.5, 0.6), Color(0.98, 0.85, 0.35), Color(0.9, 0.9, 0.95), Color(0.85, 0.45, 0.75)][i % 4], 0.95]) # v1.0.26 completion: stem+daisy via _place_flowers (was a ball on a stick)
+	_place_flowers(world, bed_spots)
 	content_points.append(pos)
 
 func _fill_mailbox(world: Node3D, pos: Vector3) -> void:
@@ -2954,9 +3437,11 @@ func _build_town_fill(world: Node3D, srng: RandomNumberGenerator) -> void:
 	# ============ PARK 2 centre cluster (SW park, between pond + gazebo)
 	var bed := _cyl(world, Vector3(-83, 0.16, 73), 1.8, 1.8, 0.3, Color(0.4, 0.3, 0.2), true)
 	bed.material_override = _mat(Color(0.4, 0.3, 0.2), 1.0)
+	var ring_spots: Array = []
 	for fi in range(7):
 		var fa: float = float(fi) * TAU / 7.0
-		_sphere(world, Vector3(-83 + cos(fa) * 1.1, 0.42, 73 + sin(fa) * 1.1), Vector3(0.19, 0.19, 0.19), [Color(0.95, 0.5, 0.6), Color(0.98, 0.85, 0.35), Color(0.9, 0.9, 0.95)][fi % 3])
+		ring_spots.append([Vector3(-83 + cos(fa) * 1.1, 0.22, 73 + sin(fa) * 1.1), [Color(0.95, 0.5, 0.6), Color(0.98, 0.85, 0.35), Color(0.9, 0.9, 0.95)][fi % 3], 0.9]) # v1.0.26 completion: stem+daisy via _place_flowers (was a bare sphere)
+	_place_flowers(world, ring_spots)
 	content_points.append(Vector3(-83, 0, 73))
 	_fill_bench(world, Vector3(-79, 0, 70), -90.0)
 	_fill_lamp(world, Vector3(-87, 0, 70))
@@ -3240,6 +3725,47 @@ func _build_house(parent: Node, h: Dictionary, wall_col: Color, roof_col: Color)
 		_box(g, Vector3(bay_x, 0.72, facing * (fz + 0.7)), Vector3(1.9, 0.24, 0.34), Color(0.6, 0.35, 0.3)) # flower ledge
 		_sphere(g, Vector3(bay_x - 0.45, 0.9, facing * (fz + 0.74)), Vector3(0.2, 0.16, 0.16), Color(0.95, 0.45, 0.55))
 		_sphere(g, Vector3(bay_x + 0.4, 0.92, facing * (fz + 0.74)), Vector3(0.18, 0.15, 0.15), Color(0.98, 0.8, 0.3))
+	# v1.0.25 GABLE INFILL (Michael's play report: a red-brick
+	# house's gable triangle under the roof was OPEN — you could
+	# see through the house): the wall box stops at the eave and
+	# NOTHING ever filled the triangle between the wall top and
+	# the roof slabs, on EVERY gable house. The infill is a
+	# triangular prism in the wall's own material, sized from the
+	# same numbers as the slabs: its slanted edges lie along the
+	# slabs' undersides (the true opening is the smaller triangle
+	# where those undersides clear the eave), nudged a few cm
+	# INTO the slab band and the wall so no slit remains, and it
+	# never pokes above the slab tops (checked per pitch/width:
+	# the edge slope is ~half the roof slope, apex stops 6 cm
+	# short of the slab centre line's underside + embed).
+	h["hip"] = hip_roof
+	if not hip_roof:
+		var ang_r: float = deg_to_rad(roof_angle)
+		var tan_a: float = tan(ang_r)
+		var y_under_ridge: float = slab_y + tan_a * (ww * 0.25) - 0.11 / cos(ang_r)
+		var g_apex: float = y_under_ridge + 0.05
+		var g_half: float = minf((y_under_ridge - eave) / tan_a + 0.04, ww * 0.5 - 0.02)
+		var g_base: float = eave - 0.06
+		var prism := PrismMesh.new()
+		prism.left_to_right = 0.5
+		prism.size = Vector3(g_half * 2.0, g_apex - g_base, wd - 0.04)
+		var gable := MeshInstance3D.new()
+		gable.name = "GableInfill"
+		gable.mesh = prism
+		gable.position = Vector3(0, (g_base + g_apex) * 0.5, 0)
+		gable.material_override = walls.material_override
+		g.add_child(gable)
+		var gbody := StaticBody3D.new()
+		var gcs := CollisionShape3D.new()
+		var gconv := ConvexPolygonShape3D.new()
+		var gz: float = (wd - 0.04) * 0.5
+		gconv.points = PackedVector3Array([
+			Vector3(-g_half, g_base, -gz), Vector3(g_half, g_base, -gz), Vector3(0, g_apex, -gz),
+			Vector3(-g_half, g_base, gz), Vector3(g_half, g_base, gz), Vector3(0, g_apex, gz)])
+		gcs.shape = gconv
+		gbody.add_child(gcs)
+		g.add_child(gbody)
+		h["gable"] = {"apex": g_apex, "eave": eave, "half": g_half, "wd": wd}
 	# v0.9 GABLE TRIM: fascia along both roof slopes at the front
 	# + a round attic vent — the roofline reads "built", not two
 	# slabs leaning together. v1.0.14: gable roofs only (a hip end
@@ -3385,7 +3911,13 @@ func _build_house(parent: Node, h: Dictionary, wall_col: Color, roof_col: Color)
 	# Front hedge (45%; v1.0.14: the pair flanks the path, which
 	# now leads to the offset door)
 	if hr.randf() < 0.45:
-		for hx3 in [door_x - 2.9, door_x + 2.9]:
+		# v1.0.25: hedges at ±3.4, not ±2.9 — at ±2.9 their inner
+		# edges (door_x ±1.3) overlapped the porch step's width
+		# (door_x ±1.8), and the step/hedge corner was a pocket
+		# an NPC could wedge into and never leave (the frozen-
+		# at-the-house-front bug). Flush with the step's edge,
+		# the path gap stays open.
+		for hx3 in [door_x - 3.4, door_x + 3.4]:
 			var hg := _box(g, Vector3(hx3, 0.35, facing * 5.4), Vector3(3.2, 0.7, 0.5), Color.WHITE, true)
 			hg.material_override = _mat_tex(TEX_FOLIAGE, Color(0.85, 0.98, 0.82), Vector3(2, 1, 1))
 	# Side picket fences (40%)
@@ -3988,7 +4520,9 @@ func _build_house_room() -> void:
 	# a real 4-piece border around a dark opening (it was one solid
 	# slab with the flap embedded in it), so the flap reads clearly
 	# and the cat can be SEEN slipping through in the escape moment.
-	_box(room, o + Vector3(6, 0.74, -9.74), Vector3(1.9, 1.38, 0.05), Color(0.05, 0.05, 0.08)) # dark opening
+	# v1.0.25: the pet door's near-black backing panel is GONE
+	# too — through the swung flap the street outside shows,
+	# not a black rectangle.
 	_box(room, o + Vector3(6, 1.495, -9.68), Vector3(2.1, 0.16, 0.3), Color(0.96, 0.94, 0.9)) # frame top
 	_box(room, o + Vector3(6, -0.005, -9.68), Vector3(2.1, 0.14, 0.3), Color(0.96, 0.94, 0.9)) # frame threshold
 	_box(room, o + Vector3(4.975, 0.74, -9.68), Vector3(0.15, 1.35, 0.3), Color(0.96, 0.94, 0.9)) # frame L
@@ -4123,7 +4657,11 @@ func _build_house_room() -> void:
 	_box(room, bd_pos + Vector3(0.05, 3.22, 0), Vector3(0.24, 0.36, 2.3), Color(0.92, 0.9, 0.84)) # frame lintel
 	_box(room, bd_pos + Vector3(0.05, 1.65, -1.06), Vector3(0.24, 3.3, 0.18), Color(0.92, 0.9, 0.84)) # frame jamb (north)
 	_box(room, bd_pos + Vector3(0.05, 1.65, 1.06), Vector3(0.24, 3.3, 0.18), Color(0.92, 0.9, 0.84)) # frame jamb (south)
-	_box(room, bd_pos + Vector3(0.13, 1.5, 0), Vector3(0.05, 3.0, 1.95), Color(0.05, 0.04, 0.05)) # v1.1: dark doorway, revealed when the door swings open
+	# v1.0.25: NO dark doorway panel here any more. The v1.1
+	# near-black plug filled the open doorway with fake void —
+	# exactly the "door opens onto blackness" Michael reported.
+	# The escape exterior (street, houses, road) stands outside
+	# now, and the open door reveals IT.
 	# v1.1: the door panel hangs on a hinge pivot (backdoor_pivot) so
 	# the escape animation can swing it open; the bolt rides the door,
 	# the keeper stays on the frame — like a real sliding bolt.
@@ -4350,6 +4888,83 @@ func _build_intake_card(room: Node3D, o: Vector3) -> void:
 	intake_card_label.rotation_degrees = Vector3(0, 180, 0) # face the room, like the POUND sign
 	room.add_child(intake_card_label)
 	_refresh_intake_card()
+
+func _diorama_house(parent: Node, pos: Vector3, yaw_deg: float, wall_c: Color, roof_c: Color) -> void:
+	# A plain house front for the escape-room diorama (see
+	# _build_escape_exterior): town materials and proportions,
+	# lit windows, a gable roof WITH its infill — but registered
+	# nowhere (not a game house: no address, no win check).
+	var g := Node3D.new()
+	g.name = "DioramaHouse"
+	g.position = pos
+	g.rotation_degrees = Vector3(0, yaw_deg, 0)
+	parent.add_child(g)
+	var found := _box(g, Vector3(0, 0.15, 0), Vector3(8.6, 0.3, 7.6), Color.WHITE)
+	found.material_override = _mat_tex(TEX_BRICK, Color(0.85, 0.8, 0.78), Vector3(5, 1, 1))
+	var walls := _box(g, Vector3(0, 2.0, 0), Vector3(8.2, 3.7, 7.2), Color.WHITE, true)
+	walls.material_override = _mat_tex(TEX_SIDING, wall_c, Vector3(5, 2, 1))
+	var eave_d: float = 3.85
+	var slab_y_d: float = eave_d + 0.5 + 5.0 * 0.03
+	for s in [-1.0, 1.0]:
+		var slab := _box(g, Vector3(s * 8.2 * 0.25, slab_y_d, 0), Vector3(8.2 * 0.66, 0.22, 8.2), Color.WHITE)
+		slab.material_override = _mat_tex(TEX_ROOF, roof_c.lightened(0.25), Vector3(3, 5, 1))
+		slab.rotation_degrees = Vector3(0, 0, s * -35.0)
+	var prism := PrismMesh.new()
+	prism.left_to_right = 0.5
+	prism.size = Vector3(5.66, 2.06, 7.16)
+	var gable := MeshInstance3D.new()
+	gable.mesh = prism
+	gable.position = Vector3(0, eave_d + 0.97, 0)
+	gable.material_override = walls.material_override
+	g.add_child(gable)
+	_box(g, Vector3(0, 1.35, 3.68), Vector3(1.3, 2.7, 0.18), Color(0.45, 0.3, 0.17)) # door, street face
+	_glass(g, Vector3(-2.4, 2.0, 3.64), Vector3(1.4, 1.3, 0.08), Color(0.98, 0.87, 0.58), 0.42)
+	_glass(g, Vector3(2.4, 2.0, 3.64), Vector3(1.4, 1.3, 0.08), Color(0.98, 0.87, 0.58), 0.42)
+
+func _build_escape_exterior() -> void:
+	# v1.0.25 (Michael: "the door opens onto black — I want to
+	# SEE THE STREET"): both escape rooms share the slot at
+	# escape_origin, hundreds of metres east of the town with
+	# NOTHING outside their walls — so the open back door, the
+	# window and the pet door all framed empty void, which at
+	# dusk renders as a black rectangle in the doorway. The
+	# rooms stay in their slot (the whole escape system is keyed
+	# to it), so the street comes to the rooms: a permanent
+	# exterior diorama around the north and east sides — lawn,
+	# sidewalks, a road bend, house fronts, lamps, a parked car
+	# — real geometry lit by the same dusk sky as the town.
+	# Walking out still crosses the same thresholds onto it,
+	# and the escape completes exactly as before.
+	var o: Vector3 = escape_origin
+	var ext := Node3D.new()
+	ext.name = "EscapeExterior"
+	add_child(ext)
+	# Lawn apron (solid: the cat steps out onto it in the steps
+	# before the crossing check fires).
+	var lawn := _box(ext, o + Vector3(6, -0.06, -14), Vector3(64, 0.12, 62), Color.WHITE, true)
+	lawn.material_override = _mat_tex(TEX_GRASS, Color(0.75, 0.85, 0.62), Vector3(16, 16, 1))
+	# Sidewalks along the room's north and east walls.
+	var walk_n := _box(ext, o + Vector3(1, 0.012, -11.8), Vector3(36, 0.05, 3.2), Color.WHITE)
+	walk_n.material_override = _mat_tex(TEX_SIDEWALK, Color(0.95, 0.93, 0.88), Vector3(10, 1, 1))
+	var walk_e := _box(ext, o + Vector3(15.8, 0.012, 0), Vector3(3.2, 0.05, 26), Color.WHITE)
+	walk_e.material_override = _mat_tex(TEX_SIDEWALK, Color(0.95, 0.93, 0.88), Vector3(1, 8, 1))
+	# The road: along the north side, bending down the east side.
+	var road_n := _box(ext, o + Vector3(4, 0.006, -23.5), Vector3(72, 0.04, 7.6), Color.WHITE)
+	road_n.material_override = _mat_tex(TEX_ASPHALT, Color(0.9, 0.9, 0.92), Vector3(14, 2, 1))
+	var road_e := _box(ext, o + Vector3(23.5, 0.006, -4), Vector3(7.6, 0.04, 46), Color.WHITE)
+	road_e.material_override = _mat_tex(TEX_ASPHALT, Color(0.9, 0.9, 0.92), Vector3(2, 10, 1))
+	# House fronts across the road, street faces toward the room.
+	_diorama_house(ext, o + Vector3(-12, 0, -33.5), 0.0, Color(0.97, 0.92, 0.78), Color(0.72, 0.33, 0.28))
+	_diorama_house(ext, o + Vector3(2, 0, -33.5), 0.0, Color(0.62, 0.72, 0.55), Color(0.33, 0.47, 0.72))
+	_diorama_house(ext, o + Vector3(16, 0, -33.5), 0.0, Color(0.9, 0.7, 0.66), Color(0.42, 0.6, 0.38))
+	_diorama_house(ext, o + Vector3(33.5, 0, 4), -90.0, Color(0.55, 0.65, 0.78), Color(0.5, 0.35, 0.55))
+	# A parked Meshy car on the north road, street lamps, pines.
+	_build_car(ext, o + Vector3(-4, 0, -21.6), Color(0.7, 0.75, 0.8), true, "compact", true)
+	_fill_lamp(ext, o + Vector3(-6, 0, -18.6))
+	_fill_lamp(ext, o + Vector3(18.6, 0, -6))
+	_build_pine(ext, o + Vector3(-16, 0, -14), 1.0)
+	_build_pine(ext, o + Vector3(20, 0, -16), 1.15)
+	_build_pine(ext, o + Vector3(-18, 0, 2), 0.9)
 
 func _build_escape_room() -> void:
 	var room := Node3D.new()
@@ -4671,7 +5286,9 @@ func _build_escape_room() -> void:
 	# a real 4-piece border around a dark opening (it was one solid
 	# slab with the flap embedded in it), so the flap reads clearly
 	# and the cat can be SEEN slipping through in the escape moment.
-	_box(room, o + Vector3(6, 0.74, -9.74), Vector3(1.9, 1.38, 0.05), Color(0.05, 0.05, 0.08)) # dark opening
+	# v1.0.25: the pet door's near-black backing panel is GONE
+	# too — through the swung flap the street outside shows,
+	# not a black rectangle.
 	_box(room, o + Vector3(6, 1.495, -9.68), Vector3(2.1, 0.16, 0.3), Color(0.96, 0.94, 0.9)) # frame top
 	_box(room, o + Vector3(6, -0.005, -9.68), Vector3(2.1, 0.14, 0.3), Color(0.96, 0.94, 0.9)) # frame threshold
 	_box(room, o + Vector3(4.975, 0.74, -9.68), Vector3(0.15, 1.35, 0.3), Color(0.96, 0.94, 0.9)) # frame L
@@ -4843,7 +5460,11 @@ func _build_escape_room() -> void:
 	_box(room, bd_pos + Vector3(0.05, 3.22, 0), Vector3(0.24, 0.36, 2.3), Color(0.92, 0.9, 0.84)) # frame lintel
 	_box(room, bd_pos + Vector3(0.05, 1.65, -1.06), Vector3(0.24, 3.3, 0.18), Color(0.92, 0.9, 0.84)) # frame jamb (north)
 	_box(room, bd_pos + Vector3(0.05, 1.65, 1.06), Vector3(0.24, 3.3, 0.18), Color(0.92, 0.9, 0.84)) # frame jamb (south)
-	_box(room, bd_pos + Vector3(0.13, 1.5, 0), Vector3(0.05, 3.0, 1.95), Color(0.05, 0.04, 0.05)) # v1.1: dark doorway, revealed when the door swings open
+	# v1.0.25: NO dark doorway panel here any more. The v1.1
+	# near-black plug filled the open doorway with fake void —
+	# exactly the "door opens onto blackness" Michael reported.
+	# The escape exterior (street, houses, road) stands outside
+	# now, and the open door reveals IT.
 	# v1.1: the door panel hangs on a hinge pivot (backdoor_pivot) so
 	# the escape animation can swing it open; the bolt rides the door,
 	# the keeper stays on the frame — like a real sliding bolt.
@@ -5461,6 +6082,76 @@ func _spawn_player() -> void:
 	player.set("main_ref", self)
 	player.call("set_tag_name") # the tag says his NAME ("Zander"), not the address
 
+# --- v1.0.25: the canonical house footprint (the same rect
+# person.gd's line-of-sight uses: house pos ± 4.4 x, ± 3.9 z).
+# Spawn points, wander targets and town-cat homes/targets are
+# validated against it — before this build, one inhabitant
+# spawned INSIDE 22 Willow Crescent and two town cats had their
+# homes inside house footprints, wedged from birth.
+func point_in_house_footprint(p: Vector3, pad: float = 0.0) -> bool:
+	for h in houses:
+		var hp: Vector3 = h["pos"]
+		if absf(p.x - hp.x) < 4.4 + pad and absf(p.z - hp.z) < 3.9 + pad:
+			return true
+	return false
+
+func push_out_of_houses(p: Vector3, pad: float = 0.8) -> Vector3:
+	# Nearest spot outside every footprint: push along whichever
+	# axis penetrates least, repeat until clear (rows can overlap
+	# a pushed point into the next house).
+	var out := p
+	for pass_i in range(4):
+		var moved := false
+		for h in houses:
+			var hp: Vector3 = h["pos"]
+			var ex: float = 4.4 + pad
+			var ez: float = 3.9 + pad
+			var dx: float = out.x - hp.x
+			var dz: float = out.z - hp.z
+			if absf(dx) < ex and absf(dz) < ez:
+				if ex - absf(dx) < ez - absf(dz):
+					out.x = hp.x + (ex if dx >= 0.0 else -ex)
+				else:
+					out.z = hp.z + (ez if dz >= 0.0 else -ez)
+				moved = true
+		if not moved:
+			break
+	return out
+
+# v1.0.25: where a wedged wanderer should walk OUT to. Near a
+# house (the porch-pocket case), the point radially away from
+# that house's centre, 8.5 m out — clear of the footprint, the
+# porch step, the hedge and the side block, in the one
+# direction a pocket always leaves open. Elsewhere, the first
+# clear point on a 9 m ring around the spot.
+func escape_point_from_houses(p: Vector3) -> Vector3:
+	var best: Dictionary = {}
+	var best_d := 1e18
+	for h in houses:
+		var c: Vector3 = h["pos"]
+		var d: float = Vector2(p.x - c.x, p.z - c.z).length()
+		if d < best_d:
+			best_d = d
+			best = h
+	if not best.is_empty() and best_d < 9.0:
+		var c2: Vector3 = best["pos"]
+		var dir := Vector2(p.x - c2.x, p.z - c2.z)
+		if dir.length() < 0.1:
+			dir = Vector2(0.0, 1.0)
+		dir = dir.normalized()
+		# Always land at least 4 m FARTHER OUT than the wedged
+		# spot: at a fence end ~8 m from the centre, a fixed
+		# 8.5 m ring is the NPC's own feet and the "escape"
+		# changes nothing (measured in the warm-up sim).
+		var rr: float = maxf(8.5, best_d + 4.0)
+		return Vector3(clampf(c2.x + dir.x * rr, -114.0, 114.0), 0.0, clampf(c2.z + dir.y * rr, -86.0, 86.0))
+	for k in range(8):
+		var ang: float = randf() * TAU
+		var cand := Vector3(clampf(p.x + cos(ang) * 9.0, -114.0, 114.0), 0.0, clampf(p.z + sin(ang) * 9.0, -86.0, 86.0))
+		if not point_in_house_footprint(cand, 0.7):
+			return cand
+	return Vector3(clampf(p.x, -114.0, 114.0), 0.0, clampf(p.z + 9.0, -86.0, 86.0))
+
 func _spawn_town_cats() -> void:
 	# v1.0.22: the eight Meshy TOWN CATS wander the town as ambient
 	# animals (Michael's all-Meshy street rule — the old code-built
@@ -5468,19 +6159,32 @@ func _spawn_town_cats() -> void:
 	# a procedural trot (the GLBs are rigged but carry no clips —
 	# see town_cat.gd). Spots sit on grass/verge near known NPC
 	# spots in the legacy town, clear of the road centrelines.
+	# v1.0.26: every home now sits on a street VERGE / front lawn
+	# (about 6 m off a road centreline, just past the sidewalk),
+	# spread across the whole town, and each cat carries the
+	# name + meow pitch its interactions use. Michael, playing
+	# v1.0.25, only ever met ONE cat — the old homes let them
+	# range the back gardens where the player never goes.
 	var spots: Array = [
-		["town_tabby", Vector3(-24, 0.2, -2)], ["black_cat", Vector3(30, 0.2, -19)],
-		["white_cat", Vector3(-31, 0.2, 24)], ["calico_cat", Vector3(52, 0.2, 3)],
-		["gray_tabby", Vector3(3, 0.2, 31)], ["siamese_cat", Vector3(-47, 0.2, 33)],
-		["tortoiseshell_cat", Vector3(79, 0.2, -32)], ["russian_blue_cat", Vector3(55, 0.2, 63)],
+		["town_tabby", Vector3(-24, 0.2, -5), "the town tabby", 1.12], ["black_cat", Vector3(30, 0.2, -19), "the black cat", 0.88],
+		["white_cat", Vector3(-31, 0.2, 21), "the white fluffy cat", 1.24], ["calico_cat", Vector3(66, 0.2, 3), "the calico cat", 1.04],
+		["gray_tabby", Vector3(3, 0.2, 49), "the grey tabby", 0.96], ["siamese_cat", Vector3(-14, 0.2, 33), "the Siamese cat", 1.18],
+		["tortoiseshell_cat", Vector3(79, 0.2, -32), "the tortoiseshell cat", 0.92], ["russian_blue_cat", Vector3(55, 0.2, 63), "the Russian Blue", 1.08],
 	]
 	for d in spots:
 		var cat := CharacterBody3D.new()
 		cat.set_script(TownCatScript)
+		# v1.0.25: two of the eight homes sat INSIDE house
+		# footprints (calico at 25 Oak Avenue's, russian blue at
+		# 22 Willow Crescent's) — push every home clear first.
+		var home_pos: Vector3 = push_out_of_houses(d[1], 0.9)
 		cat.set("model_scene", TOWN_CAT_SCENES[d[0]])
 		cat.set("player_ref", player)
-		cat.set("home", d[1])
-		cat.position = d[1]
+		cat.set("main_ref", self)
+		cat.set("display_name", d[2])
+		cat.set("meow_pitch", d[3])
+		cat.set("home", home_pos)
+		cat.position = home_pos
 		add_child(cat)
 		town_cats.append(cat)
 
@@ -5567,10 +6271,17 @@ func _spawn_npcs() -> void:
 		npc.set("role", roles[i])
 		npc.set("outfit_idx", occ)
 		npc.set("wander_x_max", 112.0 if LEGACY_TOWN_ONLY else 366.0) # BISECT (v1.0.12): legacy NPCs never wander east
-		npc.position = d[1]
+		# v1.0.25: never spawn inside a house — defs[10] (the
+		# dogwalker at (60, 66)) stood inside 22 Willow Crescent's
+		# footprint, entombed in its collision from birth.
+		var spawn_pos: Vector3 = push_out_of_houses(d[1], 0.8)
+		npc.position = spawn_pos
 		add_child(npc)
 		npc.set("main_ref", self)
 		npc.set("player_ref", player)
+		# The _ready pick ran before main_ref existed, so it could
+		# not validate against houses — pick again, validated.
+		npc.call("_pick_wander_target")
 		# v1.0.23 PARK DWELL: kids and the skateboarder who spawn
 		# in the playground park's block (the kid at (93, 25), the
 		# kid at (108, 38), the skateboarder at (100, 20)) are park
@@ -5578,7 +6289,7 @@ func _spawn_npcs() -> void:
 		# spots and lingers there, instead of only wandering the
 		# streets. Matched on the FINAL spawn position (after the
 		# legacy-mode relocation above), so it holds in both towns.
-		var sp: Vector3 = d[1]
+		var sp: Vector3 = spawn_pos # v1.0.25: the validated spawn (park spots are never pushed — no houses there)
 		if (d[0] == "kid" or d[0] == "skateboarder") and sp.x > 74.0 and sp.x < 118.0 and sp.z > 17.0 and sp.z < 42.0:
 			npc.set("park_dweller", true)
 			npc.set("park_spots", PARK_SPOTS)
@@ -6298,7 +7009,7 @@ func _build_hud() -> void:
 	title_panel.add_child(start_btn)
 	# v1.0.10: subtle build tag so Michael can confirm which build
 	# he is running from the title screen itself.
-	var ver := _hud_label(title_panel, "v1.0.24", Vector2(706, 522), 16)
+	var ver := _hud_label(title_panel, "v1.0.26", Vector2(706, 522), 16)
 	ver.label_settings.font_color = Color(0.78, 0.83, 0.95)
 	win_panel = _make_panel(hud_layer, Vector2(290, 130), Vector2(700, 460), Color(0.12, 0.2, 0.12, 0.97))
 	win_panel.set_anchors_preset(Control.PRESET_CENTER)
@@ -6909,6 +7620,11 @@ func _on_meow() -> void:
 		if npc.global_position.distance_to(player.global_position) < 8.0:
 			npc.call("react_to_attention")
 			heard = true
+	# v1.0.26 (Michael's ask): town cats in earshot MEOW BACK.
+	for tc in town_cats:
+		if (tc as Node3D).global_position.distance_to(player.global_position) < 6.5:
+			tc.call("meow_back")
+			heard = true
 	show_message("😺 Meow! Everyone nearby heard that…" if heard else "😺 Meow!", 2.0)
 
 func _on_interact() -> void:
@@ -6934,6 +7650,22 @@ func _paw_action() -> void:
 		if d < best_d:
 			best_d = d
 			best = npc
+	# v1.0.26 (Michael's ask): pawing AT a town cat starts a
+	# play session — the cat rolls over and plays; a completed
+	# session scores +3 once per cat per run (see town_cat.gd).
+	# The cat must be the closest thing pawed: a nearer person
+	# keeps the existing person interaction.
+	var best_cat: Node = null
+	var best_cat_d: float = 2.6
+	for tc in town_cats:
+		var cd: float = (tc as Node3D).global_position.distance_to(player.global_position)
+		if cd < best_cat_d:
+			best_cat_d = cd
+			best_cat = tc
+	if best_cat != null and (best == null or best_cat_d < best_d):
+		if bool(best_cat.call("start_play")):
+			show_message("🐱 Play time!", 1.4)
+		return
 	if best:
 		var result: String = str(best.call("react_to_attention"))
 		if result == "tell":
@@ -7158,55 +7890,15 @@ func _update_pound_van_bar() -> void:
 		var bp := pound_bar_root.global_position
 		pound_bar_root.global_rotation = Vector3(0, atan2(cp.x - bp.x, cp.z - bp.z), 0)
 
-func _build_pound_light_rig() -> void:
-	# v1.0.21: the FLASHING light bar. The Meshy van has a light
-	# bar modelled on its roof, but it is part of the single body
-	# mesh — it cannot flash by itself. This rig rides on the roof
-	# over the cab: a low dark base and two blue lamps that
-	# alternate while the encounter is live (see
-	# _pound_update_lights). Both lamps start dark — on patrol the
-	# modelled bar alone reads as the official marking.
-	_box(pound_van, Vector3(1.15, 2.07, 0), Vector3(0.55, 0.07, 1.0), Color(0.16, 0.16, 0.19))
-	pound_light_lamp_l = _box(pound_van, Vector3(1.15, 2.14, 0.27), Vector3(0.42, 0.08, 0.4), Color(0.3, 0.6, 1.0), false, 1.6)
-	pound_light_lamp_r = _box(pound_van, Vector3(1.15, 2.14, -0.27), Vector3(0.42, 0.08, 0.4), Color(0.3, 0.6, 1.0), false, 1.6)
-	pound_light_lamp_l.visible = false
-	pound_light_lamp_r.visible = false
-
-func _pound_lights_active() -> bool:
-	# v1.0.22 (Michael, refining his v1.0.21 order): the lights
-	# run for the WHOLE encounter. They start the moment the
-	# notice meter starts BUILDING — the cat is near the van (or
-	# near the officer on foot) and being noticed, still on
-	# patrol — and they keep alternating through the full meter,
-	# the pull-over, the officer getting out, the chase, the
-	# capture-away and the walk back, until the encounter is
-	# over: he is back in, the patrol has resumed and the meter
-	# is empty. (v1.0.21 lit them only once the meter had FILLED.)
-	if pound_notice > 0.0:
-		return true
-	return pound_state == "pullover" or pound_state == "exit" or pound_state == "chase" or pound_state == "away" or pound_state == "return"
-
-func _pound_update_lights(delta: float) -> void:
-	if pound_light_lamp_l == null or pound_light_lamp_r == null:
-		return
-	if not _pound_lights_active():
-		pound_light_lamp_l.visible = false
-		pound_light_lamp_r.visible = false
-		pound_light_t = 0.0
-		if sfx_siren and sfx_siren.playing:
-			sfx_siren.stop() # v1.0.22: the whoop ends with the encounter
-		return
-	pound_light_t += delta
-	# Strict alternation: exactly one lamp lit at any moment,
-	# swapping every 0.26 s — never both, never neither.
-	var phase: int = int(pound_light_t / 0.26) % 2
-	pound_light_lamp_l.visible = phase == 0
-	pound_light_lamp_r.visible = phase == 1
-	# v1.0.22: the soft two-tone whoop rides with the lights —
-	# retriggered as each blip ends (the bark pattern), so it
-	# sounds for exactly as long as the bar is live.
-	if sfx_siren and not sfx_siren.playing:
-		sfx_siren.play()
+# v1.0.25: the flashing light bar and the two-tone siren are
+# REMOVED ENTIRELY (Michael, 2026-11-19, reversing his v1.0.21/22
+# request: they "are not working, it's really weird — just get
+# rid of it"). _build_pound_light_rig, _pound_lights_active and
+# _pound_update_lights are gone, the lamp nodes are never built,
+# and there is no siren player. The Meshy van's own moulded roof
+# bar stays as unlit model geometry. The proximity NOTICE METER
+# behaviour is unchanged — it just no longer lights or sounds
+# anything.
 
 func _spawn_pound() -> void:
 	# The patrol circuit: one right-hand loop around the whole
@@ -7248,8 +7940,6 @@ func _spawn_pound() -> void:
 	_label3d_flat(pound_van, "ANIMAL CONTROL", Vector3(-0.45, 1.84, 1.02), 60, Color(0.10, 0.30, 0.55), 0.0, 0.006)
 	_label3d_flat(pound_van, "POUND", Vector3(-0.45, 0.60, -1.02), 120, Color(0.10, 0.30, 0.55), 180.0, 0.006)
 	_label3d_flat(pound_van, "ANIMAL CONTROL", Vector3(-0.45, 1.84, -1.02), 60, Color(0.10, 0.30, 0.55), 180.0, 0.006)
-	# v1.0.21: the FLASHING light bar (see _build_pound_light_rig).
-	_build_pound_light_rig()
 	await _build_frame() # v1.0.11 chunking: van build and worker build are two chunks, not one ~112 ms stretch
 	# The worker: a person.gd "poundworker" (white uniform, cap,
 	# net in hand) with the grabber role, so his chase, grab and
@@ -7692,7 +8382,6 @@ func _update_pound(delta: float) -> void:
 		"away":
 			pass # he is the captor: cutscene, room and pursuit own him until the pursuit drains (see _process)
 	_update_pound_van_bar() # v1.0.21: keep the van meter's visibility honest in every state (full through the pull-over, hidden once he is out)
-	_pound_update_lights(delta) # v1.0.21: the light bar flashes while the encounter is live, dark on patrol
 
 func _pound_drive_path(delta: float, speed: float, snap_end: bool = true) -> bool:
 	# v1.0.21: drive an explicit waypoint list (the depot legs) with
@@ -7773,6 +8462,31 @@ func _update_pound_depot(delta: float) -> void:
 func _update_score_label() -> void:
 	if score_label:
 		score_label.text = "⭐ %d   🐾 Pets %d   🍪 Treats %d" % [score, pets_count, treats_count]
+
+# v1.0.26: a town cat answers Zander's meow — the same recorded
+# meow the player cat uses, pitch-shifted per cat so each of the
+# eight has its own voice.
+func play_cat_meow(pitch: float) -> void:
+	if meow_players.is_empty():
+		return
+	var mp: AudioStreamPlayer = meow_players[meow_index % meow_players.size()]
+	meow_index += 1
+	mp.pitch_scale = pitch
+	mp.play()
+	cat_meow_count += 1
+
+# v1.0.26: a COMPLETED play session with a town cat scores +3
+# (between pet +1 and treat +5 on Michael's scale — adjustable),
+# once per cat per run; the cat flags itself played and only
+# calls this on its first completed session. The "+3" pop is
+# the town sibling of the shelter breakout pop.
+func on_town_cat_play(tc: Node) -> void:
+	score += 3
+	cat_play_count += 1
+	_update_score_label()
+	show_message("🐱 You played with %s! +3" % str(tc.get("display_name")), 2.4)
+	var pop := _label3d(self, "+3", (tc as Node3D).global_position + Vector3(0, 1.15, 0), 64, Color(1.0, 0.85, 0.3))
+	town_pops.append({"node": pop, "t": 0.0, "y0": pop.position.y})
 
 func on_pet(_npc: Node) -> void:
 	score += 1
@@ -9229,6 +9943,21 @@ func _process(delta: float) -> void:
 			else:
 				message_label.text = ""
 	if meow_cooldown > 0.0: meow_cooldown -= delta
+	# v1.0.26: town "+3" pops rise and fade (the ward pops have
+	# their own ticker in _update_ward; these live in _process).
+	for i in range(town_pops.size() - 1, -1, -1):
+		var tp: Dictionary = town_pops[i]
+		tp["t"] = float(tp["t"]) + delta
+		var tpt: float = float(tp["t"])
+		var tnode := tp["node"] as Label3D
+		if tnode == null or not is_instance_valid(tnode):
+			town_pops.remove_at(i)
+			continue
+		tnode.position.y = float(tp["y0"]) + tpt * 0.55
+		tnode.modulate.a = clampf(1.3 - tpt / 1.6, 0.0, 1.0)
+		if tpt > 1.6:
+			tnode.queue_free()
+			town_pops.remove_at(i)
 	if bark_msg_cooldown > 0.0: bark_msg_cooldown -= delta
 	if latch_cooldown > 0.0: latch_cooldown -= delta
 	# PURR (v0.6): town gameplay only — cat still ~3s, nobody chasing.

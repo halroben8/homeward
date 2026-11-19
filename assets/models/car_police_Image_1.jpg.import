@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://v5nyfctlgy7h"
-path="res://.godot/imported/car_police_Image_1.jpg-fc68ac86c557ce43d5177d23c3828152.ctex"
+path.s3tc="res://.godot/imported/car_police_Image_1.jpg-fc68ac86c557ce43d5177d23c3828152.s3tc.ctex"
+path.etc2="res://.godot/imported/car_police_Image_1.jpg-fc68ac86c557ce43d5177d23c3828152.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "c27fb9b222d6b705831fec1d3d867d65"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/car_police_Image_1.jpg"
-dest_files=["res://.godot/imported/car_police_Image_1.jpg-fc68ac86c557ce43d5177d23c3828152.ctex"]
+dest_files=["res://.godot/imported/car_police_Image_1.jpg-fc68ac86c557ce43d5177d23c3828152.s3tc.ctex", "res://.godot/imported/car_police_Image_1.jpg-fc68ac86c557ce43d5177d23c3828152.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

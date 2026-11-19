@@ -3,19 +3,21 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://b657560si3bkd"
-path="res://.godot/imported/young_woman_Image_0.jpg-98dc84983f961855e0ad910bee7aabb7.ctex"
+path.s3tc="res://.godot/imported/young_woman_Image_0.jpg-98dc84983f961855e0ad910bee7aabb7.s3tc.ctex"
+path.etc2="res://.godot/imported/young_woman_Image_0.jpg-98dc84983f961855e0ad910bee7aabb7.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 
 [deps]
 
 source_file="res://assets/models/young_woman_Image_0.jpg"
-dest_files=["res://.godot/imported/young_woman_Image_0.jpg-98dc84983f961855e0ad910bee7aabb7.ctex"]
+dest_files=["res://.godot/imported/young_woman_Image_0.jpg-98dc84983f961855e0ad910bee7aabb7.s3tc.ctex", "res://.godot/imported/young_woman_Image_0.jpg-98dc84983f961855e0ad910bee7aabb7.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

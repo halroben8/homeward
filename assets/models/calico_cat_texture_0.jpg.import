@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://c6yvdnj4tvask"
-path="res://.godot/imported/calico_cat_texture_0.jpg-c2cc034e4b5f36ff9210b60357a0877d.ctex"
+path.s3tc="res://.godot/imported/calico_cat_texture_0.jpg-c2cc034e4b5f36ff9210b60357a0877d.s3tc.ctex"
+path.etc2="res://.godot/imported/calico_cat_texture_0.jpg-c2cc034e4b5f36ff9210b60357a0877d.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "1437aae70fc8c9d3b20d6fd522c526dd"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/calico_cat_texture_0.jpg"
-dest_files=["res://.godot/imported/calico_cat_texture_0.jpg-c2cc034e4b5f36ff9210b60357a0877d.ctex"]
+dest_files=["res://.godot/imported/calico_cat_texture_0.jpg-c2cc034e4b5f36ff9210b60357a0877d.s3tc.ctex", "res://.godot/imported/calico_cat_texture_0.jpg-c2cc034e4b5f36ff9210b60357a0877d.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

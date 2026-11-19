@@ -15,7 +15,7 @@ dest_files=["res://.godot/imported/sofa_fabric_normal.png-0c091c797b60cad599e67c
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

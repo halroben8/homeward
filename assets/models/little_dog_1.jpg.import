@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://ba24uivs0xibm"
-path="res://.godot/imported/little_dog_1.jpg-90f61ab9cd156fae3baf6f376c6b9561.ctex"
+path.s3tc="res://.godot/imported/little_dog_1.jpg-90f61ab9cd156fae3baf6f376c6b9561.s3tc.ctex"
+path.etc2="res://.godot/imported/little_dog_1.jpg-90f61ab9cd156fae3baf6f376c6b9561.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "e6a0c5dfdde1d68fa98a1899f564943f"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/little_dog_1.jpg"
-dest_files=["res://.godot/imported/little_dog_1.jpg-90f61ab9cd156fae3baf6f376c6b9561.ctex"]
+dest_files=["res://.godot/imported/little_dog_1.jpg-90f61ab9cd156fae3baf6f376c6b9561.s3tc.ctex", "res://.godot/imported/little_dog_1.jpg-90f61ab9cd156fae3baf6f376c6b9561.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

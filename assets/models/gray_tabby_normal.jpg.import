@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://bpm53nf818aif"
-path="res://.godot/imported/gray_tabby_normal.jpg-07b01bb8edf9695eba2db62414392841.ctex"
+path.s3tc="res://.godot/imported/gray_tabby_normal.jpg-07b01bb8edf9695eba2db62414392841.s3tc.ctex"
+path.etc2="res://.godot/imported/gray_tabby_normal.jpg-07b01bb8edf9695eba2db62414392841.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "8ba7e98888ee6d7ac4349e0a0a938d09"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/gray_tabby_normal.jpg"
-dest_files=["res://.godot/imported/gray_tabby_normal.jpg-07b01bb8edf9695eba2db62414392841.ctex"]
+dest_files=["res://.godot/imported/gray_tabby_normal.jpg-07b01bb8edf9695eba2db62414392841.s3tc.ctex", "res://.godot/imported/gray_tabby_normal.jpg-07b01bb8edf9695eba2db62414392841.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

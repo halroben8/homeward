@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://bx3ocxx4r3j64"
-path="res://.godot/imported/gardener_Image_0.jpg-38c0cf79e5e159a770dd0055e9085b9d.ctex"
+path.s3tc="res://.godot/imported/gardener_Image_0.jpg-38c0cf79e5e159a770dd0055e9085b9d.s3tc.ctex"
+path.etc2="res://.godot/imported/gardener_Image_0.jpg-38c0cf79e5e159a770dd0055e9085b9d.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "36d7ef0e3bd2000f00b9a332a43762d9"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/gardener_Image_0.jpg"
-dest_files=["res://.godot/imported/gardener_Image_0.jpg-38c0cf79e5e159a770dd0055e9085b9d.ctex"]
+dest_files=["res://.godot/imported/gardener_Image_0.jpg-38c0cf79e5e159a770dd0055e9085b9d.s3tc.ctex", "res://.godot/imported/gardener_Image_0.jpg-38c0cf79e5e159a770dd0055e9085b9d.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

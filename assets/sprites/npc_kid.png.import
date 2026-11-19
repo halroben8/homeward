@@ -15,7 +15,7 @@ dest_files=["res://.godot/imported/npc_kid.png-4a70ede4a0a5fcdce6d7a8834f811dab.
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

@@ -15,7 +15,7 @@ dest_files=["res://.godot/imported/wallpaper_normal.png-1443452ec2efb8161dfeb6ba
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

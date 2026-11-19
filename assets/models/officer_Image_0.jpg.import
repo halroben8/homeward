@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://b6qjidcw3w1n2"
-path="res://.godot/imported/officer_Image_0.jpg-7f6240840728c76daa3631e68fa2eb02.ctex"
+path.s3tc="res://.godot/imported/officer_Image_0.jpg-7f6240840728c76daa3631e68fa2eb02.s3tc.ctex"
+path.etc2="res://.godot/imported/officer_Image_0.jpg-7f6240840728c76daa3631e68fa2eb02.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "681f013c50c53d339767cc8ba2ffae8e"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/officer_Image_0.jpg"
-dest_files=["res://.godot/imported/officer_Image_0.jpg-7f6240840728c76daa3631e68fa2eb02.ctex"]
+dest_files=["res://.godot/imported/officer_Image_0.jpg-7f6240840728c76daa3631e68fa2eb02.s3tc.ctex", "res://.godot/imported/officer_Image_0.jpg-7f6240840728c76daa3631e68fa2eb02.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

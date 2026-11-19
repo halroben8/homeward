@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://cfn8yy4437oqg"
-path="res://.godot/imported/black_cat_Image_0.jpg-baf9f250d7bc24ddadc11390b3a879f2.ctex"
+path.s3tc="res://.godot/imported/black_cat_Image_0.jpg-baf9f250d7bc24ddadc11390b3a879f2.s3tc.ctex"
+path.etc2="res://.godot/imported/black_cat_Image_0.jpg-baf9f250d7bc24ddadc11390b3a879f2.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "cdf3543afa461ac6c91db2c22a50b925"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/black_cat_Image_0.jpg"
-dest_files=["res://.godot/imported/black_cat_Image_0.jpg-baf9f250d7bc24ddadc11390b3a879f2.ctex"]
+dest_files=["res://.godot/imported/black_cat_Image_0.jpg-baf9f250d7bc24ddadc11390b3a879f2.s3tc.ctex", "res://.godot/imported/black_cat_Image_0.jpg-baf9f250d7bc24ddadc11390b3a879f2.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

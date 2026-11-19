@@ -15,7 +15,7 @@ dest_files=["res://.godot/imported/bark_normal.png-140fe8fd1d05b5bf13ea8fac2c014
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

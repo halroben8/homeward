@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://cnk18nxthssb2"
-path="res://.godot/imported/baker_Image_1.jpg-92df9c8a1d7726fd18ac42cd928042eb.ctex"
+path.s3tc="res://.godot/imported/baker_Image_1.jpg-92df9c8a1d7726fd18ac42cd928042eb.s3tc.ctex"
+path.etc2="res://.godot/imported/baker_Image_1.jpg-92df9c8a1d7726fd18ac42cd928042eb.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "ea7547094f57aa52eb65ba186b18c840"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/baker_Image_1.jpg"
-dest_files=["res://.godot/imported/baker_Image_1.jpg-92df9c8a1d7726fd18ac42cd928042eb.ctex"]
+dest_files=["res://.godot/imported/baker_Image_1.jpg-92df9c8a1d7726fd18ac42cd928042eb.s3tc.ctex", "res://.godot/imported/baker_Image_1.jpg-92df9c8a1d7726fd18ac42cd928042eb.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://dx68fds42n4bj"
-path="res://.godot/imported/gray_tabby_texture_0_metallic_roughness.jpg-09e4286f5eb514aeeef99553b879e423.ctex"
+path.s3tc="res://.godot/imported/gray_tabby_texture_0_metallic_roughness.jpg-09e4286f5eb514aeeef99553b879e423.s3tc.ctex"
+path.etc2="res://.godot/imported/gray_tabby_texture_0_metallic_roughness.jpg-09e4286f5eb514aeeef99553b879e423.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "0cf3564556198b208c69dbbcd5c4123a"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/gray_tabby_texture_0_metallic_roughness.jpg"
-dest_files=["res://.godot/imported/gray_tabby_texture_0_metallic_roughness.jpg-09e4286f5eb514aeeef99553b879e423.ctex"]
+dest_files=["res://.godot/imported/gray_tabby_texture_0_metallic_roughness.jpg-09e4286f5eb514aeeef99553b879e423.s3tc.ctex", "res://.godot/imported/gray_tabby_texture_0_metallic_roughness.jpg-09e4286f5eb514aeeef99553b879e423.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

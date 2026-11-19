@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://5jqk3g2ll3u2"
-path="res://.godot/imported/construction_worker_Image_2.jpg-663cc7ba4c284eeb84baafd0c5f42a31.ctex"
+path.s3tc="res://.godot/imported/construction_worker_Image_2.jpg-663cc7ba4c284eeb84baafd0c5f42a31.s3tc.ctex"
+path.etc2="res://.godot/imported/construction_worker_Image_2.jpg-663cc7ba4c284eeb84baafd0c5f42a31.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "d27cf9193b99f5259b1ea481df63ad60"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/construction_worker_Image_2.jpg"
-dest_files=["res://.godot/imported/construction_worker_Image_2.jpg-663cc7ba4c284eeb84baafd0c5f42a31.ctex"]
+dest_files=["res://.godot/imported/construction_worker_Image_2.jpg-663cc7ba4c284eeb84baafd0c5f42a31.s3tc.ctex", "res://.godot/imported/construction_worker_Image_2.jpg-663cc7ba4c284eeb84baafd0c5f42a31.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

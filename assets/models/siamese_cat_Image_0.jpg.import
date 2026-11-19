@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://b3101btqlvi78"
-path="res://.godot/imported/siamese_cat_Image_0.jpg-0a666a5a18026a8781b8f251b73dc03d.ctex"
+path.s3tc="res://.godot/imported/siamese_cat_Image_0.jpg-0a666a5a18026a8781b8f251b73dc03d.s3tc.ctex"
+path.etc2="res://.godot/imported/siamese_cat_Image_0.jpg-0a666a5a18026a8781b8f251b73dc03d.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "e3936490442da47bab4b9c89de2a70de"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/siamese_cat_Image_0.jpg"
-dest_files=["res://.godot/imported/siamese_cat_Image_0.jpg-0a666a5a18026a8781b8f251b73dc03d.ctex"]
+dest_files=["res://.godot/imported/siamese_cat_Image_0.jpg-0a666a5a18026a8781b8f251b73dc03d.s3tc.ctex", "res://.godot/imported/siamese_cat_Image_0.jpg-0a666a5a18026a8781b8f251b73dc03d.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1
