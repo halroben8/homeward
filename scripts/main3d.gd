@@ -147,6 +147,19 @@ var distract_props: Array = [] # [{id, name, pivot, base, stand, toppled, anim_t
 var ward_cages: Array = []
 var ward_pops: Array = [] # floating "Freed X! +5" labels [{node, t, y0}]
 var ward_time: float = 0.0
+# v1.0.17 CAPTURE DESTINATION SPLIT (Michael's v1.0.15 play report):
+# TWO escape rooms now share the escape_origin slot — the shelter
+# ward (the animal-control officer's captures only) and a house
+# interior (everyone else's). Both builds register into the same
+# member vars (blockers, pivots, theme_groups, distract_props,
+# ward_cages…); the boot sequence snapshots each room's set, and
+# _activate_escape_room swaps the live set plus visibility and
+# collision on every escape entry.
+var shelter_room_node: Node3D = null
+var house_room_node: Node3D = null
+var shelter_room_set: Dictionary = {}
+var house_room_set: Dictionary = {}
+var escape_room_is_house: bool = false
 var captor_room_state: String = "off" # off|idle|walk|to_prop|righting|return|shoo
 var captor_room_target := Vector3.ZERO
 var captor_room_wait: float = 0.0
@@ -894,6 +907,17 @@ func _build_world_async() -> void:
 	await _build_frame()
 	await _set_boot_stage("Finishing touches", 65)
 	await _build_escape_room()
+	# v1.0.17: snapshot the shelter's room set, build the HOUSE room
+	# into the same member vars, snapshot its set too, then rest on
+	# the shelter (the opening's destination) until the first
+	# capture routes somewhere.
+	shelter_room_set = _capture_room_set(shelter_room_node)
+	theme_groups = {}
+	distract_props = []
+	ward_cages = []
+	await _build_house_room()
+	house_room_set = _capture_room_set(house_room_node)
+	_activate_escape_room(false)
 	await _build_frame()
 	await _set_boot_stage("People", 75)
 	await _spawn_npcs()
@@ -3500,11 +3524,714 @@ func _build_pine(parent: Node, pos: Vector3, s: float = 1.0) -> void:
 		var tc := _cyl(g, Vector3(pr.randf_range(-0.09, 0.09) * s, tiers[ti][0] * s, pr.randf_range(-0.09, 0.09) * s), 0.12 * s, tiers[ti][1] * s, 1.9 * s, Color.WHITE)
 		tc.material_override = _mat_tex(TEX_FOLIAGE, Color(0.5 + 0.07 * float(ti), 0.72 + 0.05 * float(ti), 0.46), Vector3(2, 2, 2))
 
+
+# ------------------------------------------------- v1.0.17: two escape rooms, one slot
+# The shelter build and the house build both register their nodes
+# into the same member vars. These helpers snapshot a room's set
+# after its build, swap the live set, and switch a room subtree on
+# or off (visible + collidable) so only the active room is present
+# for the player.
+func _capture_room_set(room_node: Node3D) -> Dictionary:
+	return {
+		"room": room_node,
+		"window_blocker": window_blocker,
+		"petdoor_blocker": petdoor_blocker,
+		"room_title_label": room_title_label,
+		"book_node": book_node,
+		"book_home_pos": book_home_pos,
+		"latch_pivot": latch_pivot,
+		"latch_node": latch_node,
+		"latch_base_pos": latch_base_pos,
+		"sash_node": sash_node,
+		"sash_base_y": sash_base_y,
+		"flap_node": flap_node,
+		"bolt_node": bolt_node,
+		"bolt_base_z": bolt_base_z,
+		"backdoor_pivot": backdoor_pivot,
+		"carrier_node": carrier_node,
+		"carrier_door": carrier_door,
+		"vase_node": vase_node,
+		"vase_home": vase_home,
+		"theme_groups": theme_groups,
+		"distract_props": distract_props,
+		"ward_cages": ward_cages,
+	}
+
+func _apply_room_set(s: Dictionary) -> void:
+	window_blocker = s["window_blocker"]
+	petdoor_blocker = s["petdoor_blocker"]
+	room_title_label = s["room_title_label"]
+	book_node = s["book_node"]
+	book_home_pos = s["book_home_pos"]
+	latch_pivot = s["latch_pivot"]
+	latch_node = s["latch_node"]
+	latch_base_pos = s["latch_base_pos"]
+	sash_node = s["sash_node"]
+	sash_base_y = s["sash_base_y"]
+	flap_node = s["flap_node"]
+	bolt_node = s["bolt_node"]
+	bolt_base_z = s["bolt_base_z"]
+	backdoor_pivot = s["backdoor_pivot"]
+	carrier_node = s["carrier_node"]
+	carrier_door = s["carrier_door"]
+	vase_node = s["vase_node"]
+	vase_home = s["vase_home"]
+	theme_groups = s["theme_groups"]
+	distract_props = s["distract_props"]
+	ward_cages = s["ward_cages"]
+
+func _set_room_subtree_active(root: Node, on: bool) -> void:
+	if root == null:
+		return
+	(root as Node3D).visible = on
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		for ch in n.get_children():
+			stack.append(ch)
+		var co := n as CollisionObject3D
+		if co == null:
+			continue
+		if on:
+			if co.has_meta("room_off_layer"):
+				co.collision_layer = int(co.get_meta("room_off_layer"))
+				co.collision_mask = int(co.get_meta("room_off_mask"))
+		else:
+			if not co.has_meta("room_off_layer"):
+				co.set_meta("room_off_layer", co.collision_layer)
+				co.set_meta("room_off_mask", co.collision_mask)
+			co.collision_layer = 0
+			co.collision_mask = 0
+
+func _activate_escape_room(house: bool) -> void:
+	escape_room_is_house = house
+	_apply_room_set(house_room_set if house else shelter_room_set)
+	_set_room_subtree_active(shelter_room_node, not house)
+	_set_room_subtree_active(house_room_node, house)
+	# The opening's pound cage is a child of main, not of the shelter
+	# room — it belongs to the pound only, so it follows the shelter.
+	var cage := get_node_or_null("PoundCage")
+	if cage != null:
+		_set_room_subtree_active(cage, not house)
+
+func _build_house_room() -> void:
+	# v1.0.17 (Michael's v1.0.15 play report): the HOUSE interior is
+	# back. This is the pre-shelter living-room build (recovered from
+	# the v1.0.13 prototype), restored as its OWN room so a regular
+	# townsperson's capture lands in a house again — couch, coffee
+	# table, the plant / book / vase knock-overs — while the officer's
+	# capture keeps the shelter ward. The room shares the shelter's
+	# origin and layout (same zones, anchors and prop spots), so all
+	# the escape machinery works unchanged; _activate_escape_room
+	# swaps which room's nodes the shared member vars point at and
+	# hides + de-collides the other. It registers into the same member
+	# vars the shelter build uses; the boot sequence snapshots each
+	# room's set right after its build.
+	var room := Node3D.new()
+	room.name = "HouseRoom"
+	add_child(room)
+	house_room_node = room
+	var o: Vector3 = escape_origin
+	# --- Floor: textured wood planks + patterned rug with fringe ---
+	var floor_mi := _box(room, o + Vector3(0, -0.1, 0), Vector3(28, 0.3, 20), Color.WHITE)
+	floor_mi.material_override = _mat_tex(TEX_WOOD, Color(1.05, 0.98, 0.9), Vector3(9, 7, 1))
+	var rug := _box(room, o + Vector3(0, 0.06, 3), Vector3(9, 0.06, 6), Color.WHITE)
+	rug.material_override = _mat_tex(TEX_RUG, Color.WHITE, Vector3(1, 1, 1))
+	for fx in range(-4, 5):
+		_box(room, o + Vector3(float(fx), 0.07, 6.25), Vector3(0.09, 0.03, 0.5), Color(0.92, 0.88, 0.8))
+		_box(room, o + Vector3(float(fx), 0.07, -0.25), Vector3(0.09, 0.03, 0.5), Color(0.92, 0.88, 0.8))
+	# --- Walls: wallpaper above, wood wainscot + baseboards below ---
+	# v1.2: the SOUTH and WEST walls are still single slabs. The NORTH
+	# and EAST walls are built from SEGMENTS with real gaps at the
+	# window, the pet door and the back-door doorway — the player now
+	# WALKS the cat out himself, so the openings must be physical.
+	# While an exit is closed its gap is plugged by an invisible
+	# blocker (window_blocker / petdoor_blocker) or by the solid back
+	# door panel itself; _open_exit removes the plug. Wallpaper repeat
+	# scales with each segment's length so the pattern density matches
+	# the old full walls.
+	var wall_s := _box(room, o + Vector3(0, 2, 10), Vector3(28, 4, 0.5), Color.WHITE, true)
+	wall_s.material_override = _mat_tex(TEX_WALLPAPER, Color.WHITE, Vector3(10, 2, 1))
+	var wains_s := _box(room, o + Vector3(0, 0.55, 9.6), Vector3(28, 1.1, 0.18), Color.WHITE)
+	wains_s.material_override = _mat_tex(TEX_WOOD, Color(0.78, 0.62, 0.45), Vector3(12, 1, 1))
+	var wall_w := _box(room, o + Vector3(-14, 2, 0), Vector3(0.5, 4, 20), Color.WHITE, true)
+	wall_w.material_override = _mat_tex(TEX_WALLPAPER, Color.WHITE, Vector3(7, 2, 1))
+	var wains_w := _box(room, o + Vector3(-13.72, 0.55, 0), Vector3(0.18, 1.1, 20), Color.WHITE)
+	wains_w.material_override = _mat_tex(TEX_WOOD, Color(0.78, 0.62, 0.45), Vector3(8, 1, 1))
+	# North wall (z = -10): segments are [x-centre, width, y-centre, height].
+	# Window gap x -2.9..2.9, y 0.72..3.68 — pet-door gap x 4.85..7.15, y 0..1.58.
+	for seg in [[-8.45, 11.1, 2.0, 4.0], [3.875, 1.95, 2.0, 4.0], [10.575, 6.85, 2.0, 4.0], [0.0, 5.8, 0.36, 0.72], [0.0, 5.8, 3.84, 0.32], [6.0, 2.3, 2.79, 2.42]]:
+		var nseg := _box(room, o + Vector3(float(seg[0]), float(seg[2]), -10), Vector3(float(seg[1]), float(seg[3]), 0.5), Color.WHITE, true)
+		nseg.material_override = _mat_tex(TEX_WALLPAPER, Color.WHITE, Vector3(float(seg[1]) / 2.8, 2, 1))
+	# East wall (x = 14): segments are [z-centre, length, y-centre, height].
+	# Back-door doorway gap z 2.28..4.52, y 0..3.02 (plugged by the door).
+	for seg2 in [[-3.86, 12.28, 2.0, 4.0], [7.26, 5.48, 2.0, 4.0], [3.4, 2.24, 3.51, 0.98]]:
+		var eseg := _box(room, o + Vector3(14, float(seg2[2]), float(seg2[0])), Vector3(0.5, float(seg2[3]), float(seg2[1])), Color.WHITE, true)
+		eseg.material_override = _mat_tex(TEX_WALLPAPER, Color.WHITE, Vector3(float(seg2[1]) / 2.857, 2, 1))
+	# Wainscot: north in two pieces (gap at the pet door so the cat
+	# doesn't clip through it walking out), east likewise at the door.
+	for wseg in [[-4.6, 18.8], [10.6, 6.8]]:
+		var wn := _box(room, o + Vector3(float(wseg[0]), 0.55, -9.6), Vector3(float(wseg[1]), 1.1, 0.18), Color.WHITE)
+		wn.material_override = _mat_tex(TEX_WOOD, Color(0.78, 0.62, 0.45), Vector3(float(wseg[1]) / 2.33, 1, 1))
+	for wseg2 in [[-3.86, 12.28], [7.26, 5.48]]:
+		var we := _box(room, o + Vector3(13.72, 0.55, float(wseg2[0])), Vector3(0.18, 1.1, float(wseg2[1])), Color.WHITE)
+		we.material_override = _mat_tex(TEX_WOOD, Color(0.78, 0.62, 0.45), Vector3(float(wseg2[1]) / 2.5, 1, 1))
+	# Invisible plugs for the two north gaps (toggled by _open_exit /
+	# _reset_escape_props). The shape child is named "CS" for toggling.
+	window_blocker = _make_blocker(room, o + Vector3(0, 2.2, -10), Vector3(5.8, 2.96, 0.5))
+	petdoor_blocker = _make_blocker(room, o + Vector3(6, 0.79, -10), Vector3(2.3, 1.58, 0.5))
+	# Ceiling beams (dark wood)
+	for bx in [-9.0, 0.0, 9.0]:
+		var beam := _box(room, o + Vector3(bx, 3.92, 0), Vector3(0.5, 0.22, 20), Color.WHITE)
+		beam.material_override = _mat_tex(TEX_WOOD, Color(0.5, 0.36, 0.22), Vector3(1, 6, 1))
+	room_title_label = _label3d(room, "💛 A cozy cat-lover's home — find a way out!", o + Vector3(0, 3.4, -9.4), 64, Color(0.35, 0.22, 0.14))
+	# Warm interior lighting: ceiling pendant + floor lamp glow
+	var pendant := OmniLight3D.new()
+	pendant.position = o + Vector3(0, 3.2, 1)
+	pendant.light_color = Color(1.0, 0.85, 0.62)
+	pendant.light_energy = 0.85
+	pendant.omni_range = 19.0
+	room.add_child(pendant)
+	_cyl(room, o + Vector3(0, 3.75, 1), 0.03, 0.03, 0.5, Color(0.3, 0.28, 0.26))
+	_sphere(room, o + Vector3(0, 3.45, 1), Vector3(0.55, 0.4, 0.55), Color(1.0, 0.9, 0.65))
+	var lamp_light := OmniLight3D.new()
+	lamp_light.position = o + Vector3(12, 2.6, -7)
+	lamp_light.light_color = Color(1.0, 0.8, 0.55)
+	lamp_light.light_energy = 0.5
+	lamp_light.omni_range = 9.0
+	room.add_child(lamp_light)
+	await _build_tick() # v1.0.11 chunking: escape-room section boundary
+	# ============ BOOKCASE (step 1) — real detailed bookcase ============
+	var shelf_pos := o + Vector3(-11, 0, -8)
+	var case := _box(room, shelf_pos + Vector3(0, 1.5, -0.25), Vector3(5.4, 3.2, 0.5), Color.WHITE, true)
+	case.material_override = _mat_tex(TEX_WOOD, Color(0.66, 0.48, 0.3), Vector3(3, 2, 1))
+	for sx2 in [-2.55, 2.55]:
+		var side := _box(room, shelf_pos + Vector3(sx2, 1.5, 0.15), Vector3(0.28, 3.2, 0.9), Color.WHITE)
+		side.material_override = _mat_tex(TEX_WOOD, Color(0.6, 0.43, 0.27), Vector3(1, 2, 1))
+	var top_board := _box(room, shelf_pos + Vector3(0, 3.18, 0.15), Vector3(5.5, 0.24, 1.0), Color.WHITE)
+	top_board.material_override = _mat_tex(TEX_WOOD, Color(0.6, 0.43, 0.27), Vector3(3, 1, 1))
+	var book_cols: Array = [Color(0.8, 0.25, 0.25), Color(0.25, 0.45, 0.8), Color(0.3, 0.65, 0.35), Color(0.85, 0.65, 0.2), Color(0.6, 0.35, 0.75), Color(0.9, 0.55, 0.3), Color(0.3, 0.6, 0.65), Color(0.75, 0.4, 0.5)]
+	var stack_pivot: Node3D = null # v1.5: the bottom shelf's horizontal stack is a knock-over prop (built into this pivot, registered later)
+	for shelf_i in range(3):
+		var sy: float = 0.55 + float(shelf_i) * 0.95
+		var board := _box(room, shelf_pos + Vector3(0, sy - 0.28, 0.15), Vector3(5.2, 0.12, 0.9), Color.WHITE)
+		board.material_override = _mat_tex(TEX_WOOD, Color(0.6, 0.43, 0.27), Vector3(3, 1, 1))
+		var bx2: float = -2.25
+		var bi: int = 0
+		while bx2 < 2.1:
+			if shelf_i == 2 and bx2 > 0.0 and bx2 < 1.3:
+				bx2 += 0.42 # leave the gap where the puzzle book sits (top shelf)
+				continue
+			var bw: float = 0.26 + fmod(abs(sin(float(shelf_i * 17 + bi * 7))) * 0.5, 0.2)
+			var bh: float = 0.62 + fmod(abs(cos(float(bi * 5 + shelf_i * 3))) * 0.6, 0.3)
+			var bk := _box(room, shelf_pos + Vector3(bx2 + bw * 0.5, sy + bh * 0.5 - 0.22, 0.3), Vector3(bw, bh, 0.5), book_cols[(bi + shelf_i * 3) % book_cols.size()])
+			if bi % 7 == 4:
+				bk.rotation_degrees = Vector3(0, 0, -9) # one leaning book per row
+			_box(room, shelf_pos + Vector3(bx2 + bw * 0.5, sy + bh - 0.3, 0.57), Vector3(bw * 0.9, 0.07, 0.03), Color(0.95, 0.9, 0.75)) # page block line
+			bx2 += bw + 0.035
+			bi += 1
+		# a horizontal stack at the end of two shelves — the bottom
+		# shelf's stack sits in its own pivot so the cat can knock
+		# it over (v1.5 distraction prop, registered below).
+		if shelf_i < 2:
+			if shelf_i == 0:
+				stack_pivot = Node3D.new()
+				stack_pivot.position = shelf_pos + Vector3(2.0, sy - 0.045, 0.3)
+				room.add_child(stack_pivot)
+				for st in range(3):
+					_box(stack_pivot, Vector3(0, 0.065 + float(st) * 0.15, 0), Vector3(0.62, 0.13, 0.48), book_cols[(shelf_i + st + 2) % book_cols.size()])
+			else:
+				for st in range(3):
+					_box(room, shelf_pos + Vector3(2.0, sy + 0.02 + float(st) * 0.15, 0.3), Vector3(0.62, 0.13, 0.48), book_cols[(shelf_i + st + 2) % book_cols.size()])
+	# The puzzle book: BIG, red, gold-banded — must read clearly
+	book_node = _box(room, shelf_pos + Vector3(0.6, 2.2, 0.6), Vector3(0.6, 1.0, 0.4), Color(0.88, 0.16, 0.16))
+	book_home_pos = book_node.position
+	_box(book_node, Vector3(0, 0.28, 0.21), Vector3(0.62, 0.1, 0.02), Color(0.95, 0.78, 0.3))
+	_box(book_node, Vector3(0, -0.28, 0.21), Vector3(0.62, 0.1, 0.02), Color(0.95, 0.78, 0.3))
+	# Plant + framed photo on top of the bookcase
+	_cyl(room, shelf_pos + Vector3(-2.0, 3.45, 0.15), 0.22, 0.17, 0.35, Color(0.75, 0.4, 0.3))
+	var case_plant := _sphere(room, shelf_pos + Vector3(-2.0, 3.85, 0.15), Vector3(0.55, 0.5, 0.55), Color.WHITE)
+	case_plant.material_override = _mat_tex(TEX_FOLIAGE, Color.WHITE, Vector3(1, 1, 1))
+	_box(room, shelf_pos + Vector3(2.0, 3.55, 0.1), Vector3(0.7, 0.55, 0.08), Color(0.5, 0.35, 0.2))
+	_sphere(room, shelf_pos + Vector3(2.0, 3.58, 0.16), Vector3(0.2, 0.18, 0.04), Color(0.94, 0.55, 0.16)) # tiny cat portrait head
+	await _build_tick() # v1.0.11 chunking: escape-room section boundary
+	# ============ SOFA (step 2) — cushions, pillows, throw ============
+	var sofa_pos := o + Vector3(0, 0, 4.5)
+	var sofa_base := _box(room, sofa_pos + Vector3(0, 0.55, 0), Vector3(6.5, 1.1, 2.2), Color.WHITE, true)
+	sofa_base.material_override = _mat_tex(TEX_SOFA, Color.WHITE, Vector3(4, 1, 1))
+	for cx in [-2.05, 0.0, 2.05]:
+		var seat := _box(room, sofa_pos + Vector3(cx, 1.06, 0.25), Vector3(1.95, 0.28, 1.7), Color.WHITE)
+		seat.material_override = _mat_tex(TEX_SOFA, Color(1.12, 1.12, 1.15), Vector3(1, 1, 1))
+		var back_c := _sphere(room, sofa_pos + Vector3(cx, 1.62, -0.78), Vector3(2.0, 1.05, 0.55), Color.WHITE)
+		back_c.material_override = _mat_tex(TEX_SOFA, Color(1.05, 1.05, 1.1), Vector3(1, 1, 1))
+	_box(room, sofa_pos + Vector3(-3.1, 1.0, 0), Vector3(0.5, 1.6, 2.2), Color(0.4, 0.5, 0.8))
+	_box(room, sofa_pos + Vector3(3.1, 1.0, 0), Vector3(0.5, 1.6, 2.2), Color(0.4, 0.5, 0.8))
+	var pillow_pivot := Node3D.new() # v1.5: this cushion is a knock-over prop (registered below)
+	pillow_pivot.position = sofa_pos + Vector3(-2.3, 1.45, -0.45)
+	room.add_child(pillow_pivot)
+	var pillow1 := _box(pillow_pivot, Vector3(0, 0, 0), Vector3(0.85, 0.85, 0.3), Color(0.92, 0.62, 0.25))
+	pillow1.rotation_degrees = Vector3(-12, 0, 10)
+	var pillow2 := _box(room, sofa_pos + Vector3(2.4, 1.45, -0.45), Vector3(0.85, 0.85, 0.3), Color(0.85, 0.4, 0.45))
+	pillow2.rotation_degrees = Vector3(-12, 0, -8)
+	var throw := _box(room, sofa_pos + Vector3(3.05, 1.55, 0.5), Vector3(0.6, 1.15, 1.6), Color(0.9, 0.8, 0.55))
+	throw.rotation_degrees = Vector3(0, 0, 6)
+	# Coffee table on the rug: books, mug, remote
+	_box(room, o + Vector3(0, 0.42, 1.2), Vector3(3.4, 0.16, 1.6), Color(0.62, 0.45, 0.3))
+	for cx2 in [-1.45, 1.45]:
+		for cz2 in [-0.6, 0.6]:
+			_cyl(room, o + Vector3(cx2, 0.2, 1.2 + cz2), 0.07, 0.07, 0.4, Color(0.5, 0.36, 0.22))
+	_box(room, o + Vector3(-0.9, 0.58, 1.1), Vector3(0.7, 0.14, 0.5), Color(0.3, 0.5, 0.75))
+	_box(room, o + Vector3(-0.88, 0.71, 1.12), Vector3(0.6, 0.12, 0.44), Color(0.8, 0.35, 0.3))
+	var mug_pivot := Node3D.new() # v1.5: the mug is a knock-over prop (registered below)
+	mug_pivot.position = o + Vector3(0.7, 0.5, 1.4)
+	room.add_child(mug_pivot)
+	_cyl(mug_pivot, Vector3(0, 0.12, 0), 0.11, 0.09, 0.24, Color(0.92, 0.55, 0.3)) # mug
+	_box(room, o + Vector3(1.2, 0.53, 1.0), Vector3(0.42, 0.05, 0.14), Color(0.15, 0.15, 0.17)) # remote
+	# Armchair + side table + reading lamp (corner)
+	var chair := _box(room, o + Vector3(9.5, 0.55, 7.5), Vector3(2.4, 1.1, 2.2), Color.WHITE)
+	chair.material_override = _mat_tex(TEX_SOFA, Color(1.25, 0.95, 0.85), Vector3(2, 1, 1))
+	chair.rotation_degrees = Vector3(0, -35, 0)
+	_box(room, o + Vector3(12.3, 0.5, 4.6), Vector3(1.1, 1.0, 1.1), Color(0.6, 0.44, 0.29))
+	var tlamp_pivot := Node3D.new() # v1.5: the reading lamp is a knock-over prop (registered below)
+	tlamp_pivot.position = o + Vector3(12.3, 1.0, 4.6)
+	room.add_child(tlamp_pivot)
+	_cyl(tlamp_pivot, Vector3(0, 0.35, 0), 0.05, 0.07, 0.7, Color(0.35, 0.33, 0.3))
+	_sphere(tlamp_pivot, Vector3(0, 0.85, 0), Vector3(0.5, 0.42, 0.5), Color(1.0, 0.88, 0.6))
+	await _build_tick() # v1.0.11 chunking: escape-room section boundary
+	# ============ WINDOW — REAL window (v0.6 rework) ============
+	# Proper frame + sill, two sashes with muntin grids, believable
+	# glass (transparent, slight blue, reflective sheen) over a bright
+	# "outside" backdrop (sky, sun, hills, clouds), curtains, and a
+	# REAL brass latch: a base plate + a lever on a pivot that the
+	# player flips from the escape panel (v1.1). The lower sash
+	# (sash_node) physically slides up when the window is pushed open.
+	var win_pos := o + Vector3(0, 2.2, -9.6)
+	var glass_mat := StandardMaterial3D.new()
+	glass_mat.albedo_color = Color(0.8, 0.92, 1.0, 0.2)
+	glass_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	glass_mat.roughness = 0.06
+	glass_mat.metallic = 0.0
+	var sheen_mat := StandardMaterial3D.new()
+	sheen_mat.albedo_color = Color(1, 1, 1, 0.1)
+	sheen_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	sheen_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	# "Outside": bright sky panel + sun + hills + clouds behind the glass
+	var sky_mat := StandardMaterial3D.new()
+	sky_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	sky_mat.albedo_color = Color(0.32, 0.58, 0.92)
+	var sky_panel := _box(room, win_pos + Vector3(0, 0, -0.22), Vector3(5.2, 2.9, 0.06), Color.WHITE)
+	sky_panel.material_override = sky_mat
+	_sphere(room, win_pos + Vector3(1.55, 0.78, -0.17), Vector3(0.46, 0.46, 0.1), Color(1.0, 0.93, 0.55))
+	_sphere(room, win_pos + Vector3(-2.6, -1.15, -0.16), Vector3(2.6, 1.1, 0.1), Color(0.3, 0.58, 0.3))
+	_sphere(room, win_pos + Vector3(2.7, -1.25, -0.16), Vector3(2.8, 1.0, 0.1), Color(0.36, 0.64, 0.34))
+	_sphere(room, win_pos + Vector3(-1.5, 0.85, -0.16), Vector3(0.85, 0.3, 0.08), Color(1, 1, 1))
+	_sphere(room, win_pos + Vector3(0.6, 1.0, -0.16), Vector3(0.65, 0.24, 0.08), Color(1, 1, 1))
+	# Outer frame (4 chunky painted boards) + sloped sill + apron
+	_box(room, win_pos + Vector3(0, 1.44, 0.02), Vector3(5.5, 0.34, 0.34), Color(0.96, 0.94, 0.9))
+	_box(room, win_pos + Vector3(0, -1.44, 0.02), Vector3(5.5, 0.34, 0.34), Color(0.96, 0.94, 0.9))
+	_box(room, win_pos + Vector3(-2.62, 0, 0.02), Vector3(0.34, 3.2, 0.34), Color(0.96, 0.94, 0.9))
+	_box(room, win_pos + Vector3(2.62, 0, 0.02), Vector3(0.34, 3.2, 0.34), Color(0.96, 0.94, 0.9))
+	var sill := _box(room, win_pos + Vector3(0, -1.66, 0.22), Vector3(5.9, 0.16, 0.66), Color(0.96, 0.94, 0.9))
+	sill.rotation_degrees = Vector3(7, 0, 0)
+	_box(room, win_pos + Vector3(0, -1.78, 0.05), Vector3(5.5, 0.14, 0.2), Color(0.9, 0.87, 0.82))
+	# Upper sash (fixed): glass + muntins
+	var up_glass := _box(room, win_pos + Vector3(0, 0.73, 0), Vector3(4.85, 1.3, 0.05), Color.WHITE)
+	up_glass.material_override = glass_mat
+	_box(room, win_pos + Vector3(0, 0.73, 0.05), Vector3(0.09, 1.3, 0.06), Color(0.96, 0.94, 0.9))
+	_box(room, win_pos + Vector3(0, 0.73, 0.05), Vector3(4.85, 0.09, 0.06), Color(0.96, 0.94, 0.9))
+	_box(room, win_pos + Vector3(0, 1.36, 0.03), Vector3(4.95, 0.15, 0.1), Color(0.96, 0.94, 0.9))
+	var up_sheen := _box(room, win_pos + Vector3(-1.3, 0.73, 0.06), Vector3(0.45, 1.25, 0.02), Color.WHITE)
+	up_sheen.material_override = sheen_mat
+	up_sheen.rotation_degrees = Vector3(0, 0, 18)
+	# Lower sash (sash_node): slides UP when pushed open
+	sash_node = Node3D.new()
+	sash_node.position = win_pos + Vector3(0, -0.7, 0.07)
+	room.add_child(sash_node)
+	sash_base_y = sash_node.position.y
+	var lo_glass := _box(sash_node, Vector3(0, 0, 0), Vector3(4.85, 1.28, 0.05), Color.WHITE)
+	lo_glass.material_override = glass_mat
+	_box(sash_node, Vector3(0, 0.66, 0.02), Vector3(4.95, 0.17, 0.1), Color(0.96, 0.94, 0.9)) # meeting rail (top)
+	_box(sash_node, Vector3(0, -0.66, 0.02), Vector3(4.95, 0.15, 0.1), Color(0.96, 0.94, 0.9))
+	_box(sash_node, Vector3(-2.44, 0, 0.02), Vector3(0.15, 1.4, 0.1), Color(0.96, 0.94, 0.9))
+	_box(sash_node, Vector3(2.44, 0, 0.02), Vector3(0.15, 1.4, 0.1), Color(0.96, 0.94, 0.9))
+	_box(sash_node, Vector3(0, 0, 0.05), Vector3(0.09, 1.28, 0.06), Color(0.96, 0.94, 0.9))
+	_box(sash_node, Vector3(0, 0, 0.05), Vector3(4.85, 0.09, 0.06), Color(0.96, 0.94, 0.9))
+	var lo_sheen := _box(sash_node, Vector3(1.2, 0, 0.06), Vector3(0.45, 1.2, 0.02), Color.WHITE)
+	lo_sheen.material_override = sheen_mat
+	lo_sheen.rotation_degrees = Vector3(0, 0, 18)
+	# THE LATCH: base plate + keeper + lever on a pivot (flips up when
+	# swiped open). Sits on the meeting rail, right of centre.
+	_box(room, win_pos + Vector3(0.8, 0.14, 0.14), Vector3(0.32, 0.15, 0.09), Color(0.45, 0.36, 0.18)) # keeper (upper rail)
+	latch_pivot = Node3D.new()
+	latch_pivot.position = win_pos + Vector3(0.8, -0.06, 0.16)
+	room.add_child(latch_pivot)
+	latch_base_pos = latch_pivot.position
+	var latch_plate := _box(latch_pivot, Vector3(0, 0, 0), Vector3(0.36, 0.19, 0.07), Color(0.5, 0.4, 0.2))
+	latch_plate.material_override = _mat(Color(0.5, 0.4, 0.2), 0.35)
+	latch_node = _box(latch_pivot, Vector3(-0.24, 0, 0.07), Vector3(0.56, 0.11, 0.09), Color(0.78, 0.62, 0.26))
+	latch_node.material_override = _mat(Color(0.78, 0.62, 0.26), 0.3)
+	_sphere(latch_pivot, Vector3(-0.52, 0, 0.07), Vector3(0.1, 0.1, 0.1), Color(0.85, 0.68, 0.3)) # lever knob
+	_sphere(latch_pivot, Vector3(0, 0, 0.08), Vector3(0.07, 0.07, 0.07), Color(0.35, 0.28, 0.14)) # pivot screw
+	# Curtains + rod + sill plant (kept, repositioned to the new frame)
+	for cx3 in [-3.05, 3.05]:
+		for pleat in range(4):
+			_box(room, win_pos + Vector3(cx3 + (float(pleat) - 1.5) * 0.24, -0.1, 0.32), Vector3(0.2, 3.0, 0.16), Color(0.82, 0.5, 0.42) if pleat % 2 == 0 else Color(0.74, 0.44, 0.38))
+	var rod := _cyl(room, win_pos + Vector3(0, 1.68, 0.32), 0.045, 0.045, 7.2, Color(0.55, 0.42, 0.25))
+	rod.rotation_degrees = Vector3(0, 0, 90)
+	var sill_pivot := Node3D.new() # v1.5: the sill plant is a knock-over prop (registered below)
+	sill_pivot.position = win_pos + Vector3(-1.7, -1.63, 0.3)
+	room.add_child(sill_pivot)
+	_cyl(sill_pivot, Vector3(0, 0.13, 0), 0.16, 0.12, 0.26, Color(0.75, 0.4, 0.3)) # sill plant pot
+	var sill_plant := _sphere(sill_pivot, Vector3(0, 0.41, 0), Vector3(0.4, 0.36, 0.4), Color.WHITE)
+	sill_plant.material_override = _mat_tex(TEX_FOLIAGE, Color.WHITE, Vector3(1, 1, 1))
+	_label3d(room, "Window", win_pos + Vector3(0, 1.95, 0), 56, Color(0.2, 0.3, 0.4))
+	# Pet door with frame + a REAL swinging FLAP (flap_node pivots at
+	# its top edge; pushing swipes swing it open). v1.1: the frame is
+	# a real 4-piece border around a dark opening (it was one solid
+	# slab with the flap embedded in it), so the flap reads clearly
+	# and the cat can be SEEN slipping through in the escape moment.
+	_box(room, o + Vector3(6, 0.74, -9.74), Vector3(1.9, 1.38, 0.05), Color(0.05, 0.05, 0.08)) # dark opening
+	_box(room, o + Vector3(6, 1.495, -9.68), Vector3(2.1, 0.16, 0.3), Color(0.96, 0.94, 0.9)) # frame top
+	_box(room, o + Vector3(6, -0.005, -9.68), Vector3(2.1, 0.14, 0.3), Color(0.96, 0.94, 0.9)) # frame threshold
+	_box(room, o + Vector3(4.975, 0.74, -9.68), Vector3(0.15, 1.35, 0.3), Color(0.96, 0.94, 0.9)) # frame L
+	_box(room, o + Vector3(7.025, 0.74, -9.68), Vector3(0.15, 1.35, 0.3), Color(0.96, 0.94, 0.9)) # frame R
+	flap_node = Node3D.new()
+	flap_node.position = o + Vector3(6, 1.42, -9.60)
+	room.add_child(flap_node)
+	var flap_mat := StandardMaterial3D.new()
+	flap_mat.albedo_color = Color(0.35, 0.8, 0.5, 0.78)
+	flap_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	flap_mat.emission_enabled = true
+	flap_mat.emission = Color(0.2, 0.5, 0.3)
+	flap_mat.emission_energy_multiplier = 0.35
+	var flap := _box(flap_node, Vector3(0, -0.68, 0), Vector3(1.7, 1.36, 0.1), Color.WHITE)
+	flap.material_override = flap_mat
+	_box(flap_node, Vector3(0, -0.06, 0.03), Vector3(1.78, 0.12, 0.06), Color(0.85, 0.83, 0.78)) # flap hinge bar
+	_label3d(room, "Pet door", o + Vector3(6, 1.95, -9.5), 48, Color(0.2, 0.45, 0.25))
+	await _build_tick() # v1.0.11 chunking: escape-room section boundary
+	# ============ KITCHEN corner (east wall) ============
+	var counter := _box(room, o + Vector3(12.9, 0.95, -4.5), Vector3(1.9, 0.14, 8.5), Color(0.88, 0.85, 0.8), true)
+	counter.material_override = _mat_tex(TEX_SIDEWALK, Color.WHITE, Vector3(1, 4, 1))
+	var cabbody := _box(room, o + Vector3(13.1, 0.45, -4.5), Vector3(1.6, 0.85, 8.5), Color.WHITE)
+	cabbody.material_override = _mat_tex(TEX_WOOD, Color(0.82, 0.68, 0.5), Vector3(4, 1, 1))
+	for hx in range(4):
+		_box(room, o + Vector3(12.25, 0.62, -7.6 + float(hx) * 2.05), Vector3(0.06, 0.08, 0.7), Color(0.4, 0.38, 0.36)) # cabinet handles
+	_box(room, o + Vector3(12.85, 1.06, -7.2), Vector3(1.5, 0.08, 2.2), Color(0.16, 0.16, 0.18)) # stove top
+	for bx2 in [-0.45, 0.45]:
+		for bz2 in [-0.6, 0.6]:
+			_cyl(room, o + Vector3(12.85 + bx2, 1.12, -7.2 + bz2), 0.26, 0.26, 0.04, Color(0.3, 0.3, 0.34))
+	_sphere(room, o + Vector3(12.7, 1.3, -5.2), Vector3(0.34, 0.3, 0.34), Color(0.82, 0.84, 0.88)) # kettle
+	_cyl(room, o + Vector3(12.7, 1.58, -5.2), 0.05, 0.08, 0.14, Color(0.6, 0.62, 0.66))
+	_box(room, o + Vector3(13.2, 1.75, 0.5), Vector3(1.5, 3.5, 2.2), Color(0.88, 0.9, 0.93), true) # fridge
+	_box(room, o + Vector3(12.4, 2.2, 0.5), Vector3(0.06, 0.8, 0.1), Color(0.5, 0.52, 0.56)) # fridge handle
+	_box(room, o + Vector3(12.44, 2.85, 0.5), Vector3(0.04, 0.5, 0.7), Color(0.95, 0.75, 0.3)) # fridge note
+	var fruit_pivot := Node3D.new() # v1.5: the fruit bowl is a knock-over prop (registered below)
+	fruit_pivot.position = o + Vector3(12.8, 1.02, -2.2)
+	room.add_child(fruit_pivot)
+	_cyl(fruit_pivot, Vector3(0, 0.08, 0), 0.5, 0.4, 0.18, Color(0.8, 0.5, 0.3)) # fruit bowl
+	for fr in [Vector3(-0.2, 0.26, -0.2), Vector3(0.2, 0.26, 0.1), Vector3(0, 0.28, -0.05)]:
+		_sphere(fruit_pivot, fr, Vector3(0.17, 0.17, 0.17), Color(0.95, 0.6, 0.2))
+	# Wall cabinets + hanging pans
+	var wallcab := _box(room, o + Vector3(13.3, 2.9, -5.5), Vector3(1.1, 1.3, 5.5), Color.WHITE)
+	wallcab.material_override = _mat_tex(TEX_WOOD, Color(0.82, 0.68, 0.5), Vector3(3, 1, 1))
+	for px in range(3):
+		_cyl(room, o + Vector3(12.6, 2.0 - float(px) * 0.05, -3.4 - float(px) * 0.8), 0.26, 0.26, 0.07, Color(0.35, 0.36, 0.4))
+	await _build_tick() # v1.0.11 chunking: escape-room section boundary
+	# ============ Personal touches ============
+	# Fireplace (south wall) with mantel, photo frames, warm glow
+	_box(room, o + Vector3(-7, 0.9, 9.55), Vector3(3.6, 1.8, 0.7), Color(0.62, 0.35, 0.28))
+	_box(room, o + Vector3(-7, 0.75, 9.2), Vector3(2.2, 1.3, 0.3), Color(0.14, 0.1, 0.09))
+	_box(room, o + Vector3(-7, 0.55, 9.05), Vector3(1.7, 0.8, 0.2), Color(1.0, 0.55, 0.18), false, 0.9) # fire glow
+	_box(room, o + Vector3(-7, 1.95, 9.5), Vector3(4.1, 0.18, 0.85), Color(0.55, 0.4, 0.26)) # mantel
+	_box(room, o + Vector3(-8.2, 2.35, 9.45), Vector3(0.65, 0.5, 0.08), Color(0.5, 0.35, 0.2))
+	_sphere(room, o + Vector3(-8.2, 2.38, 9.5), Vector3(0.18, 0.16, 0.04), Color(0.94, 0.55, 0.16))
+	_cyl(room, o + Vector3(-5.9, 2.3, 9.45), 0.05, 0.07, 0.4, Color(0.92, 0.88, 0.8)) # candle
+	# Picture frames on west wall: big cat portrait + landscapes
+	_box(room, o + Vector3(-13.65, 2.3, 1.5), Vector3(0.14, 1.7, 2.1), Color(0.5, 0.35, 0.2))
+	_box(room, o + Vector3(-13.55, 2.3, 1.5), Vector3(0.1, 1.45, 1.85), Color(0.96, 0.9, 0.78))
+	_sphere(room, o + Vector3(-13.45, 2.25, 1.5), Vector3(0.08, 0.62, 0.62), Color(0.94, 0.55, 0.16)) # portrait cat head (flat)
+	for sx4 in [-0.28, 0.28]:
+		_box(room, o + Vector3(-13.45, 2.95, 1.5 + sx4), Vector3(0.06, 0.3, 0.16), Color(0.94, 0.55, 0.16))
+	_sphere(room, o + Vector3(-13.42, 2.32, 1.32), Vector3(0.05, 0.11, 0.11), Color(0.2, 0.6, 0.25))
+	_sphere(room, o + Vector3(-13.42, 2.32, 1.68), Vector3(0.05, 0.11, 0.11), Color(0.2, 0.6, 0.25))
+	var frame_pivot: Node3D = null # v1.5: the south landscape frame can be knocked crooked (registered below)
+	for pz in [-3.5, 5.5]:
+		if pz > 0.0:
+			frame_pivot = Node3D.new()
+			frame_pivot.position = o + Vector3(-13.65, 2.4, pz)
+			room.add_child(frame_pivot)
+			_box(frame_pivot, Vector3(0, 0, 0), Vector3(0.14, 1.0, 1.4), Color(0.45, 0.32, 0.2))
+			_box(frame_pivot, Vector3(0.1, 0, 0), Vector3(0.1, 0.8, 1.2), Color(0.6, 0.8, 0.55))
+		else:
+			_box(room, o + Vector3(-13.65, 2.4, pz), Vector3(0.14, 1.0, 1.4), Color(0.45, 0.32, 0.2))
+			_box(room, o + Vector3(-13.55, 2.4, pz), Vector3(0.1, 0.8, 1.2), Color(0.65, 0.78, 0.9))
+	# Wall clock (north wall, east side)
+	var clock_face := _cyl(room, o + Vector3(9, 3.0, -9.65), 0.55, 0.55, 0.1, Color(0.97, 0.95, 0.9))
+	clock_face.rotation_degrees = Vector3(90, 0, 0)
+	var hand1 := _box(room, o + Vector3(9, 3.12, -9.55), Vector3(0.06, 0.4, 0.04), Color(0.15, 0.15, 0.17))
+	hand1.rotation_degrees = Vector3(0, 0, 25)
+	# Cat tree, cat bed, bowls, yarn — this person loves a cat
+	_cyl(room, o + Vector3(-12.3, 0.9, 6.5), 0.16, 0.2, 1.8, Color(0.78, 0.68, 0.55), true)
+	_cyl(room, o + Vector3(-12.3, 1.85, 6.5), 0.75, 0.75, 0.14, Color(0.85, 0.6, 0.45))
+	_cyl(room, o + Vector3(-12.3, 0.35, 6.5), 0.6, 0.6, 0.12, Color(0.85, 0.6, 0.45))
+	_sphere(room, o + Vector3(-10.5, 0.22, 8.3), Vector3(1.0, 0.32, 1.0), Color(0.85, 0.45, 0.5)) # cat bed
+	_sphere(room, o + Vector3(-10.5, 0.3, 8.3), Vector3(0.78, 0.24, 0.78), Color(0.95, 0.85, 0.7))
+	_cyl(room, o + Vector3(-8.6, 0.12, 8.6), 0.32, 0.24, 0.22, Color(0.35, 0.6, 0.8)) # water bowl
+	_cyl(room, o + Vector3(-7.8, 0.12, 8.6), 0.32, 0.24, 0.22, Color(0.9, 0.55, 0.3)) # food bowl
+	var yarn_pivot := Node3D.new() # v1.5: the yarn ball is a knock-over prop (registered below)
+	yarn_pivot.position = o + Vector3(5.5, 0, 7.8)
+	room.add_child(yarn_pivot)
+	_sphere(yarn_pivot, Vector3(0, 0.28, 0), Vector3(0.3, 0.3, 0.3), Color(0.85, 0.3, 0.35)) # yarn ball
+	var yarn_wrap := _box(yarn_pivot, Vector3(0, 0.28, 0), Vector3(0.64, 0.1, 0.64), Color(0.7, 0.22, 0.28))
+	yarn_wrap.rotation_degrees = Vector3(20, 30, 10)
+	# Dining table (kept from v0.4, warmer wood) + chairs + plant centrepiece
+	var dtable := _box(room, o + Vector3(9, 0.8, 4), Vector3(4.5, 0.25, 2.6), Color.WHITE, true)
+	dtable.material_override = _mat_tex(TEX_WOOD, Color(0.9, 0.78, 0.62), Vector3(3, 2, 1))
+	for cx5 in [-1.8, 1.8]:
+		for cz5 in [-1.0, 1.0]:
+			_cyl(room, o + Vector3(9 + cx5, 0.35, 4 + cz5), 0.09, 0.09, 0.7, Color(0.55, 0.38, 0.24))
+	for chx in [-1.2, 1.2]:
+		_box(room, o + Vector3(9 + chx, 0.5, 6.1), Vector3(0.95, 1.0, 0.14), Color(0.6, 0.44, 0.29))
+		_box(room, o + Vector3(9 + chx, 1.25, 6.25), Vector3(0.95, 1.1, 0.12), Color(0.6, 0.44, 0.29))
+	_cyl(room, o + Vector3(9, 1.15, 4), 0.2, 0.14, 0.45, Color(0.75, 0.4, 0.3))
+	var table_plant := _sphere(room, o + Vector3(9, 1.6, 4), Vector3(0.5, 0.5, 0.5), Color.WHITE)
+	table_plant.material_override = _mat_tex(TEX_FOLIAGE, Color.WHITE, Vector3(1, 1, 1))
+	# Floor lamp by the sofa + big plant in the corner (kept positions, richer)
+	var flamp_pivot := Node3D.new() # v1.5: the floor lamp is a knock-over prop (registered below)
+	flamp_pivot.position = o + Vector3(12, 0, -7)
+	room.add_child(flamp_pivot)
+	_cyl(flamp_pivot, Vector3(0, 1.4, 0), 0.06, 0.09, 2.8, Color(0.3, 0.3, 0.33))
+	_sphere(flamp_pivot, Vector3(0, 3.0, 0), Vector3(0.65, 0.5, 0.65), Color(1.0, 0.88, 0.6))
+	_cyl(room, o + Vector3(-11, 0.5, -5.5), 0.42, 0.32, 1.0, Color(0.75, 0.4, 0.3))
+	var corner_plant := _sphere(room, o + Vector3(-11, 1.7, -5.5), Vector3(1.15, 1.25, 1.15), Color.WHITE)
+	corner_plant.material_override = _mat_tex(TEX_FOLIAGE, Color.WHITE, Vector3(2, 2, 2))
+	# Coat hooks + shoes by the pet door
+	for hx2 in range(3):
+		_sphere(room, o + Vector3(3.6 + float(hx2) * 0.7, 2.2, -9.6), Vector3(0.09, 0.09, 0.12), Color(0.5, 0.38, 0.24))
+	_box(room, o + Vector3(3.8, 1.55, -9.55), Vector3(0.55, 1.15, 0.14), Color(0.4, 0.5, 0.7)) # hanging coat
+	var shoes_pivot := Node3D.new() # v1.5: the shoes by the door are a knock-over prop (registered below)
+	shoes_pivot.position = o + Vector3(4.95, 0, -9.2)
+	room.add_child(shoes_pivot)
+	for shx in [-0.35, 0.35]:
+		_box(shoes_pivot, Vector3(shx, 0.12, 0), Vector3(0.32, 0.22, 0.7), Color(0.55, 0.35, 0.25))
+
+
+	await _build_tick() # v1.0.11 chunking: escape-room section boundary
+	# ============ BACK DOOR with SLIDING BOLT (shopkeeper exit) ====
+	var bd_pos := o + Vector3(13.62, 0, 3.4)
+	# v1.1 fix: the frame is a BORDER (lintel + two jambs), not a
+	# solid block — the old solid block filled the doorway and hid
+	# both the dark doorway panel and the cat crossing through it.
+	_box(room, bd_pos + Vector3(0.05, 3.22, 0), Vector3(0.24, 0.36, 2.3), Color(0.92, 0.9, 0.84)) # frame lintel
+	_box(room, bd_pos + Vector3(0.05, 1.65, -1.06), Vector3(0.24, 3.3, 0.18), Color(0.92, 0.9, 0.84)) # frame jamb (north)
+	_box(room, bd_pos + Vector3(0.05, 1.65, 1.06), Vector3(0.24, 3.3, 0.18), Color(0.92, 0.9, 0.84)) # frame jamb (south)
+	_box(room, bd_pos + Vector3(0.13, 1.5, 0), Vector3(0.05, 3.0, 1.95), Color(0.05, 0.04, 0.05)) # v1.1: dark doorway, revealed when the door swings open
+	# v1.1: the door panel hangs on a hinge pivot (backdoor_pivot) so
+	# the escape animation can swing it open; the bolt rides the door,
+	# the keeper stays on the frame — like a real sliding bolt.
+	backdoor_pivot = Node3D.new()
+	backdoor_pivot.position = bd_pos + Vector3(-0.08, 0, -0.975)
+	room.add_child(backdoor_pivot)
+	var bd_door := _box(backdoor_pivot, Vector3(0, 1.5, 0.975), Vector3(0.14, 3.0, 1.95), Color.WHITE, true)
+	bd_door.material_override = _mat_tex(TEX_WOOD, Color(0.62, 0.45, 0.28), Vector3(1, 2, 1))
+	_box(bd_door, Vector3(-0.09, 0.6, 0), Vector3(0.05, 1.0, 1.3), Color(0.5, 0.36, 0.22)) # door panel inset
+	_box(bd_door, Vector3(-0.09, -0.75, 0), Vector3(0.05, 0.9, 1.3), Color(0.5, 0.36, 0.22))
+	_sphere(bd_door, Vector3(-0.14, -0.15, 0.78), Vector3(0.09, 0.09, 0.09), Color(0.8, 0.65, 0.3)) # knob
+	_box(room, bd_pos + Vector3(-0.2, 1.95, -0.82), Vector3(0.08, 0.22, 0.2), Color(0.4, 0.32, 0.16)) # bolt keeper
+	_box(room, bd_pos + Vector3(-0.2, 1.95, -0.18), Vector3(0.08, 0.22, 0.34), Color(0.4, 0.32, 0.16)) # bolt base plate
+	bolt_node = _box(bd_door, Vector3(-0.16, 0.45, -0.42), Vector3(0.09, 0.11, 0.66), Color(0.78, 0.62, 0.26))
+	bolt_node.material_override = _mat(Color(0.78, 0.62, 0.26), 0.3)
+	_sphere(bolt_node, Vector3(-0.06, 0, 0.22), Vector3(0.08, 0.08, 0.08), Color(0.85, 0.68, 0.3)) # bolt thumb knob
+	bolt_base_z = bolt_node.position.z
+	var bd_label := _label3d(room, "Back door — slide the bolt!", bd_pos + Vector3(-0.7, 3.55, 0), 50, Color(0.3, 0.22, 0.12))
+	bd_label.rotation_degrees = Vector3(0, -90, 0)
+	await _build_tick() # v1.0.11 chunking: escape-room section boundary
+	# ============ CAT CARRIER (wriggle-out start for some variants) ==
+	carrier_node = Node3D.new()
+	carrier_node.position = o + Vector3(-6, 0, 7.5)
+	room.add_child(carrier_node)
+	var cbody := _box(carrier_node, Vector3(0, 0.62, 0), Vector3(1.7, 1.15, 1.15), Color(0.72, 0.78, 0.88), true)
+	cbody.material_override = _mat(Color(0.72, 0.78, 0.88), 0.5)
+	_box(carrier_node, Vector3(0, 1.27, 0), Vector3(0.7, 0.13, 0.2), Color(0.35, 0.38, 0.45)) # handle
+	for vx in [-0.5, 0.0, 0.5]:
+		_box(carrier_node, Vector3(vx, 0.85, 0.59), Vector3(0.22, 0.09, 0.03), Color(0.4, 0.44, 0.52)) # vents
+	carrier_door = Node3D.new()
+	carrier_door.position = Vector3(-0.78, 0.6, 0.58)
+	carrier_node.add_child(carrier_door)
+	for bx3 in [0.18, 0.55, 0.92, 1.29]:
+		_box(carrier_door, Vector3(bx3, 0, 0), Vector3(0.06, 1.02, 0.05), Color(0.3, 0.32, 0.38))
+	for by3 in [-0.45, 0.0, 0.45]:
+		_box(carrier_door, Vector3(0.74, by3, 0), Vector3(1.5, 0.06, 0.05), Color(0.3, 0.32, 0.38))
+	_box(carrier_door, Vector3(1.42, 0.1, 0.05), Vector3(0.12, 0.2, 0.08), Color(0.85, 0.6, 0.2)) # door clip
+	_label3d(room, "Cat carrier", o + Vector3(-6, 1.85, 7.5), 48, Color(0.3, 0.35, 0.5))
+	await _build_tick() # v1.0.11 chunking: escape-room section boundary
+	# ============ Tall VASE on the dining table ======================
+	# v1.2: rebuilt as a PIVOT group on the table top (was a lone
+	# cylinder + a separate flowers sphere) so it can be one of the
+	# knock-over distraction props — body and flowers topple together.
+	# vase_node keeps pointing at the group so _reset_escape_props /
+	# vase_home work as before.
+	var vase_pivot := Node3D.new()
+	vase_pivot.position = o + Vector3(10.6, 0.925, 4.0)
+	room.add_child(vase_pivot)
+	vase_node = vase_pivot
+	var vase_body := _cyl(vase_pivot, Vector3(0, 0.4, 0), 0.13, 0.23, 0.8, Color(0.25, 0.55, 0.6))
+	vase_body.material_override = _mat(Color(0.25, 0.55, 0.6), 0.25)
+	_sphere(vase_pivot, Vector3(0, 0.93, 0), Vector3(0.3, 0.35, 0.3), Color(0.95, 0.6, 0.65)) # flowers in vase
+	vase_home = {"pos": vase_node.position, "rot": vase_node.rotation}
+	await _build_tick() # v1.0.11 chunking: escape-room section boundary
+	# ============ PER-CAPTOR DRESSING (one group visible at a time) ==
+	var tw := Node3D.new()
+	tw.name = "ThemeWoman"
+	room.add_child(tw)
+	theme_groups["woman"] = tw
+	theme_groups["pedestrian"] = tw
+	_sphere(tw, o + Vector3(3, 0.16, 7.6), Vector3(0.17, 0.17, 0.17), Color(0.6, 0.6, 0.65)) # toy mouse
+	_sphere(tw, o + Vector3(3.35, 0.14, 7.85), Vector3(0.07, 0.07, 0.3), Color(0.6, 0.6, 0.65))
+	var wand := _cyl(tw, o + Vector3(-4, 0.55, 6.2), 0.025, 0.025, 1.1, Color(0.85, 0.5, 0.6))
+	wand.rotation_degrees = Vector3(0, 0, 35)
+	_sphere(tw, o + Vector3(-4.35, 1.05, 6.2), Vector3(0.22, 0.3, 0.22), Color(0.95, 0.6, 0.75)) # feather puff
+	_box(tw, o + Vector3(-1.5, 1.28, 4.8), Vector3(1.7, 0.13, 1.5), Color(0.95, 0.65, 0.75)) # pink blanket on sofa
+	var tk := Node3D.new()
+	tk.name = "ThemeKid"
+	room.add_child(tk)
+	theme_groups["kid"] = tk
+	var block_cols: Array = [Color(0.9, 0.3, 0.25), Color(0.25, 0.5, 0.9), Color(0.95, 0.8, 0.25), Color(0.35, 0.75, 0.35), Color(0.85, 0.45, 0.85), Color(0.95, 0.55, 0.2)]
+	var block_pos: Array = [Vector3(4.5, 0.28, -2), Vector3(5.2, 0.28, -1.4), Vector3(4.8, 0.83, -1.7), Vector3(-3, 0.28, 1), Vector3(-2.3, 0.28, 1.5), Vector3(7.5, 0.28, 7)]
+	for bi2 in range(block_pos.size()):
+		var blk := _box(tk, o + block_pos[bi2], Vector3(0.55, 0.55, 0.55), block_cols[bi2])
+		blk.rotation_degrees = Vector3(0, float(bi2) * 27.0, 0)
+	_sphere(tk, o + Vector3(6.5, 0.45, -3.5), Vector3(0.45, 0.45, 0.45), Color(0.95, 0.55, 0.2)) # ball
+	_box(tk, o + Vector3(-2, 2.5, 9.68), Vector3(2.3, 1.5, 0.08), Color(0.98, 0.85, 0.3)) # poster
+	_sphere(tk, o + Vector3(-2, 2.55, 9.6), Vector3(0.06, 0.4, 0.4), Color(0.9, 0.4, 0.2)) # poster star (flat)
+	_box(tk, o + Vector3(8.5, 0.22, 7.5), Vector3(0.9, 0.35, 0.45), Color(0.85, 0.3, 0.3)) # toy car
+	var td := Node3D.new()
+	td.name = "ThemeDog"
+	room.add_child(td)
+	theme_groups["dogwalker"] = td
+	_sphere(td, o + Vector3(10.5, 0.55, -6.5), Vector3(0.9, 0.62, 1.15), Color(0.97, 0.96, 0.93)) # the dog: body
+	_sphere(td, o + Vector3(10.5, 0.98, -7.35), Vector3(0.44, 0.42, 0.44), Color(0.97, 0.96, 0.93)) # head
+	_box(td, o + Vector3(10.22, 1.12, -7.3), Vector3(0.14, 0.34, 0.2), Color(0.72, 0.58, 0.42)) # ear L
+	_box(td, o + Vector3(10.78, 1.12, -7.3), Vector3(0.14, 0.34, 0.2), Color(0.72, 0.58, 0.42)) # ear R
+	_sphere(td, o + Vector3(10.5, 1.0, -7.72), Vector3(0.13, 0.11, 0.11), Color(0.2, 0.16, 0.14)) # nose
+	var dtail := _cyl(td, o + Vector3(10.5, 0.85, -5.5), 0.05, 0.08, 0.55, Color(0.97, 0.96, 0.93))
+	dtail.rotation_degrees = Vector3(-50, 0, 0)
+	_sphere(td, o + Vector3(10.5, 0.2, -4.6), Vector3(1.15, 0.3, 1.15), Color(0.5, 0.62, 0.85)) # big dog bed
+	_cyl(td, o + Vector3(8.8, 0.12, -4.2), 0.34, 0.26, 0.22, Color(0.35, 0.6, 0.8)) # dog water bowl
+	_cyl(td, o + Vector3(9.6, 0.12, -4.2), 0.34, 0.26, 0.22, Color(0.6, 0.4, 0.3)) # dog food bowl
+	var ts := Node3D.new()
+	ts.name = "ThemeShop"
+	room.add_child(ts)
+	theme_groups["shopkeeper"] = ts
+	for cr in [Vector3(-12, 0.66, 2), Vector3(-12, 1.98, 2), Vector3(-10.55, 0.66, 2.4), Vector3(-12, 0.66, 3.6)]:
+		var crate := _box(ts, o + cr, Vector3(1.3, 1.3, 1.3), Color.WHITE, true)
+		crate.material_override = _mat_tex(TEX_WOOD, Color(0.85, 0.7, 0.5), Vector3(1, 1, 1))
+	_box(ts, o + Vector3(-13.35, 1.85, 4), Vector3(0.5, 0.1, 4.2), Color(0.6, 0.45, 0.3)) # stock shelf board
+	for ji in range(5):
+		_cyl(ts, o + Vector3(-13.35, 2.12, 2.4 + float(ji) * 0.8), 0.15, 0.15, 0.45, [Color(0.9, 0.6, 0.3), Color(0.5, 0.75, 0.4), Color(0.85, 0.4, 0.4), Color(0.6, 0.6, 0.85), Color(0.9, 0.8, 0.35)][ji]) # stock jars
+	_box(ts, o + Vector3(11.5, 0.5, 8.6), Vector3(0.9, 1.0, 0.65), Color(0.85, 0.72, 0.52)) # paper bag stack
+	_box(ts, o + Vector3(12.5, 0.4, 8.2), Vector3(0.8, 0.8, 0.6), Color(0.8, 0.66, 0.47))
+	var shop_sign := _label3d(ts, "🛒 STOCK ROOM", o + Vector3(-12.7, 3.1, 2.8), 56, Color(0.4, 0.3, 0.15))
+	shop_sign.rotation_degrees = Vector3(0, 90, 0)
+	for tg in theme_groups.values():
+		(tg as Node3D).visible = false
+	await _build_tick() # v1.0.11 chunking: escape-room section boundary
+	# ============ v1.5 NEW LOOSE PROPS (knock-over additions) ========
+	# Michael (2026-11-17): "I want to be able to knock over almost
+	# everything in the house." Four modest additions where the room
+	# was sparse — a wastebasket by the kitchen, a coat stand in the
+	# south-east corner, a stool by the counter, a watering can by
+	# the corner plant. All registered as distraction props below.
+	var basket_pivot := Node3D.new()
+	basket_pivot.position = o + Vector3(11.6, 0, -8.7)
+	room.add_child(basket_pivot)
+	_cyl(basket_pivot, Vector3(0, 0.35, 0), 0.34, 0.27, 0.7, Color(0.55, 0.58, 0.62)) # wastebasket
+	_cyl(basket_pivot, Vector3(0, 0.71, 0), 0.36, 0.36, 0.07, Color(0.45, 0.48, 0.52)) # rim
+	_sphere(basket_pivot, Vector3(0.08, 0.6, 0.04), Vector3(0.17, 0.17, 0.17), Color(0.95, 0.94, 0.9)) # crumpled paper
+	var coatstand_pivot := Node3D.new()
+	coatstand_pivot.position = o + Vector3(12.7, 0, 8.7)
+	room.add_child(coatstand_pivot)
+	_cyl(coatstand_pivot, Vector3(0, 0.07, 0), 0.42, 0.46, 0.14, Color(0.4, 0.3, 0.2)) # base
+	_cyl(coatstand_pivot, Vector3(0, 1.05, 0), 0.06, 0.06, 2.0, Color(0.5, 0.38, 0.24)) # pole
+	for hk in [Vector3(0.3, 1.92, 0), Vector3(-0.3, 1.92, 0), Vector3(0, 1.92, 0.3)]:
+		_sphere(coatstand_pivot, hk, Vector3(0.1, 0.1, 0.1), Color(0.6, 0.45, 0.28)) # hooks
+	_box(coatstand_pivot, Vector3(0.3, 1.32, 0), Vector3(0.52, 1.05, 0.18), Color(0.45, 0.35, 0.55)) # a hanging coat
+	var stool_pivot := Node3D.new()
+	stool_pivot.position = o + Vector3(10.7, 0, -5.8)
+	room.add_child(stool_pivot)
+	_cyl(stool_pivot, Vector3(0, 0.62, 0), 0.44, 0.44, 0.1, Color(0.62, 0.45, 0.3)) # seat
+	for lg in [Vector3(0.3, 0.3, 0), Vector3(-0.3, 0.3, 0.18), Vector3(-0.05, 0.3, -0.32)]:
+		_cyl(stool_pivot, lg, 0.05, 0.05, 0.6, Color(0.5, 0.36, 0.22)) # legs
+	var can_pivot := Node3D.new()
+	can_pivot.position = o + Vector3(-9.7, 0, -4.9)
+	room.add_child(can_pivot)
+	_cyl(can_pivot, Vector3(0, 0.28, 0), 0.27, 0.3, 0.55, Color(0.35, 0.55, 0.35)) # watering can body
+	_cyl(can_pivot, Vector3(0, 0.6, 0), 0.12, 0.12, 0.1, Color(0.3, 0.48, 0.3)) # filler cap
+	var spout := _cyl(can_pivot, Vector3(0.36, 0.34, 0), 0.05, 0.1, 0.55, Color(0.3, 0.48, 0.3)) # spout
+	spout.rotation_degrees = Vector3(0, 0, -55)
+	_box(can_pivot, Vector3(-0.32, 0.36, 0), Vector3(0.08, 0.42, 0.08), Color(0.3, 0.48, 0.3)) # handle
+	await _build_tick() # v1.0.11 chunking: escape-room section boundary
+	# ============ v1.2 DISTRACTION PROPS =============================
+	# Three knock-over props (plant / book / vase), each a pivot the
+	# cat can topple with PAW. Registered in distract_props with the
+	# spot the captor stands in to right it ("stand" — picked BESIDE
+	# the furniture, never inside a solid piece). They are NOT escape
+	# steps: the suite's one-mechanism rule stands.
+	var plant_pivot := Node3D.new()
+	plant_pivot.position = o + Vector3(-6.5, 0.0, -6.8)
+	room.add_child(plant_pivot)
+	_cyl(plant_pivot, Vector3(0, 0.3, 0), 0.3, 0.24, 0.6, Color(0.75, 0.4, 0.3)) # terracotta pot
+	_cyl(plant_pivot, Vector3(0, 0.58, 0), 0.34, 0.34, 0.1, Color(0.6, 0.3, 0.22)) # pot rim
+	var plant_leaf := _sphere(plant_pivot, Vector3(0, 1.02, 0), Vector3(0.62, 0.55, 0.62), Color.WHITE)
+	plant_leaf.material_override = _mat_tex(TEX_FOLIAGE, Color(0.75, 0.9, 0.7), Vector3(1, 1, 1))
+	var plant_leaf2 := _sphere(plant_pivot, Vector3(0.28, 0.82, 0.12), Vector3(0.4, 0.38, 0.4), Color.WHITE)
+	plant_leaf2.material_override = _mat_tex(TEX_FOLIAGE, Color(0.85, 0.95, 0.75), Vector3(1, 1, 1))
+	distract_props.append({"id": "plant", "name": "the plant", "pivot": plant_pivot, "base": o + Vector3(-6.5, 0, -6.8), "stand": o + Vector3(-5.55, 0, -5.85), "toppled": false, "anim_t": 1.0, "home_rot": plant_pivot.rotation, "topple_rot": Vector3(0, 0, -1.85), "bubble": "Oh no — my plant! 🌱"})
+	var book_pivot := Node3D.new()
+	book_pivot.position = o + Vector3(1.15, 0.5, 1.35) # standing on the coffee table
+	room.add_child(book_pivot)
+	_box(book_pivot, Vector3(0, 0.34, 0), Vector3(0.58, 0.68, 0.2), Color(0.25, 0.45, 0.8)) # cover
+	_box(book_pivot, Vector3(0.045, 0.34, 0), Vector3(0.5, 0.6, 0.19), Color(0.95, 0.92, 0.82)) # pages
+	_box(book_pivot, Vector3(0, 0.34, 0.105), Vector3(0.58, 0.1, 0.02), Color(0.9, 0.75, 0.3)) # gold band
+	distract_props.append({"id": "book", "name": "the book", "pivot": book_pivot, "base": o + Vector3(1.15, 0, 1.35), "stand": o + Vector3(1.15, 0, 2.75), "toppled": false, "anim_t": 1.0, "home_rot": book_pivot.rotation, "topple_rot": Vector3(-1.5, 0, 0), "bubble": "My book! 📖"})
+	distract_props.append({"id": "vase", "name": "the vase", "pivot": vase_pivot, "base": o + Vector3(10.6, 0, 4.0), "stand": o + Vector3(12.1, 0, 4.0), "toppled": false, "anim_t": 1.0, "home_rot": vase_pivot.rotation, "topple_rot": Vector3(0, 0, 1.65), "bubble": "Oh! The vase! 🌷"})
+	await _build_tick() # v1.0.11 chunking: escape-room section boundary
+	# ============ v1.5: ALMOST EVERYTHING KNOCKS OVER ================
+	# Michael (2026-11-17): more than "just a couple things" — every
+	# plausible loose object in the room joins the SAME distraction
+	# system (paw range, topple, cue, she rights it, queueing).
+	# "base" is the floor XZ the paw reach is measured from (for
+	# objects on furniture it is the furniture's XZ; for the cushion
+	# it is the floor in front of the sofa, where the cat stands).
+	# "cue" scales the crash: crash (hard), clatter (small/hard),
+	# thud (soft). Furniture and fixtures stay put by design: sofa,
+	# tables, bookcase, counters, fridge, fireplace, cat tree, the
+	# door and the carrier are never props.
+	distract_props.append({"id": "floorlamp", "name": "the floor lamp", "pivot": flamp_pivot, "base": o + Vector3(12, 0, -7), "stand": o + Vector3(10.7, 0, -8.2), "toppled": false, "anim_t": 1.0, "home_rot": flamp_pivot.rotation, "topple_rot": Vector3(0, 0, 1.3), "bubble": "The lamp! 💡", "cue": "crash"})
+	distract_props.append({"id": "tablelamp", "name": "the table lamp", "pivot": tlamp_pivot, "base": o + Vector3(12.3, 0, 4.6), "stand": o + Vector3(11.2, 0, 5.6), "toppled": false, "anim_t": 1.0, "home_rot": tlamp_pivot.rotation, "topple_rot": Vector3(-1.25, 0, 0), "bubble": "Careful — the lamp! 💡", "cue": "clatter"})
+	distract_props.append({"id": "mug", "name": "the mug", "pivot": mug_pivot, "base": o + Vector3(0.7, 0, 1.4), "stand": o + Vector3(0.2, 0, 2.9), "toppled": false, "anim_t": 1.0, "home_rot": mug_pivot.rotation, "topple_rot": Vector3(0, 0, 1.45), "bubble": "My tea! ☕", "cue": "clatter"})
+	distract_props.append({"id": "cushion", "name": "the cushion", "pivot": pillow_pivot, "base": o + Vector3(-2.3, 0, 5.2), "stand": o + Vector3(-2.3, 0, 6.0), "toppled": false, "anim_t": 1.0, "home_rot": pillow_pivot.rotation, "topple_rot": Vector3(0.35, 0.25, 0.95), "bubble": "The cushions! 🛋️", "cue": "thud"})
+	distract_props.append({"id": "fruitbowl", "name": "the fruit bowl", "pivot": fruit_pivot, "base": o + Vector3(12.8, 0, -2.2), "stand": o + Vector3(11.4, 0, -2.2), "toppled": false, "anim_t": 1.0, "home_rot": fruit_pivot.rotation, "topple_rot": Vector3(0, 0, 1.5), "bubble": "The fruit! 🍊", "cue": "clatter"})
+	distract_props.append({"id": "shoes", "name": "the shoes", "pivot": shoes_pivot, "base": o + Vector3(4.95, 0, -9.2), "stand": o + Vector3(4.95, 0, -8.1), "toppled": false, "anim_t": 1.0, "home_rot": shoes_pivot.rotation, "topple_rot": Vector3(-0.5, 0, 0.7), "bubble": "My shoes! 👟", "cue": "thud"})
+	distract_props.append({"id": "picture", "name": "the picture", "pivot": frame_pivot, "base": o + Vector3(-13.65, 0, 5.5), "stand": o + Vector3(-12.2, 0, 4.6), "toppled": false, "anim_t": 1.0, "home_rot": frame_pivot.rotation, "topple_rot": Vector3(0.45, 0, 0), "bubble": "The picture's crooked! 🖼️", "cue": "clatter"})
+	distract_props.append({"id": "bookstack", "name": "the book stack", "pivot": stack_pivot, "base": o + Vector3(-9, 0, -7.7), "stand": o + Vector3(-9, 0, -6.5), "toppled": false, "anim_t": 1.0, "home_rot": stack_pivot.rotation, "topple_rot": Vector3(1.15, 0, 0), "bubble": "The books! 📚", "cue": "clatter"})
+	distract_props.append({"id": "yarn", "name": "the ball of yarn", "pivot": yarn_pivot, "base": o + Vector3(5.5, 0, 7.8), "stand": o + Vector3(5.5, 0, 6.6), "toppled": false, "anim_t": 1.0, "home_rot": yarn_pivot.rotation, "topple_rot": Vector3(0, 0, 2.4), "bubble": "The yarn! 🧶", "cue": "thud"})
+	distract_props.append({"id": "sillplant", "name": "the little plant", "pivot": sill_pivot, "base": o + Vector3(-1.7, 0, -9.3), "stand": o + Vector3(-1.7, 0, -8.2), "toppled": false, "anim_t": 1.0, "home_rot": sill_pivot.rotation, "topple_rot": Vector3(0, 0, -1.3), "bubble": "Not the windowsill plant! 🌿", "cue": "clatter"})
+	distract_props.append({"id": "wastebasket", "name": "the wastebasket", "pivot": basket_pivot, "base": o + Vector3(11.6, 0, -8.7), "stand": o + Vector3(10.4, 0, -8.1), "toppled": false, "anim_t": 1.0, "home_rot": basket_pivot.rotation, "topple_rot": Vector3(0, 0, 1.6), "bubble": "The bin! 🗑️", "cue": "crash"})
+	distract_props.append({"id": "coatstand", "name": "the coat stand", "pivot": coatstand_pivot, "base": o + Vector3(12.7, 0, 8.7), "stand": o + Vector3(11.5, 0, 7.7), "toppled": false, "anim_t": 1.0, "home_rot": coatstand_pivot.rotation, "topple_rot": Vector3(-1.25, 0, 0), "bubble": "The coat stand! 🧥", "cue": "crash"})
+	distract_props.append({"id": "stool", "name": "the stool", "pivot": stool_pivot, "base": o + Vector3(10.7, 0, -5.8), "stand": o + Vector3(9.7, 0, -4.9), "toppled": false, "anim_t": 1.0, "home_rot": stool_pivot.rotation, "topple_rot": Vector3(0, 0, -1.5), "bubble": "The stool! 🪑", "cue": "crash"})
+	distract_props.append({"id": "wateringcan", "name": "the watering can", "pivot": can_pivot, "base": o + Vector3(-9.7, 0, -4.9), "stand": o + Vector3(-8.6, 0, -4.1), "toppled": false, "anim_t": 1.0, "home_rot": can_pivot.rotation, "topple_rot": Vector3(0, 0, -1.5), "bubble": "The watering can! 🌻", "cue": "clatter"})
+
+
+# ---------------------------------------------------------------- actors/camera
+
+
 # ---------------------------------------------------------------- escape room (3D interior at x≈200)
 func _build_escape_room() -> void:
 	var room := Node3D.new()
 	room.name = "EscapeRoom"
 	add_child(room)
+	shelter_room_node = room
 	var o: Vector3 = escape_origin
 	# --- Floor: pale institutional tile + a plain washable mat ---
 	# SHELTER REDESIGN (2026-11-18, Michael: "the pound is exactly
@@ -5129,20 +5856,24 @@ func _build_hud() -> void:
 	# v1.0.16: none of the gameplay HUD shows behind the splash or
 	# the title panel — it all appears when START is pressed.
 	_set_gameplay_hud_visible(false)
-	# The title panel is where the run's address is shown (start of
-	# the run only). The 3D tag's own face carries his NAME instead
-	# (see cat.set_tag_name, called from _spawn_player).
+	# v1.0.17 (Michael's direction): the title panel does NOT show
+	# the run's home address — it is generated internally (win
+	# condition, house numbering) but never displayed here. The 3D
+	# tag's own face carries his NAME instead (see cat.set_tag_name,
+	# called from _spawn_player).
 	# v1.0.8: the old in-play COLLAR check (button + camera zoom) is
 	# removed — under the new story the collar is lost before the
 	# pound, so there is no mid-run re-check any more.
-	title_panel = _make_panel(hud_layer, Vector2(240, 40), Vector2(800, 640), Color(0.09, 0.11, 0.2, 0.97))
+	title_panel = _make_panel(hud_layer, Vector2(240, 40), Vector2(800, 560), Color(0.09, 0.11, 0.2, 0.97))
 	# v0.7: centre the panel on the ACTUAL screen (was fixed at
 	# (240,40) of a 1280x720 design — off-centre on Michael's phone).
+	# v1.0.17: the panel is shorter now that the address block is
+	# gone (640 -> 560 tall); contents rebalanced below.
 	title_panel.set_anchors_preset(Control.PRESET_CENTER)
 	title_panel.offset_left = -400
 	title_panel.offset_right = 400
-	title_panel.offset_top = -320
-	title_panel.offset_bottom = 320
+	title_panel.offset_top = -280
+	title_panel.offset_bottom = 280
 	_hud_label(title_panel, "🐾  ZANDER'S RUN  🐾", Vector2(170, 18), 44)
 	# v1.0.16: the old pixel-art cat sprite is replaced by the new
 	# render art (Zander's face — the app icon art), bigger and
@@ -5162,22 +5893,21 @@ func _build_hud() -> void:
 	tag_tr.position = Vector2(420, 87); tag_tr.size = Vector2(220, 220)
 	tag_tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	title_panel.add_child(tag_tr)
-	_hud_label(title_panel, "Your collar tag says your home is:", Vector2(90, 326), 26)
-	var addr := _hud_label(title_panel, home_address, Vector2(30, 366), 38)
-	addr.label_settings.font_color = Color(1.0, 0.9, 0.45)
-	addr.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	addr.custom_minimum_size = Vector2(740, 55)
-	_hud_label(title_panel, "Memorise it! Find that house. Don't let kind people\ntake you home with them.", Vector2(70, 436), 23)
+	# v1.0.17: the "Your collar tag says your home is:" line and the
+	# gold address label are REMOVED (Michael's direction) — the
+	# panel now goes straight from the art row to the instructions,
+	# which no longer tell the player to memorise an address.
+	_hud_label(title_panel, "Find your way home — and don't let kind people\ntake you home with them.", Vector2(70, 344), 23)
 	var start_btn := Button.new()
 	start_btn.text = "▶  START  —  Find Home!"
-	start_btn.position = Vector2(200, 520)
+	start_btn.position = Vector2(200, 436)
 	start_btn.size = Vector2(400, 80)
 	start_btn.add_theme_font_size_override("font_size", 30)
 	start_btn.pressed.connect(start_game)
 	title_panel.add_child(start_btn)
 	# v1.0.10: subtle build tag so Michael can confirm which build
 	# he is running from the title screen itself.
-	var ver := _hud_label(title_panel, "v1.0.16", Vector2(706, 596), 16)
+	var ver := _hud_label(title_panel, "v1.0.17", Vector2(706, 522), 16)
 	ver.label_settings.font_color = Color(0.65, 0.7, 0.85)
 	win_panel = _make_panel(hud_layer, Vector2(290, 130), Vector2(700, 460), Color(0.12, 0.2, 0.12, 0.97))
 	win_panel.set_anchors_preset(Control.PRESET_CENTER)
@@ -6665,6 +7395,11 @@ func _enter_escape() -> void:
 	var ctype := "woman"
 	if captor and captor.get("npc_type") != null:
 		ctype = str(captor.get("npc_type"))
+	# v1.0.17 DESTINATION SPLIT: the pound is ONLY for the
+	# animal-control officer — a regular townsperson's capture goes
+	# to a HOUSE interior. Swap the active room before anything
+	# resets or themes it.
+	_activate_escape_room(captor != pound_worker)
 	escape_steps = _pick_escape_variant(ctype)
 	escape_step = 0
 	escape_prog = 0.0
@@ -7515,6 +8250,24 @@ func _complete_escape() -> void:
 		captor.global_position = capture_return_pos + Vector3(-4, 0.3, -2)
 		if pursuers.size() < 2:
 			pursuers[captor] = PURSUIT_DURATION
+			if captor == pound_worker:
+				# v1.0.17 POUND PURSUIT FIX (Michael's v1.0.15
+				# report: after escaping the pound the officer
+				# just walked in place and never came after
+				# him). A person's brain is gated by its
+				# `active` flag, and for the worker only the
+				# van state machine ever sets it — while he is
+				# the captor that machine sits in "away"
+				# (hands-off), and on the opening's capture
+				# path he was never switched on at all. So the
+				# pursuit below set his mode to "pursue" while
+				# his physics returned early every frame and
+				# his body never moved. Switch him on as the
+				# pursuit begins, exactly as his chase states
+				# do; when the pursuit timer drains, the
+				# existing drain hands him back to "return"
+				# and then the patrol.
+				pound_worker.set("active", true)
 			captor.call("start_pursuit")
 	show_message("You escaped! +3 points 💛 They'll look for you for 30 seconds — hide in bushes or behind cars!", 4.0)
 

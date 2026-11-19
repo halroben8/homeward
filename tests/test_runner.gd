@@ -214,6 +214,19 @@ func run_tests() -> void:
 	check("splash panel full-rect anchors", sp.anchor_right == 1.0 and sp.anchor_bottom == 1.0, "%s/%s" % [sp.anchor_right, sp.anchor_bottom])
 	var tp: Control = main.get("title_panel")
 	check("title panel centred anchors", tp.anchor_left == 0.5 and tp.anchor_top == 0.5, "%s/%s" % [tp.anchor_left, tp.anchor_top])
+	# v1.0.17 (Michael's direction): the title panel must NOT show
+	# the home address — no label carrying the address text and no
+	# "collar tag says" line. The address still exists internally.
+	var tp_addr_shown: bool = false
+	var tp_stack: Array = [tp]
+	while not tp_stack.is_empty():
+		var tn: Node = tp_stack.pop_back()
+		for tc in tn.get_children():
+			tp_stack.append(tc)
+		var tlab := tn as Label
+		if tlab and (tlab.text == str(main.get("home_address")) or tlab.text.contains("collar tag says")):
+			tp_addr_shown = true
+	check("v1.0.17: title panel does NOT show the home address (still generated internally)", not tp_addr_shown and str(main.get("home_address")) != "", "addr='" + str(main.get("home_address")) + "' shown=" + str(tp_addr_shown))
 	# score values (v0.6 rules retained)
 	main.set("score", 100)
 	main.call("on_pet", null)
@@ -261,6 +274,7 @@ func run_tests() -> void:
 	story_mod.call("skip_opening")
 	check("STORY: the skip lands in the pound escape room", str(main.get("state")) == "escape", str(main.get("state")))
 	check("STORY: the skip's captor is the pound worker", main.get("captor") == main.get("pound_worker"))
+	check("v1.0.17: the officer's capture lands in the SHELTER (not the house)", not bool(main.get("escape_room_is_house")) and (main.get("ward_cages") as Array).size() >= 10, "is_house=" + str(main.get("escape_room_is_house")) + " ward=" + str((main.get("ward_cages") as Array).size()))
 	await wait_sec(0.4)
 	check("STORY: pound start = the cat is in the little cage", bool(story_mod.get("cage_closed")) and bool(story_mod.call("cat_in_cage")))
 	check("STORY: the collar is off, lying where it fell, its tag printed with his name (Zander — not the address)", not bool(player.call("is_collar_visible")) and story_mod.get("dropped_collar") != null and str(story_mod.call("dropped_tag_text")) == "Zander", str(story_mod.call("dropped_tag_text")))
@@ -280,6 +294,18 @@ func run_tests() -> void:
 	# Tidy up: end his pursuit so the sections below run
 	# undisturbed, and park him back on patrol (held off below).
 	var story_worker: Node = main.get("pound_worker")
+	# v1.0.17 FIX 2 PROOF: the pursuit must MOVE him — on the old
+	# code his brain was never switched on for the opening's
+	# capture (active stayed false), so he ran in place forever.
+	# Give him open ground and sample him on the real clock.
+	var sw0: Vector3 = (story_worker as Node3D).global_position
+	(player as Node3D).global_position = sw0 + Vector3(11.0, 0.3, 0.0)
+	var sd0: float = sw0.distance_to((player as Node3D).global_position)
+	await wait_sec(1.2)
+	var sw1: Vector3 = (story_worker as Node3D).global_position
+	var sd1: float = sw1.distance_to((player as Node3D).global_position)
+	check("v1.0.17: after a pound escape the officer MOVES in pursuit (displaced, closing)", sw0.distance_to(sw1) > 1.5 and sd1 < sd0 - 1.0, "disp=" + str(sw0.distance_to(sw1)) + " dist " + str(sd0) + "->" + str(sd1))
+	check("v1.0.17: the pursuing officer's brain is on (active)", bool(story_worker.get("active")))
 	story_worker.call("stop_pursuit")
 	(main.get("pursuers") as Dictionary).erase(story_worker)
 	main.set("pound_engage_cd", 99999.0) # set BEFORE patrol resumes: the deposit spot is inside his spot radius
@@ -1013,6 +1039,14 @@ func run_tests() -> void:
 	main.set("captor", woman)
 	main.call("_enter_escape")
 	check("escape state entered", str(main.get("state")) == "escape", str(main.get("state")))
+	# v1.0.17 DESTINATION SPLIT: a regular townsperson's capture is
+	# a HOUSE escape — the house room is the active one, there are
+	# no ward cages in it, and its knock-overs are the house ones.
+	check("v1.0.17: a regular capture lands in the HOUSE (not the pound)", bool(main.get("escape_room_is_house")) and (main.get("ward_cages") as Array).is_empty(), "is_house=" + str(main.get("escape_room_is_house")) + " ward=" + str((main.get("ward_cages") as Array).size()))
+	var house_names: Array = []
+	for hp in main.get("distract_props"):
+		house_names.append(str(hp["name"]))
+	check("v1.0.17: the house knock-overs are the plant, the book and the vase", house_names.has("the plant") and house_names.has("the book") and house_names.has("the vase"), str(house_names.slice(0, 3)))
 	var kinds: Array = main.call("current_escape_kinds")
 	check("v1.4: this capture's escape is the BACK DOOR only", kinds == ["bolt"], str(kinds))
 	# drive the DOOR mechanism end-to-end, exactly as picked (no
@@ -1151,7 +1185,10 @@ func run_tests() -> void:
 	# Every freeable cage starts with its animal home and visible;
 	# a PAW at a gate opens it (+5, once per cage), the animal RUNS
 	# out and is gone; re-entering the room resets the whole ward.
-	main.set("captor", woman)
+	# v1.0.17: the ward is the POUND's — this section now enters as
+	# the officer's capture (a regular capture goes to a house,
+	# where there are no cages to free; breakout stays shelter-only).
+	main.set("captor", main.get("pound_worker"))
 	main.call("_enter_escape")
 	var ward: Array = main.get("ward_cages")
 	check("ward: the freeable cages are registered (runs + stacked bank)", ward.size() >= 10, str(ward.size()))
@@ -1431,6 +1468,7 @@ func run_tests() -> void:
 	drive_escape_panel()
 	walk_cat_out()
 	check("pound van: the escape completes and HE is the pursuer", str(main.get("state")) == "play" and (main.get("pursuers") as Dictionary).has(pworker), str(main.get("state")))
+	check("v1.0.17: the pursuing officer's brain is on (active) after a pound escape", bool(pworker.get("active")))
 	main.call("_process", 30.1) # drain his pursuit
 	check("pound van: pursuit over -> he heads back to the van", str(main.get("pound_state")) == "return", str(main.get("pound_state")))
 	(player as Node3D).global_position = Vector3(-100, 0.2, 80) # the player runs off home-free; he just goes back to work
