@@ -527,7 +527,30 @@ var music: AudioStreamPlayer
 var splash_song_player: AudioStreamPlayer = null
 
 # ---------------------------------------------------------------- materials/helpers
+# v1.0.28 PERF (Michael: "compress and preload as much as possible
+# so it runs smoothly on my S26 with no jankiness"): the town is
+# built from ~14k box/sphere/cylinder parts, and every helper below
+# used to mint a BRAND-NEW mesh and material for every single part —
+# thousands of duplicate GPU resources, a long allocation-heavy
+# build, and steady memory/GC pressure in play. Materials and
+# primitive meshes are now cached and shared by their parameters
+# (the same pattern person.gd already used for its materials).
+# Nothing about the rendered result changes: same colours, same
+# sizes, same surfaces — one resource where there used to be
+# hundreds of identical copies. (Verified safe: no code anywhere
+# mutates a material or primitive mesh in place after a helper
+# returns it; per-instance changes always replace material_override.)
+var _mat_cache: Dictionary = {}
+var _mat_tex_cache: Dictionary = {}
+var _glass_mat_cache: Dictionary = {}
+var _box_mesh_cache: Dictionary = {}
+var _cyl_mesh_cache: Dictionary = {}
+var _unit_sphere_mesh: SphereMesh = null
+
 func _mat(c: Color, rough: float = 0.9, emission: float = 0.0) -> StandardMaterial3D:
+	var key: String = str(c) + "|" + str(rough) + "|" + str(emission)
+	if _mat_cache.has(key):
+		return _mat_cache[key]
 	var m := StandardMaterial3D.new()
 	m.albedo_color = c
 	m.roughness = rough
@@ -535,10 +558,14 @@ func _mat(c: Color, rough: float = 0.9, emission: float = 0.0) -> StandardMateri
 		m.emission_enabled = true
 		m.emission = c
 		m.emission_energy_multiplier = emission
+	_mat_cache[key] = m
 	return m
 
 
 func _mat_tex(tex: Texture2D, tint: Color = Color.WHITE, uv: Vector3 = Vector3(1, 1, 1), rough: float = 0.94) -> StandardMaterial3D:
+	var key: String = str(tex) + "|" + str(tint) + "|" + str(uv) + "|" + str(rough)
+	if _mat_tex_cache.has(key):
+		return _mat_tex_cache[key]
 	var m := StandardMaterial3D.new()
 	m.albedo_texture = tex
 	m.albedo_color = tint
@@ -552,6 +579,7 @@ func _mat_tex(tex: Texture2D, tint: Color = Color.WHITE, uv: Vector3 = Vector3(1
 		m.normal_enabled = true
 		m.normal_texture = nd[0]
 		m.normal_scale = float(nd[1])
+	_mat_tex_cache[key] = m
 	return m
 
 # SHELTER WARD: chain-link mesh — one shared diamond-weave alpha
@@ -606,6 +634,11 @@ func _glass(parent: Node, pos: Vector3, size: Vector3, col: Color, em: float) ->
 	# and sun like real glass, keeping a whisper of warm emission
 	# so lit windows still read as "someone's home".
 	var mi := _box(parent, pos, size, col)
+	# v1.0.28 PERF: glass materials shared by (colour, emission).
+	var gkey: String = str(col) + "|" + str(em)
+	if _glass_mat_cache.has(gkey):
+		mi.material_override = _glass_mat_cache[gkey]
+		return mi
 	var m := StandardMaterial3D.new()
 	m.albedo_color = col
 	m.roughness = 0.12
@@ -614,6 +647,7 @@ func _glass(parent: Node, pos: Vector3, size: Vector3, col: Color, em: float) ->
 		m.emission_enabled = true
 		m.emission = col
 		m.emission_energy_multiplier = em * 0.75
+	_glass_mat_cache[gkey] = m
 	mi.material_override = m
 	return mi
 
@@ -640,11 +674,19 @@ func _box_tex(parent: Node, pos: Vector3, size: Vector3, tex: Texture2D, tint: C
 	mi.material_override = _mat_tex(tex, tint, uv)
 	return mi
 
-func _box(parent: Node, pos: Vector3, size: Vector3, c: Color, collide: bool = false, emission: float = 0.0) -> MeshInstance3D:
-	var mi := MeshInstance3D.new()
+func _box_mesh_for(size: Vector3) -> BoxMesh:
+	# v1.0.28 PERF: one BoxMesh per distinct size, shared town-wide.
+	var key: String = str(size)
+	if _box_mesh_cache.has(key):
+		return _box_mesh_cache[key]
 	var bm := BoxMesh.new()
 	bm.size = size
-	mi.mesh = bm
+	_box_mesh_cache[key] = bm
+	return bm
+
+func _box(parent: Node, pos: Vector3, size: Vector3, c: Color, collide: bool = false, emission: float = 0.0) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	mi.mesh = _box_mesh_for(size)
 	mi.position = pos
 	mi.material_override = _mat(c, 0.9, emission)
 	parent.add_child(mi)
@@ -660,9 +702,7 @@ func _make_blocker(parent: Node, pos: Vector3, size: Vector3) -> StaticBody3D:
 	body.position = pos
 	var cs := CollisionShape3D.new()
 	cs.name = "CS"
-	var shape := BoxShape3D.new()
-	shape.size = size
-	cs.shape = shape
+	cs.shape = _box_shape_for(size) # v1.0.28 PERF: shared shape (the CS toggle is per-node, not per-shape)
 	body.add_child(cs)
 	parent.add_child(body)
 	return body
@@ -676,12 +716,16 @@ func _set_blocker(body: StaticBody3D, blocked: bool) -> void:
 
 func _sphere(parent: Node, pos: Vector3, scl: Vector3, c: Color) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
-	var sm := SphereMesh.new()
-	sm.radius = 0.5
-	sm.height = 1.0
-	sm.radial_segments = 24
-	sm.rings = 14
-	mi.mesh = sm
+	# v1.0.28 PERF: every sphere in the game is the same unit sphere
+	# scaled by the node — share the one mesh.
+	if _unit_sphere_mesh == null:
+		var sm := SphereMesh.new()
+		sm.radius = 0.5
+		sm.height = 1.0
+		sm.radial_segments = 24
+		sm.rings = 14
+		_unit_sphere_mesh = sm
+	mi.mesh = _unit_sphere_mesh
 	mi.position = pos
 	mi.scale = scl
 	mi.material_override = _mat(c)
@@ -690,32 +734,56 @@ func _sphere(parent: Node, pos: Vector3, scl: Vector3, c: Color) -> MeshInstance
 
 func _cyl(parent: Node, pos: Vector3, r_top: float, r_bot: float, h: float, c: Color, collide: bool = false) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
-	var cm := CylinderMesh.new()
-	cm.top_radius = r_top
-	cm.bottom_radius = r_bot
-	cm.height = h
-	cm.radial_segments = 18
-	mi.mesh = cm
+	# v1.0.28 PERF: cylinder meshes shared by (radii, height).
+	var ckey: String = str(r_top) + "|" + str(r_bot) + "|" + str(h)
+	if _cyl_mesh_cache.has(ckey):
+		mi.mesh = _cyl_mesh_cache[ckey]
+	else:
+		var cm := CylinderMesh.new()
+		cm.top_radius = r_top
+		cm.bottom_radius = r_bot
+		cm.height = h
+		cm.radial_segments = 18
+		_cyl_mesh_cache[ckey] = cm
+		mi.mesh = cm
 	mi.position = pos
 	mi.material_override = _mat(c)
 	parent.add_child(mi)
 	if collide:
 		var body := StaticBody3D.new()
 		var cs := CollisionShape3D.new()
-		var shape := CylinderShape3D.new()
-		shape.radius = r_bot
-		shape.height = h
-		cs.shape = shape
+		# v1.0.28 PERF: cylinder shapes shared by (radius, height).
+		var skey: String = "cyl|" + str(r_bot) + "|" + str(h)
+		if _box_shape_cache.has(skey):
+			cs.shape = _box_shape_cache[skey]
+		else:
+			var shape := CylinderShape3D.new()
+			shape.radius = r_bot
+			shape.height = h
+			_box_shape_cache[skey] = shape
+			cs.shape = shape
 		body.add_child(cs)
 		mi.add_child(body)
 	return mi
 
+var _box_shape_cache: Dictionary = {}
+
+func _box_shape_for(size: Vector3) -> BoxShape3D:
+	# v1.0.28 PERF: collision shapes shared by size as well — a
+	# shape resource is read-only in play, so 1,000+ identical wall
+	# boxes never needed 1,000+ identical shapes.
+	var key: String = str(size)
+	if _box_shape_cache.has(key):
+		return _box_shape_cache[key]
+	var shape := BoxShape3D.new()
+	shape.size = size
+	_box_shape_cache[key] = shape
+	return shape
+
 func _add_static(mi: MeshInstance3D, size: Vector3) -> void:
 	var body := StaticBody3D.new()
 	var cs := CollisionShape3D.new()
-	var shape := BoxShape3D.new()
-	shape.size = size
-	cs.shape = shape
+	cs.shape = _box_shape_for(size)
 	body.add_child(cs)
 	mi.add_child(body)
 
@@ -804,6 +872,7 @@ func _grass_tuft(parent: Node, pos: Vector3, seed_i: int) -> void:
 		blade.material_override = _mat(cols[(bi + seed_i) % 3])
 		parent.add_child(blade)
 		blade.rotation_degrees = Vector3((float(bi) - 1.0) * 9.0, 0, (float((bi * 2 + seed_i) % 3) - 1.0) * 9.0)
+		blade.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF # v1.0.28 PERF: a 9cm grass blade's shadow is sub-pixel at the dusk sun angle — don't pay shadow-pass cost for thousands of them
 
 # --- v1.0 step 2 GROUND DETAIL (MultiMesh) ---------------------------
 # Thousands of individual 3D grass blades + tiny wildflowers, each
@@ -7151,7 +7220,7 @@ func _build_hud() -> void:
 	title_panel.add_child(start_btn)
 	# v1.0.10: subtle build tag so Michael can confirm which build
 	# he is running from the title screen itself.
-	var ver := _hud_label(title_panel, "v1.0.27", Vector2(706, 522), 16)
+	var ver := _hud_label(title_panel, "v1.0.28", Vector2(706, 522), 16)
 	ver.label_settings.font_color = Color(0.78, 0.83, 0.95)
 	win_panel = _make_panel(hud_layer, Vector2(290, 130), Vector2(700, 460), Color(0.12, 0.2, 0.12, 0.97))
 	win_panel.set_anchors_preset(Control.PRESET_CENTER)

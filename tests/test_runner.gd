@@ -2316,7 +2316,7 @@ func run_tests() -> void:
 				v23_start_ok = true
 			if tc is Label:
 				var lt: String = (tc as Label).text
-				if lt == "v1.0.27":
+				if lt == "v1.0.28":
 					v23_ver_ok = true
 				if lt.contains("Crescent") or lt.contains("Avenue") or lt.contains("Street") or lt.contains("Drive"):
 					v23_addr_leak = true
@@ -2341,7 +2341,7 @@ func run_tests() -> void:
 		if str(p).ends_with("start_btn.png"):
 			v23_has_pill = true
 	check("v1.0.23 title: START wears the gradient pill", v23_start_ok and v23_has_pill, str(v23_tex_paths))
-	check("v1.0.23 title: version tag reads v1.0.27 and NO address is shown", v23_ver_ok and not v23_addr_leak)
+	check("v1.0.23 title: version tag reads v1.0.28 and NO address is shown", v23_ver_ok and not v23_addr_leak)
 
 	# ---------- v1.0.24: ONE TAP = ONE COMBO STEP (Michael's v1.0.22 play report) ----------
 	# "I hit B once and multiple Bs were hit… then when I hit A it

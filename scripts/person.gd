@@ -288,11 +288,22 @@ func _mat_skin(c: Color) -> StandardMaterial3D:
 func _mat_fabric(c: Color) -> StandardMaterial3D:
 	return _mat_cached("fabric", c, 0.92)
 
+# v1.0.28 PERF: primitive meshes shared across all neighbours,
+# matching the material cache below (and main3d's new caches).
+static var _box_mesh_cache: Dictionary = {}
+static var _cyl_mesh_cache: Dictionary = {}
+static var _unit_sphere_mesh: SphereMesh = null
+
 func _box(parent: Node, pos: Vector3, size: Vector3, c: Color) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = size
-	mi.mesh = bm
+	var bkey: String = str(size)
+	if _box_mesh_cache.has(bkey):
+		mi.mesh = _box_mesh_cache[bkey]
+	else:
+		var bm := BoxMesh.new()
+		bm.size = size
+		_box_mesh_cache[bkey] = bm
+		mi.mesh = bm
 	mi.position = pos
 	mi.material_override = _mat(c)
 	parent.add_child(mi)
@@ -300,12 +311,14 @@ func _box(parent: Node, pos: Vector3, size: Vector3, c: Color) -> MeshInstance3D
 
 func _sphere(parent: Node, pos: Vector3, scl: Vector3, c: Color) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
-	var sm := SphereMesh.new()
-	sm.radius = 0.5
-	sm.height = 1.0
-	sm.radial_segments = 30
-	sm.rings = 18
-	mi.mesh = sm
+	if _unit_sphere_mesh == null:
+		var sm := SphereMesh.new()
+		sm.radius = 0.5
+		sm.height = 1.0
+		sm.radial_segments = 30
+		sm.rings = 18
+		_unit_sphere_mesh = sm
+	mi.mesh = _unit_sphere_mesh
 	mi.position = pos
 	mi.scale = scl
 	mi.material_override = _mat(c)
@@ -314,12 +327,17 @@ func _sphere(parent: Node, pos: Vector3, scl: Vector3, c: Color) -> MeshInstance
 
 func _cyl(parent: Node, pos: Vector3, r_top: float, r_bot: float, h: float, c: Color) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
-	var cm := CylinderMesh.new()
-	cm.top_radius = r_top
-	cm.bottom_radius = r_bot
-	cm.height = h
-	cm.radial_segments = 16
-	mi.mesh = cm
+	var ckey: String = str(r_top) + "|" + str(r_bot) + "|" + str(h)
+	if _cyl_mesh_cache.has(ckey):
+		mi.mesh = _cyl_mesh_cache[ckey]
+	else:
+		var cm := CylinderMesh.new()
+		cm.top_radius = r_top
+		cm.bottom_radius = r_bot
+		cm.height = h
+		cm.radial_segments = 16
+		_cyl_mesh_cache[ckey] = cm
+		mi.mesh = cm
 	mi.position = pos
 	mi.material_override = _mat(c)
 	parent.add_child(mi)

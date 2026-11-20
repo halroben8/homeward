@@ -27,7 +27,14 @@ window/handheld/orientation="landscape"
 [physics]
 
 common/physics_ticks_per_second=120
-common/max_physics_steps_per_frame=4
+; v1.0.28 PERF: was 4 — at 120 ticks/s that only covers frame rates
+; down to 30 fps. Below that the physics clock ran out of steps and
+; physics-driven movement (the cat, neighbours, the opening's
+; stroll) fell behind real time: the "slow motion" cutscene and
+; the smooth-then-slows feel Michael reported on his S26. 8 steps
+; covers dips to 15 fps; the throttled NPC brains keep the extra
+; steps cheap, and the spiral-of-death ceiling is still bounded.
+common/max_physics_steps_per_frame=8
 
 [rendering]
 
