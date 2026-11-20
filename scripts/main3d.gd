@@ -70,6 +70,8 @@ const OpeningCutsceneScript: GDScript = preload("res://scripts/opening_cutscene.
 var state: String = "splash" # splash | title | play | taken | escape | win
 var rng := RandomNumberGenerator.new()
 var houses: Array = [] # {address, pos:Vector3, door:Vector3}
+var civic_lots: Array = [] # v1.0.29: {model, pos, facing, hx, hz} — Meshy civic/commercial buildings placed on converted house lots
+var building_footprints: Array = [] # v1.0.29: {pos, hx, hz} rects for every Meshy building (civic lots + the bakery), used by the footprint queries
 var home_index: int = 0
 var home_address: String = ""
 var player: CharacterBody3D = null
@@ -991,6 +993,11 @@ func _ground_spot_blocked(p: Vector3) -> bool:
 	for hh in houses:
 		if p.distance_to(hh["pos"]) < 8.6:
 			return true
+	for cl in civic_lots: # v1.0.29: no ground scatter inside the Meshy civic buildings either
+		if p.distance_to(cl["pos"]) < 9.6:
+			return true
+	if p.distance_to(Vector3(62, 0, -4)) < 7.5:
+		return true # v1.0.29: the Meshy bakery's footprint
 	if p.distance_to(Vector3(2, 0, -2)) < 5.0:
 		return true # spawn clearing
 	if p.distance_to(Vector3(-44, 0, 26)) < 4.5:
@@ -1805,6 +1812,72 @@ func _define_houses() -> void:
 			face = float(entry[2]) # v0.9 rows carry explicit facing
 		var door: Vector3 = p + Vector3(0, 0, 4.6 * face)
 		houses.append({"address": entry[0], "pos": p, "door": door, "facing": face})
+	# v1.0.29: eleven house lots convert to the Meshy civic /
+	# commercial buildings (each civic model appears exactly once).
+	# The remaining houses are re-sequenced per street row so the
+	# numbers stay clean and sequential, and each house lot gets one
+	# of the seven Meshy house models — never the same model on two
+	# adjacent lots along a street (see _assign_house_models).
+	var kept: Array = []
+	civic_lots.clear()
+	for h in houses:
+		var key: String = "%d,%d" % [int(h["pos"].x), int(h["pos"].z)]
+		if CIVIC_CONVERSIONS.has(key):
+			civic_lots.append({"model": String(CIVIC_CONVERSIONS[key]), "pos": h["pos"], "facing": h["facing"], "hx": 0.0, "hz": 0.0})
+		else:
+			kept.append(h)
+	houses = kept
+	_renumber_houses()
+	_assign_house_models()
+
+# v1.0.29: re-sequence house numbers along each street row (W->E),
+# keeping the odd-north / even-south parity and the ", Apartment X"
+# suffix attached to its lot. Steps of 6 match the historic spacing.
+func _renumber_houses() -> void:
+	var starts: Dictionary = {"Maple Street|1": 3, "Oak Avenue|1": 7, "Oak Avenue|-1": 4, "Elm Drive|1": 5, "Elm Drive|-1": 6, "Willow Crescent|1": 5, "Willow Crescent|-1": 6}
+	var rows: Dictionary = {}
+	for h in houses:
+		var addr: String = h["address"]
+		var suffix: String = ""
+		var ci: int = addr.find(",")
+		if ci >= 0:
+			suffix = addr.substr(ci)
+			addr = addr.left(ci)
+		var sp: int = addr.find(" ")
+		var street: String = addr.substr(sp + 1)
+		h["suffix"] = suffix
+		h["street"] = street
+		var rk: String = street + "|" + str(int(h["facing"]))
+		if not rows.has(rk):
+			rows[rk] = []
+		rows[rk].append(h)
+	for rk in rows.keys():
+		var row: Array = rows[rk]
+		row.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a["pos"].x < b["pos"].x)
+		var n: int = int(starts.get(rk, 3))
+		for h in row:
+			h["address"] = str(n) + " " + h["street"] + h["suffix"]
+			h["plaque"] = str(n)
+			n += 6
+
+# v1.0.29: assign the Meshy house models along each street row.
+# Stepping by 2 through a 7-model cycle guarantees no two adjacent
+# lots share a model; the per-row offsets were chosen so lots that
+# FACE each other across a street (nearly the same x, opposite
+# rows) don't share one either.
+func _assign_house_models() -> void:
+	var rows: Dictionary = {}
+	for h in houses:
+		var rk: String = h["street"] + "|" + str(int(h["facing"]))
+		if not rows.has(rk):
+			rows[rk] = []
+		rows[rk].append(h)
+	for rk in rows.keys():
+		var row: Array = rows[rk]
+		row.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a["pos"].x < b["pos"].x)
+		var off: int = int(HOUSE_ROW_OFFSETS.get(rk, 0))
+		for i in range(row.size()):
+			row[i]["model"] = HOUSE_MODEL_SEQ[(off + 2 * i) % HOUSE_MODEL_SEQ.size()]
 
 # ---------------------------------------------------------------- environment/audio
 func _build_environment() -> void:
@@ -2466,6 +2539,10 @@ func _build_world() -> void:
 			_boot_write_marker("Placing houses — %d/%d" % [i + 1, houses.size()])
 			_boot_log("Placing houses — %d/%d" % [i + 1, houses.size()])
 		await _build_tick()
+	# v1.0.29: the Meshy civic/commercial buildings on the lots
+	# converted in _define_houses (school, library, stations...).
+	_build_civic_buildings(world)
+	await _build_tick()
 	await _set_boot_stage("Street trees", 56) # v1.0.12 readout: this block hid under "Placing houses" with no stage of its own
 	var street_trees_planted: int = 0
 	# v0.9 STREET TREES: one shade tree in every wide gap between
@@ -2592,12 +2669,12 @@ func _build_world() -> void:
 	# moving traffic. Audit: tests/StreetsProbe.tscn (0 on asphalt,
 	# also asserted in the test suite).
 	await _build_tick()
-	var house_by_addr: Dictionary = {}
+	var house_by_pos: Dictionary = {}
 	for hh in houses:
-		house_by_addr[str(hh["address"])] = hh
+		house_by_pos["%d,%d" % [int(hh["pos"].x), int(hh["pos"].z)]] = hh
 	var driveway_data: Array = _driveway_data() # v1.0.27: shared with _compute_driveway_pads (see _park_in_driveway)
 	for dd in driveway_data:
-		var dh: Dictionary = house_by_addr[dd[0]]
+		var dh: Dictionary = house_by_pos["%d,%d" % [int((dd[0] as Vector3).x), int((dd[0] as Vector3).z)]]
 		var dpos: Vector3 = _park_in_driveway(world, dh["pos"], float(dh["facing"]), float(dd[2]), float(dd[1]), dd[3], dd[4])
 		hide_points.append(dpos)
 		await _build_tick()
@@ -3435,7 +3512,16 @@ func _build_town_fill(world: Node3D, srng: RandomNumberGenerator) -> void:
 	await _build_tick()
 	await _build_tick() # v1.0.11 chunking: sub-section boundary
 	# ============ RIVERSIDE corner shops + lot (Birch/Riverside, Maple/Oak)
-	_fill_building(world, Vector3(62, 0, -4), Vector3(6, 3.6, 5), Color(0.97, 0.9, 0.78), Color(0.65, 0.4, 0.3), "BAKERY", 180.0)
+	# v1.0.29: the code-built bakery is replaced by the Meshy bakery
+	# model (its one appearance in town), front facing the parking
+	# lot and Maple Avenue; footprint registered like the civics.
+	content_points.append(Vector3(62, 0, -4)) # v0.9 empty-area audit
+	var bg := Node3D.new()
+	bg.name = "Civic_bakery"
+	bg.position = Vector3(62, 0, -4)
+	world.add_child(bg)
+	var bdims: Dictionary = _place_building_model(bg, "bakery", 1.0)
+	building_footprints.append({"pos": Vector3(62, 0, -4), "hx": float(bdims["w"]) * 0.5, "hz": float(bdims["d"]) * 0.5})
 	await _fill_parking(world, Vector3(62, 0, 6.5), 9.0, 4.4, [Color(0.8, 0.3, 0.28)], "sedan")
 	_fill_lamp(world, Vector3(66, 0, 2.5))
 	await _build_tick()
@@ -3663,15 +3749,144 @@ func _sign(parent: Node, text: String, pos: Vector3, street: String = "", rot_de
 	_label3d_flat(g, text, Vector3(0, 3.75, 0.078), 100, Color.WHITE, 0.0, ps)
 	_label3d_flat(g, text, Vector3(0, 3.75, -0.078), 100, Color.WHITE, 180.0, ps)
 
+# --- v1.0.29: Meshy building models -------------------------------------
+# Every building in town is now one of the slimmed Meshy GLBs under
+# assets/models/buildings/ (1024px textures, ~1 MB each). Per model:
+# "yaw" — the extra rotation that turns the model's own front (the
+# door / signage face, identified from 4-face renders checked
+# against the reference photos) to +Z before the lot's facing is
+# applied; "tw" / "td" — the target footprint in metres the model
+# is uniformly scaled to fit; "hcap" — a height cap so the tall
+# narrow models don't tower over the street.
+const BUILDING_MODELS: Dictionary = {
+	"school": {"yaw": 0.0, "tw": 11.2, "td": 8.6, "hcap": 9.5},
+	"elementary_school": {"yaw": 0.0, "tw": 11.2, "td": 8.2, "hcap": 9.5},
+	"library": {"yaw": 0.0, "tw": 9.6, "td": 8.4, "hcap": 8.5},
+	"police_station": {"yaw": 0.0, "tw": 9.4, "td": 8.4, "hcap": 8.0},
+	"fire_station": {"yaw": 90.0, "tw": 10.4, "td": 8.4, "hcap": 8.6},
+	"diner": {"yaw": 0.0, "tw": 9.4, "td": 7.8, "hcap": 8.0},
+	"corner_store": {"yaw": 0.0, "tw": 9.4, "td": 8.2, "hcap": 8.6},
+	"bistro": {"yaw": 0.0, "tw": 9.2, "td": 8.2, "hcap": 9.0},
+	"corner_cafe": {"yaw": 0.0, "tw": 9.2, "td": 8.4, "hcap": 8.4},
+	"corner_cafe_2": {"yaw": 90.0, "tw": 9.0, "td": 7.6, "hcap": 8.6},
+	"apartment_block": {"yaw": 90.0, "tw": 10.2, "td": 8.4, "hcap": 12.5},
+	"bakery": {"yaw": 0.0, "tw": 6.8, "td": 5.0, "hcap": 7.0},
+	"house_modern": {"yaw": -90.0, "tw": 8.6, "td": 7.6, "hcap": 8.4},
+	"house_red": {"yaw": 0.0, "tw": 8.6, "td": 7.6, "hcap": 8.4},
+	"house_blue": {"yaw": 0.0, "tw": 8.6, "td": 7.6, "hcap": 8.4},
+	"house_beige": {"yaw": 0.0, "tw": 8.6, "td": 7.6, "hcap": 8.4},
+	"house_white_tall": {"yaw": 0.0, "tw": 8.6, "td": 7.6, "hcap": 8.4},
+	"house_blue_bungalow": {"yaw": 0.0, "tw": 8.6, "td": 7.6, "hcap": 8.4},
+	"house_cream_balcony": {"yaw": 0.0, "tw": 8.6, "td": 7.6, "hcap": 8.4},
+}
+const HOUSE_MODEL_SEQ: Array = ["house_modern", "house_red", "house_blue", "house_beige", "house_white_tall", "house_blue_bungalow", "house_cream_balcony"]
+# Per street-row offsets into HOUSE_MODEL_SEQ for _assign_house_
+# models (keyed "street|facing"). With the step of 2, usage across
+# the legacy town is 4-5 lots per model and no cross-street facing
+# pair shares a model either.
+const HOUSE_ROW_OFFSETS: Dictionary = {"Maple Street|1": 0, "Oak Avenue|1": 0, "Oak Avenue|-1": 0, "Elm Drive|1": 3, "Elm Drive|-1": 4, "Willow Crescent|1": 1, "Willow Crescent|-1": 2}
+# House lots converted to civic/commercial buildings, keyed by
+# "x,z" of the lot position. Michael's placement rules (2026-11-
+# 20): every civic model appears EXACTLY ONCE in town — this table
+# plus the bakery's fixed site in _build_town_fill is the whole
+# civic set, and the suite audits it.
+const CIVIC_CONVERSIONS: Dictionary = {
+	"-6,-30": "school", "8,-30": "elementary_school",
+	"-98,2": "corner_store", "-42,2": "diner", "-6,2": "apartment_block",
+	"-112,33": "fire_station", "-56,33": "corner_cafe", "-42,33": "police_station",
+	"-2,-66": "library", "44,-66": "corner_cafe_2",
+	"2,44": "bistro",
+}
+
+var _building_aabbs: Dictionary = {} # model name -> local AABB, measured once per model
+
+func _building_aabb(model: String) -> AABB:
+	if _building_aabbs.has(model):
+		return _building_aabbs[model]
+	var inst: Node3D = (load("res://assets/models/buildings/" + model + ".glb") as PackedScene).instantiate()
+	var state: Array = [false]
+	var box: AABB = _measure_aabb(inst, Transform3D.IDENTITY, AABB(), state)
+	inst.free()
+	_building_aabbs[model] = box
+	return box
+
+func _measure_aabb(n: Node, xf: Transform3D, box: AABB, state: Array) -> AABB:
+	if n is Node3D:
+		xf = xf * (n as Node3D).transform
+	if n is MeshInstance3D and (n as MeshInstance3D).mesh != null:
+		var lb: AABB = xf * (n as MeshInstance3D).get_aabb()
+		if state[0]:
+			box = box.merge(lb)
+		else:
+			box = lb
+			state[0] = true
+	for c in n.get_children():
+		box = _measure_aabb(c, xf, box, state)
+	return box
+
+# Instance a Meshy building model into group g: front facing the
+# lot's street, base resting on the ground, AABB centred on the
+# lot, uniformly scaled to the model's target footprint, plus a
+# static box collision matching the footprint so the cat and the
+# neighbours can't walk through the walls. Returns the placed
+# size {"w", "d", "h"} in metres.
+func _place_building_model(g: Node3D, model: String, facing: float) -> Dictionary:
+	var spec: Dictionary = BUILDING_MODELS[model]
+	var ab: AABB = _building_aabb(model)
+	var yaw_off: float = float(spec["yaw"])
+	var swapped: bool = int(round(absf(yaw_off))) == 90
+	var raw_w: float = ab.size.z if swapped else ab.size.x
+	var raw_d: float = ab.size.x if swapped else ab.size.z
+	var s: float = minf(float(spec["tw"]) / raw_w, float(spec["td"]) / raw_d)
+	s = minf(s, float(spec["hcap"]) / ab.size.y)
+	var yaw: float = yaw_off + (0.0 if facing > 0.0 else 180.0)
+	var pivot := Node3D.new()
+	pivot.name = "Model_" + model
+	pivot.rotation_degrees.y = yaw
+	g.add_child(pivot)
+	var inst: Node3D = (load("res://assets/models/buildings/" + model + ".glb") as PackedScene).instantiate()
+	pivot.add_child(inst)
+	inst.scale = Vector3.ONE * s
+	var centre: Vector3 = ab.get_center()
+	inst.position = Vector3(-centre.x * s, -ab.position.y * s, -centre.z * s)
+	var w: float = raw_w * s
+	var d: float = raw_d * s
+	var hgt: float = ab.size.y * s
+	var body := StaticBody3D.new()
+	body.name = "BuildingBody"
+	var cs := CollisionShape3D.new()
+	cs.shape = _box_shape_for(Vector3(maxf(w - 0.25, 0.5), hgt * 0.94, maxf(d - 0.25, 0.5)))
+	cs.position = Vector3(0, hgt * 0.47, 0)
+	body.add_child(cs)
+	g.add_child(body)
+	return {"w": w, "d": d, "h": hgt}
+
+# v1.0.29: build the civic/commercial buildings on the converted
+# lots (the set in CIVIC_CONVERSIONS — each model exactly once).
+func _build_civic_buildings(world: Node3D) -> void:
+	for lot in civic_lots:
+		content_points.append(lot["pos"]) # v0.9 empty-area audit
+		var g := Node3D.new()
+		g.name = "Civic_" + String(lot["model"])
+		g.position = lot["pos"]
+		world.add_child(g)
+		var dims: Dictionary = _place_building_model(g, String(lot["model"]), float(lot["facing"]))
+		lot["hx"] = float(dims["w"]) * 0.5
+		lot["hz"] = float(dims["d"]) * 0.5
+		building_footprints.append({"pos": lot["pos"], "hx": lot["hx"], "hz": lot["hz"]})
+
 func _build_house(parent: Node, h: Dictionary, wall_col: Color, roof_col: Color) -> void:
 	content_points.append(h["pos"]) # v0.9 empty-area audit
-	# v0.6 HOUSES WITH CHARACTER: every house is dressed by a
-	# deterministic per-address RNG (seeded from the address string),
-	# so the SAME house looks the SAME every run — a navigation
-	# landmark while hunting a remembered address — but no two
-	# houses share the same combination of roof pitch, porch style,
-	# door colour, shutters, flowers, hedge, fence, mailbox, path,
-	# yard prop and window glow.
+	# v1.0.29: the code-built shell is gone — each lot wears one of
+	# the seven Meshy house models (assigned per street row in
+	# _define_houses; never the same model on two adjacent lots).
+	# The address board, number plaque, path, mailbox, hedges,
+	# fences and yard prop carry over from the old builder, hung on
+	# the model's real front face, so the lot keeps its identity:
+	# same address, same plaque, same driveway, same seeded
+	# dressing every run. (wall_col / roof_col are unused now — the
+	# models bring their own colours — but the signature stays so
+	# the build loop above is untouched.)
 	var p: Vector3 = h["pos"]
 	var g := Node3D.new()
 	g.position = p
@@ -3679,273 +3894,30 @@ func _build_house(parent: Node, h: Dictionary, wall_col: Color, roof_col: Color)
 	var facing: float = float(h.get("facing", 1.0)) # door side (fronts its named street)
 	var hr := RandomNumberGenerator.new()
 	hr.seed = absi(str(h["address"]).hash()) * 7919 + 13
-	var roof_angle: float = [30.0, 38.0, 46.0][hr.randi_range(0, 2)]
-	var door_cols: Array = [Color(0.45, 0.3, 0.17), Color(0.55, 0.2, 0.18), Color(0.2, 0.38, 0.55), Color(0.25, 0.5, 0.3), Color(0.6, 0.45, 0.15), Color(0.35, 0.25, 0.45)]
-	var door_col: Color = door_cols[hr.randi_range(0, door_cols.size() - 1)]
-	var warm_glow: bool = hr.randf() < 0.5
-	var glass_col := Color(0.98, 0.87, 0.58) if warm_glow else Color(0.72, 0.87, 0.95)
-	var glass_em: float = 0.42 if warm_glow else 0.25
-	# v1.0.14 HOUSE VARIETY (Michael: the houses are "always exact
-	# same, always identical — I need some kind of randomness to
-	# it"): the v0.6 pass dressed a FIXED shell — same footprint,
-	# same height, door always centred, windows always in the same
-	# slots, walls always pale siding from an 8-colour index cycle.
-	# Now the SHELL varies too, drawn from the same per-address RNG
-	# so a house keeps its identity every run: footprint, storeys,
-	# wall material + a richer palette, roof style/colour, door
-	# position, window layout and trim colour. All geometry stays
-	# inside the audited lot envelope (x +/-5.8, front 5.2, back
-	# 3.9), and at the standard values (8.2 x 7.2 footprint, 3.7
-	# walls, centred door, gable roof) every expression below
-	# reproduces the pre-variety house exactly.
-	var ww: float = [7.6, 8.2, 8.8][hr.randi_range(0, 2)] # wall width
-	var wd: float = [6.9, 7.2, 7.5][hr.randi_range(0, 2)] # wall depth
-	var two_storey: bool = hr.randf() < 0.3
-	var wh: float = 5.9 if two_storey else (3.25 if hr.randf() < 0.18 else 3.7) # wall height
-	var fz: float = wd * 0.5 # front wall face (local, before facing)
-	var sx: float = ww * 0.5 # side wall face
-	var eave: float = 0.15 + wh # top of the walls
-	var door_x: float = [-1.9, 0.0, 0.0, 1.9][hr.randi_range(0, 3)] # door position along the front
-	# Wall identity: a richer palette than the washed index cycle,
-	# and a material — siding (60%), brick (30%) or stucco (10%).
-	var wall_palette: Array = [Color(0.97, 0.92, 0.78), Color(0.96, 0.85, 0.55), Color(0.62, 0.72, 0.55), Color(0.55, 0.65, 0.78), Color(0.6, 0.66, 0.72), Color(0.65, 0.8, 0.7), Color(0.9, 0.7, 0.66), Color(0.85, 0.62, 0.48), Color(0.72, 0.68, 0.62), Color(0.78, 0.72, 0.85), Color(0.6, 0.78, 0.75), Color(0.88, 0.78, 0.6), Color(0.88, 0.65, 0.7), Color(0.7, 0.72, 0.5)]
-	var wall_base: Color = wall_palette[hr.randi_range(0, wall_palette.size() - 1)].lerp(wall_col, 0.15)
-	var brick_tints: Array = [Color(0.95, 0.8, 0.72), Color(0.9, 0.62, 0.52), Color(0.8, 0.55, 0.48), Color(0.95, 0.88, 0.8)]
-	var wall_kind: int = hr.randi_range(0, 9) # 0-5 siding, 6-8 brick, 9 stucco
-	# Roof identity: colour from a 10-colour palette, gable or hip.
-	var roof_palette: Array = [Color(0.72, 0.33, 0.28), Color(0.33, 0.47, 0.72), Color(0.42, 0.6, 0.38), Color(0.78, 0.57, 0.28), Color(0.5, 0.35, 0.55), Color(0.3, 0.55, 0.6), Color(0.65, 0.4, 0.25), Color(0.45, 0.45, 0.5), Color(0.28, 0.28, 0.31), Color(0.55, 0.3, 0.35)]
-	var roof_base: Color = roof_palette[hr.randi_range(0, roof_palette.size() - 1)].lerp(roof_col, 0.15)
-	var hip_roof: bool = hr.randf() < 0.22
-	# Trim (fascia, corner boards, shutters, gutter): not always white.
-	var trim_palette: Array = [Color(0.95, 0.94, 0.9), Color(0.98, 0.95, 0.85), Color(0.35, 0.25, 0.18), Color(0.25, 0.3, 0.35)]
-	var trim_col: Color = trim_palette[hr.randi_range(0, trim_palette.size() - 1)]
-	# Walls + foundation (footprint varies per house, see above)
-	var found := _box(g, Vector3(0, 0.15, 0), Vector3(ww + 0.4, 0.3, wd + 0.4), Color.WHITE)
-	found.material_override = _mat_tex(TEX_BRICK, Color(0.85, 0.8, 0.78), Vector3(5, 1, 1))
-	var walls := _box(g, Vector3(0, 0.15 + wh * 0.5, 0), Vector3(ww, wh, wd), Color.WHITE, true)
-	if wall_kind >= 6 and wall_kind <= 8:
-		walls.material_override = _mat_tex(TEX_BRICK, brick_tints[hr.randi_range(0, brick_tints.size() - 1)], Vector3(5, 2, 1))
-	elif wall_kind == 9:
-		walls.material_override = _mat(wall_base.lightened(0.1), 0.96) # smooth stucco
-	else:
-		walls.material_override = _mat_tex(TEX_SIDING, wall_base.lightened(0.12), Vector3(5, 2, 1))
-	_box(g, Vector3(door_x, 0.5, facing * (fz + 0.5)), Vector3(3.6, 0.25, 1.6), Color(0.7, 0.6, 0.5), true) # porch step (v0.7: solid; v1.0.14: follows the door)
-	# Roof: gable (most houses) or hip (v1.0.14), pitch + colour per
-	# house. Slab size/offset scale with the footprint so the eave
-	# overhang reads the same on narrow and wide houses, and slab_y
-	# rides the eave so two-storey houses roof at their own height.
-	var slab_y: float = eave + 0.5 + (roof_angle - 30.0) * 0.03
-	var slab_len: float = wd - 0.6 if hip_roof else wd + 1.0
-	for s in [-1.0, 1.0]:
-		var slab := _box(g, Vector3(s * ww * 0.25, slab_y, 0), Vector3(ww * 0.66, 0.22, slab_len), Color.WHITE)
-		slab.material_override = _mat_tex(TEX_ROOF, roof_base.lightened(0.25), Vector3(3, 5, 1))
-		slab.rotation_degrees = Vector3(0, 0, s * -roof_angle)
-	if hip_roof:
-		# Hip ends: slanted slabs closing the front/back where a
-		# gable would stand, meeting the shortened ridge.
-		for s3 in [-1.0, 1.0]:
-			var hip := _box(g, Vector3(0, slab_y - 0.12, s3 * (fz - 1.05)), Vector3(ww * 0.62, 0.22, 3.6), Color.WHITE)
-			hip.material_override = _mat_tex(TEX_ROOF, roof_base.lightened(0.25), Vector3(3, 5, 1))
-			hip.rotation_degrees = Vector3(s3 * roof_angle, 0, 0)
-		_box(g, Vector3(0, eave + 1.26 + (roof_angle - 30.0) * 0.045, 0), Vector3(0.5, 0.3, wd - 0.8), roof_base.darkened(0.15))
-	else:
-		_box(g, Vector3(0, eave + 1.3 + (roof_angle - 30.0) * 0.045, 0), Vector3(0.5, 0.3, wd + 1.0), roof_base.darkened(0.15))
-	await _build_tick() # v1.0.11 chunking: one house is built in seams, not one breath (a full house measured up to ~53 ms alone on the VM)
-	# Chimney (70% of houses; rides the eave so it lands on the
-	# roof of low and two-storey houses alike)
-	if hr.randf() < 0.7:
-		var chim := _box(g, Vector3(hr.randf_range(1.6, 3.0) * (1.0 if hr.randf() < 0.5 else -1.0), eave + 1.35, -1.5), Vector3(0.9, 1.6, 0.9), Color.WHITE)
-		chim.material_override = _mat_tex(TEX_BRICK, Color.WHITE, Vector3(1, 2, 1))
-	# Dormer on the +X slope (40%, gable roofs only — a dormer
-	# cheek makes no sense poking through a hip end)
-	if hr.randf() < 0.4 and not hip_roof:
-		var dorm_x: float = ww * 0.408
-		_box(g, Vector3(dorm_x, eave + 0.3, -0.8), Vector3(1.0, 1.05, 1.15), wall_base.lightened(0.2))
-		_glass(g, Vector3(dorm_x + 0.55, eave + 0.3, -0.8), Vector3(0.1, 0.7, 0.8), glass_col, glass_em)
-		var d_roof := _box(g, Vector3(dorm_x + 0.1, eave + 1.0, -0.8), Vector3(1.5, 0.14, 1.5), roof_base.darkened(0.1))
-		d_roof.rotation_degrees = Vector3(0, 0, -18)
-	# v0.9 BAY WINDOW (55% of houses): a real protruding bay with
-	# three glass faces, its own little roof and a flower ledge —
-	# houses gain a whole new read from the street.
-	var has_bay: bool = hr.randf() < 0.55
-	var bay_x: float = 999.0 # sentinel: no bay (the window-slot filter below reads this)
-	if has_bay:
-		# v1.0.14: the bay sits OPPOSITE an offset door, so the
-		# front never crowds door + bay onto the same half.
-		bay_x = -ww * 0.317 if (door_x > 0.5 or (door_x == 0.0 and hr.randf() < 0.5)) else ww * 0.317
-		_box(g, Vector3(bay_x, 1.85, facing * (fz + 0.35)), Vector3(2.0, 2.1, 0.75), wall_base.lightened(0.2), true)
-		_glass(g, Vector3(bay_x, 1.95, facing * (fz + 0.76)), Vector3(1.7, 1.5, 0.1), glass_col, glass_em)
-		var bay_side1 := _glass(g, Vector3(bay_x - 0.98, 1.95, facing * (fz + 0.5)), Vector3(0.1, 1.5, 0.6), glass_col, glass_em)
-		bay_side1.rotation_degrees = Vector3(0, facing * 32.0, 0)
-		var bay_side2 := _glass(g, Vector3(bay_x + 0.98, 1.95, facing * (fz + 0.5)), Vector3(0.1, 1.5, 0.6), glass_col, glass_em)
-		bay_side2.rotation_degrees = Vector3(0, facing * -32.0, 0)
-		var bay_roof := _box(g, Vector3(bay_x, 3.05, facing * (fz + 0.4)), Vector3(2.3, 0.14, 1.05), roof_base.darkened(0.1))
-		bay_roof.rotation_degrees = Vector3(facing * 10.0, 0, 0)
-		_box(g, Vector3(bay_x, 0.72, facing * (fz + 0.7)), Vector3(1.9, 0.24, 0.34), Color(0.6, 0.35, 0.3)) # flower ledge
-		_sphere(g, Vector3(bay_x - 0.45, 0.9, facing * (fz + 0.74)), Vector3(0.2, 0.16, 0.16), Color(0.95, 0.45, 0.55))
-		_sphere(g, Vector3(bay_x + 0.4, 0.92, facing * (fz + 0.74)), Vector3(0.18, 0.15, 0.15), Color(0.98, 0.8, 0.3))
-	# v1.0.25 GABLE INFILL (Michael's play report: a red-brick
-	# house's gable triangle under the roof was OPEN — you could
-	# see through the house): the wall box stops at the eave and
-	# NOTHING ever filled the triangle between the wall top and
-	# the roof slabs, on EVERY gable house. The infill is a
-	# triangular prism in the wall's own material, sized from the
-	# same numbers as the slabs: its slanted edges lie along the
-	# slabs' undersides (the true opening is the smaller triangle
-	# where those undersides clear the eave), nudged a few cm
-	# INTO the slab band and the wall so no slit remains, and it
-	# never pokes above the slab tops (checked per pitch/width:
-	# the edge slope is ~half the roof slope, apex stops 6 cm
-	# short of the slab centre line's underside + embed).
-	h["hip"] = hip_roof
-	if not hip_roof:
-		var ang_r: float = deg_to_rad(roof_angle)
-		var tan_a: float = tan(ang_r)
-		var y_under_ridge: float = slab_y + tan_a * (ww * 0.25) - 0.11 / cos(ang_r)
-		var g_apex: float = y_under_ridge + 0.05
-		var g_half: float = minf((y_under_ridge - eave) / tan_a + 0.04, ww * 0.5 - 0.02)
-		var g_base: float = eave - 0.06
-		var prism := PrismMesh.new()
-		prism.left_to_right = 0.5
-		prism.size = Vector3(g_half * 2.0, g_apex - g_base, wd - 0.04)
-		var gable := MeshInstance3D.new()
-		gable.name = "GableInfill"
-		gable.mesh = prism
-		gable.position = Vector3(0, (g_base + g_apex) * 0.5, 0)
-		gable.material_override = walls.material_override
-		g.add_child(gable)
-		var gbody := StaticBody3D.new()
-		var gcs := CollisionShape3D.new()
-		var gconv := ConvexPolygonShape3D.new()
-		var gz: float = (wd - 0.04) * 0.5
-		gconv.points = PackedVector3Array([
-			Vector3(-g_half, g_base, -gz), Vector3(g_half, g_base, -gz), Vector3(0, g_apex, -gz),
-			Vector3(-g_half, g_base, gz), Vector3(g_half, g_base, gz), Vector3(0, g_apex, gz)])
-		gcs.shape = gconv
-		gbody.add_child(gcs)
-		g.add_child(gbody)
-		h["gable"] = {"apex": g_apex, "eave": eave, "half": g_half, "wd": wd}
-	# v0.9 GABLE TRIM: fascia along both roof slopes at the front
-	# + a round attic vent — the roofline reads "built", not two
-	# slabs leaning together. v1.0.14: gable roofs only (a hip end
-	# has no gable face to trim), in the house's trim colour, and
-	# the vent rides the eave.
-	if not hip_roof:
-		for s2 in [-1.0, 1.0]:
-			var fascia := _box(g, Vector3(s2 * ww * 0.25, slab_y - 0.02, facing * (fz + 0.54)), Vector3(ww * 0.67, 0.3, 0.12), trim_col)
-			fascia.rotation_degrees = Vector3(0, 0, s2 * -roof_angle)
-		var vent := _cyl(g, Vector3(0, eave + 0.5, facing * (fz + 0.04)), 0.34, 0.34, 0.1, Color(0.92, 0.9, 0.85))
-		vent.rotation_degrees = Vector3(90, 0, 0)
-		_cyl(g, Vector3(0, eave + 0.5, facing * (fz + 0.1)), 0.2, 0.2, 0.06, roof_base.darkened(0.2)).rotation_degrees = Vector3(90, 0, 0)
-	# Door with frame + step light (door colour varies per house;
-	# v1.0.14: the whole assembly sits at door_x, not always centre)
-	_box(g, Vector3(door_x, 1.4, facing * (fz + 0.02)), Vector3(1.6, 2.95, 0.16), Color(0.92, 0.9, 0.84)) # door frame
-	_box(g, Vector3(door_x, 1.35, facing * (fz + 0.08)), Vector3(1.3, 2.7, 0.18), door_col)
-	_glass(g, Vector3(door_x, 2.25, facing * (fz + 0.18)), Vector3(0.7, 0.6, 0.06), glass_col, glass_em) # door window
-	_sphere(g, Vector3(door_x + 0.45, 1.35, facing * (fz + 0.2)), Vector3(0.12, 0.12, 0.08), Color(0.9, 0.75, 0.3))
-	_sphere(g, Vector3(door_x - 0.85, 2.6, facing * (fz + 0.2)), Vector3(0.16, 0.16, 0.1), Color(1.0, 0.9, 0.55)) # porch light
-	# Porch style: 0 = posts + roof, 1 = step only, 2 = full-width porch
-	var porch_style: int = hr.randi_range(0, 2)
-	if door_x != 0.0 and porch_style == 2:
-		porch_style = 0 # v1.0.14: the railed full-width porch is centred on the path — an offset door takes the post porch instead
-	if porch_style == 0:
-		_cyl(g, Vector3(door_x - 1.9, 1.3, facing * 4.3), 0.09, 0.09, 2.6, Color(0.85, 0.82, 0.78), true)
-		_cyl(g, Vector3(door_x + 1.9, 1.3, facing * 4.3), 0.09, 0.09, 2.6, Color(0.85, 0.82, 0.78), true)
-		var porch_roof := _box(g, Vector3(door_x, 2.85, facing * 4.15), Vector3(4.6, 0.14, 1.9), roof_base.darkened(0.1))
-		porch_roof.rotation_degrees = Vector3(facing * 12.0, 0, 0)
-	elif porch_style == 2:
-		for px3 in [-3.4, 3.4]:
-			_cyl(g, Vector3(px3, 1.3, facing * 4.3), 0.09, 0.09, 2.6, Color(0.85, 0.82, 0.78), true)
-		var wide_roof := _box(g, Vector3(0, 2.85, facing * 4.15), Vector3(ww * 0.93, 0.14, 1.9), roof_base.darkened(0.1))
-		wide_roof.rotation_degrees = Vector3(facing * 12.0, 0, 0)
-		_box(g, Vector3(0, 0.28, facing * 4.25), Vector3(ww * 0.93, 0.3, 1.7), Color(0.72, 0.62, 0.5), true) # porch deck (v0.7: solid)
-		# v0.9 porch RAILING: top rail + balusters, with a gap at the
-		# front step so the path still reads.
-		for seg_c in [-2.35, 2.35]:
-			_box(g, Vector3(seg_c, 1.0, facing * 5.02), Vector3(2.7, 0.09, 0.09), Color(0.88, 0.85, 0.8), true)
-			for bx in range(-2, 3):
-				_cyl(g, Vector3(seg_c + float(bx) * 0.55, 0.68, facing * 5.02), 0.035, 0.035, 0.62, Color(0.88, 0.85, 0.8))
-	# Front windows: frames, mullions, glow (warm/cool), shutters (55%),
-	# flower boxes (60%) or plain sills. v1.0.14 VARIETY: the window
-	# SLOTS follow the door and the bay — a candidate slot is kept
-	# only if it clears both, so an offset door gets an asymmetric
-	# front instead of the same centred pair on every house, some
-	# fronts wear a single window, and window width varies.
-	var has_shutters: bool = hr.randf() < 0.55
-	var has_flowers: bool = hr.randf() < 0.6
-	var win_ws: float = 0.72 if hr.randf() < 0.3 else 1.0 # window width scale
-	var front_slots: Array = []
-	for cand in [-ww * 0.317, -ww * 0.104, ww * 0.104, ww * 0.317]:
-		if absf(cand - door_x) > 1.75 and absf(cand - bay_x) > 1.6:
-			front_slots.append(cand)
-	if front_slots.size() > 1 and hr.randf() < 0.22:
-		front_slots.remove_at(hr.randi_range(0, front_slots.size() - 1)) # a single-window front
-	if front_slots.size() > 1 and absf(float(front_slots[1]) - float(front_slots[0])) < 2.2:
-		has_shutters = false # tight slot pairs would grow overlapping shutters
-	for wx in front_slots:
-		_box(g, Vector3(wx, 2.3, facing * (fz + 0.02)), Vector3(1.75 * win_ws, 1.55, 0.13), Color(0.92, 0.9, 0.84)) # frame
-		_glass(g, Vector3(wx, 2.3, facing * (fz + 0.08)), Vector3(1.5 * win_ws, 1.3, 0.14), glass_col, glass_em)
-		_box(g, Vector3(wx, 2.3, facing * (fz + 0.12)), Vector3(0.09, 1.3, 0.1), Color(0.5, 0.4, 0.3)) # mullion V
-		_box(g, Vector3(wx, 2.3, facing * (fz + 0.12)), Vector3(1.5 * win_ws, 0.09, 0.1), Color(0.5, 0.4, 0.3)) # mullion H
-		if has_shutters:
-			_box(g, Vector3(wx - (0.875 * win_ws + 0.18), 2.3, facing * (fz + 0.06)), Vector3(0.32, 1.45, 0.08), trim_col)
-			_box(g, Vector3(wx + (0.875 * win_ws + 0.18), 2.3, facing * (fz + 0.06)), Vector3(0.32, 1.45, 0.08), trim_col)
-		if has_flowers:
-			_box(g, Vector3(wx, 1.42, facing * (fz + 0.12)), Vector3(1.6 * win_ws, 0.28, 0.3), Color(0.6, 0.35, 0.3)) # flower box
-			_sphere(g, Vector3(wx - 0.4, 1.6, facing * (fz + 0.15)), Vector3(0.22, 0.18, 0.18), Color(0.95, 0.45, 0.55))
-			_sphere(g, Vector3(wx + 0.35, 1.62, facing * (fz + 0.15)), Vector3(0.2, 0.16, 0.16), Color(0.98, 0.8, 0.3))
-		else:
-			_box(g, Vector3(wx, 1.45, facing * (fz + 0.1)), Vector3(1.7 * win_ws, 0.12, 0.34), Color(0.88, 0.86, 0.82)) # plain sill
-	# v1.0.14: TWO-STOREY houses get an upper row — a front pair
-	# plus one window per side on the upper floor.
-	if two_storey:
-		for wx2 in [-ww * 0.317, ww * 0.317]:
-			_box(g, Vector3(wx2, eave - 1.3, facing * (fz + 0.02)), Vector3(1.75 * win_ws, 1.55, 0.13), Color(0.92, 0.9, 0.84))
-			_glass(g, Vector3(wx2, eave - 1.3, facing * (fz + 0.08)), Vector3(1.5 * win_ws, 1.3, 0.14), glass_col, glass_em)
-			_box(g, Vector3(wx2, eave - 1.3, facing * (fz + 0.12)), Vector3(0.09, 1.3, 0.1), Color(0.5, 0.4, 0.3))
-		for wz2 in [-wd * 0.25, wd * 0.25]:
-			_glass(g, Vector3(sx + 0.05, eave - 1.3, wz2), Vector3(0.14, 1.3, 1.5), glass_col, glass_em)
-			_glass(g, Vector3(-sx - 0.05, eave - 1.3, wz2), Vector3(0.14, 1.3, 1.5), glass_col, glass_em)
-	# Side windows: set into the (now varied) side wall; the back
-	# one is sometimes skipped.
-	var side_back: bool = hr.randf() < 0.7
-	for wz in [-wd * 0.25, wd * 0.25]:
-		if wz < 0.0 and not side_back:
-			continue
-		_glass(g, Vector3(sx + 0.05, 2.3, wz), Vector3(0.14, 1.3, 1.5), glass_col, glass_em)
-		_glass(g, Vector3(-sx - 0.05, 2.3, wz), Vector3(0.14, 1.3, 1.5), glass_col, glass_em)
+	var dims: Dictionary = _place_building_model(g, String(h["model"]), facing)
+	var fz: float = float(dims["d"]) * 0.5 # the placed model's front wall face
+	var hgt: float = float(dims["h"])
+	var door_x: float = 0.0 # the Meshy fronts carry their door at centre
 	await _build_tick() # v1.0.11 chunking
-	# v1.0 step 2 HOUSE DRESSING: white corner boards, a gutter
-	# with a downspout on the front eave, and foundation shrubs —
-	# the carpentry details that separate a house from a box with
-	# a roof texture.
-	# v1.0.14: the dressing follows the varied shell (corner boards
-	# at the real corners, gutter along the real eave) and wears
-	# the house's trim colour instead of always-white.
-	for cx2 in [-sx + 0.08, sx - 0.08]:
-		for cz2 in [-fz + 0.08, fz - 0.08]:
-			_box(g, Vector3(cx2, 0.15 + wh * 0.5, cz2), Vector3(0.2, wh, 0.2), trim_col)
-	var gutter := _cyl(g, Vector3(0, eave + 0.07, facing * (fz + 0.18)), 0.07, 0.07, ww + 0.1, trim_col)
-	gutter.rotation_degrees = Vector3(0, 0, 90)
-	_cyl(g, Vector3(sx - 0.15, eave * 0.5, facing * (fz + 0.18)), 0.05, 0.05, eave, trim_col) # downspout
-	for shx in [-ww * 0.4, ww * 0.4]:
+	# Foundation shrubs against the front corners (v1.0 dressing).
+	for shx in [-float(dims["w"]) * 0.4, float(dims["w"]) * 0.4]:
 		var shrub := _sphere(g, Vector3(shx, 0.42, facing * (fz + 0.35)), Vector3(0.85, 0.62, 0.6), Color.WHITE)
 		shrub.material_override = _mat_tex(TEX_FOLIAGE, Color(0.8, 0.95, 0.75), Vector3(2, 2, 2))
 	# Address sign + brass number plaque (IDENTICAL system on every house:
-	# this is how you find home). v1.0.14: the board rides the front
-	# wall (dropping on low bungalows so it stays under the eave)
-	# and the plaque sits beside the — now sometimes offset — door.
-	var board_y: float = minf(3.35, eave - 0.5)
+	# this is how you find home). The board rides the model's front
+	# wall, dropping on low houses so it stays on the wall face.
+	var board_y: float = clampf(hgt * 0.66, 2.45, 3.1)
 	_box(g, Vector3(0, board_y, facing * (fz + 0.18)), Vector3(5.6, 1.05, 0.1), Color(0.93, 0.92, 0.88))
 	_box(g, Vector3(0, board_y, facing * (fz + 0.24)), Vector3(5.4, 0.92, 0.1), Color(0.1, 0.1, 0.14))
 	var addr_rot: float = 0.0 if facing > 0.0 else 180.0
 	var addr_ps: float = clampf(4.9 / (0.55 * float(h["address"].length()) * 88.0), 0.0035, 0.006)
 	_label3d_flat(g, h["address"], Vector3(0, board_y, facing * (fz + 0.32)), 88, Color(1.0, 0.95, 0.6), addr_rot, addr_ps)
-	var plaque_x: float = door_x + (1.15 if door_x <= 0.0 else -1.15)
-	_box(g, Vector3(plaque_x, 1.7, facing * (fz + 0.12)), Vector3(0.85, 0.55, 0.08), Color(0.75, 0.6, 0.25))
-	_label3d_flat(g, h["address"].split(" ")[0], Vector3(plaque_x, 1.7, facing * (fz + 0.18)), 72, Color(0.15, 0.12, 0.05), addr_rot, 0.005)
+	var plaque_y: float = 1.7 if board_y > 2.9 else 1.3
+	var plaque_x: float = door_x + 1.15
+	_box(g, Vector3(plaque_x, plaque_y, facing * (fz + 0.12)), Vector3(0.85, 0.55, 0.08), Color(0.75, 0.6, 0.25))
+	_label3d_flat(g, h["address"].split(" ")[0], Vector3(plaque_x, plaque_y, facing * (fz + 0.18)), 72, Color(0.15, 0.12, 0.05), addr_rot, 0.005)
 	h["plaque"] = h["address"].split(" ")[0] # the number on the plaque == the address number
-	# Path: 0 = slab, 1 = stepping stones (v1.0.14: leads to the door)
+	# Path: 0 = slab, 1 = stepping stones (leads to the door)
 	if hr.randi_range(0, 1) == 0:
 		_box(g, Vector3(door_x, 0.05, facing * 5.6), Vector3(1.6, 0.08, 2.4), Color(0.85, 0.83, 0.76))
 	else:
@@ -3967,15 +3939,8 @@ func _build_house(parent: Node, h: Dictionary, wall_col: Color, roof_col: Color)
 	else:
 		mb.position = Vector3(door_x - 1.25, 0, facing * (fz + 0.14)) # wall box rides beside the door
 		_box(mb, Vector3(0, 1.5, 0), Vector3(0.6, 0.42, 0.22), Color(0.16, 0.16, 0.18))
-	# Front hedge (45%; v1.0.14: the pair flanks the path, which
-	# now leads to the offset door)
+	# Front hedge (45%; the pair flanks the path)
 	if hr.randf() < 0.45:
-		# v1.0.25: hedges at ±3.4, not ±2.9 — at ±2.9 their inner
-		# edges (door_x ±1.3) overlapped the porch step's width
-		# (door_x ±1.8), and the step/hedge corner was a pocket
-		# an NPC could wedge into and never leave (the frozen-
-		# at-the-house-front bug). Flush with the step's edge,
-		# the path gap stays open.
 		for hx3 in [door_x - 3.4, door_x + 3.4]:
 			var hg := _box(g, Vector3(hx3, 0.35, facing * 5.4), Vector3(3.2, 0.7, 0.5), Color.WHITE, true)
 			hg.material_override = _mat_tex(TEX_FOLIAGE, Color(0.85, 0.98, 0.82), Vector3(2, 1, 1))
@@ -4006,6 +3971,15 @@ func _build_house(parent: Node, h: Dictionary, wall_col: Color, roof_col: Color)
 			bframe.rotation_degrees = Vector3(0, 0, -8)
 			_box(g, Vector3(prop_x + 0.5, 0.95, prop_z), Vector3(0.4, 0.07, 0.3), Color(0.3, 0.25, 0.2))
 		4: # mini tree
+			# v1.0.29: never on the driveway side of the lot — a
+			# yard tree at the pad's edge hangs its canopy over the
+			# driveway and the parked car (the v1.0.27 tree audit).
+			var drv_side: float = 0.0
+			for dd in _driveway_data():
+				if (dd[0] as Vector3) == p:
+					drv_side = float(dd[1])
+			if drv_side != 0.0 and signf(prop_x) == drv_side and absf(prop_x) > 2.5:
+				prop_x = 3.4 if prop_x < 0.0 else -3.2
 			var mt := Node3D.new()
 			mt.position = Vector3(prop_x, 0, prop_z)
 			mt.scale = Vector3(0.62, 0.62, 0.62)
@@ -4014,6 +3988,7 @@ func _build_house(parent: Node, h: Dictionary, wall_col: Color, roof_col: Color)
 		5: # bush cluster
 			_sphere(g, Vector3(prop_x, 0.45, prop_z), Vector3(1.1, 0.85, 1.1), Color(0.45, 0.68, 0.38))
 			_sphere(g, Vector3(prop_x + 0.7, 0.35, prop_z + 0.3), Vector3(0.8, 0.65, 0.8), Color(0.52, 0.74, 0.42))
+
 func _build_tree(parent: Node, pos: Vector3, track: bool = true) -> void:
 	if track:
 		content_points.append(pos) # v0.9 empty-area audit
@@ -4101,35 +4076,38 @@ func _build_bush(parent: Node, pos: Vector3) -> void:
 		for fi in range(4):
 			_sphere(g, Vector3(br.randf_range(-0.7, 0.7), br.randf_range(0.5, 0.95), br.randf_range(-0.7, 0.7)), Vector3(0.09, 0.09, 0.09), Color(0.95, 0.45, 0.55) if fi % 2 == 0 else Color(0.98, 0.85, 0.4))
 
-# v1.0.27: the driveway-car table — [address, side of the front
-# path (+1/-1), road z, colour, type] — shared by the town build
-# (which parks the cars below) and _compute_driveway_pads (which
-# derives the pad rects the scatter gate and tree audit read), so
-# the three can never drift apart.
+# v1.0.27: the driveway-car table — [lot position, side of the
+# front path (+1/-1), road z, colour, type] — shared by the town
+# build (which parks the cars below) and _compute_driveway_pads
+# (which derives the pad rects the scatter gate and tree audit
+# read), so the three can never drift apart.
+# v1.0.29: keyed by LOT POSITION, not address — the Meshy building
+# swap re-sequences the house numbers (and the numbers differ
+# between the legacy and doubled towns), while lot positions are
+# stable in both. The three lots that became civic buildings (the
+# old 27 + 33 Maple Street, the old 16 Oak Avenue) lost their
+# driveway cars with their houses.
 func _driveway_data() -> Array:
 	var data: Array = [
-		["27 Maple Street", 1.0, -11.0, Color(0.8, 0.25, 0.22), "sedan"],
-		["39 Maple Street", -1.0, -11.0, Color(0.25, 0.45, 0.85), "sedan"],
-		["21 Maple Street", 1.0, -11.0, Color(0.3, 0.6, 0.5), "hatchback"],
-		["33 Maple Street", 1.0, -11.0, Color(0.9, 0.88, 0.85), "van"],
-		["45 Maple Street", -1.0, -11.0, Color(0.5, 0.5, 0.55), "pickup"],
-		["15 Maple Street", 1.0, -11.0, Color(0.2, 0.55, 0.6), "hatchback"],
-		["9 Maple Street", -1.0, -11.0, Color(0.6, 0.35, 0.75), "convertible"],
-		["3 Maple Street", 1.0, -11.0, Color(0.2, 0.3, 0.55), "van"],
-		["28 Oak Avenue", 1.0, 15.0, Color(0.82, 0.85, 0.9), "van"],
-		["16 Oak Avenue", -1.0, 15.0, Color(0.35, 0.55, 0.3), "pickup"],
-		["34 Oak Avenue, Apartment 4A", 1.0, 15.0, Color(0.75, 0.76, 0.8), "sedan"],
-		["40 Oak Avenue", -1.0, 15.0, Color(0.9, 0.55, 0.2), "hatchback"],
-		["10 Oak Avenue", 1.0, 15.0, Color(0.55, 0.25, 0.3), "pickup"],
+		[Vector3(44, 0, -30), -1.0, -11.0, Color(0.25, 0.45, 0.85), "sedan"],
+		[Vector3(-42, 0, -30), 1.0, -11.0, Color(0.3, 0.6, 0.5), "hatchback"],
+		[Vector3(98, 0, -30), -1.0, -11.0, Color(0.5, 0.5, 0.55), "pickup"],
+		[Vector3(-56, 0, -30), 1.0, -11.0, Color(0.2, 0.55, 0.6), "hatchback"],
+		[Vector3(-98, 0, -30), -1.0, -11.0, Color(0.6, 0.35, 0.75), "convertible"],
+		[Vector3(-112, 0, -30), 1.0, -11.0, Color(0.2, 0.3, 0.55), "van"],
+		[Vector3(-2, 0, 33), 1.0, 15.0, Color(0.82, 0.85, 0.9), "van"],
+		[Vector3(44, 0, 33), 1.0, 15.0, Color(0.75, 0.76, 0.8), "sedan"],
+		[Vector3(98, 0, 33), -1.0, 15.0, Color(0.9, 0.55, 0.2), "hatchback"],
+		[Vector3(-98, 0, 33), 1.0, 15.0, Color(0.55, 0.25, 0.3), "pickup"],
 	]
 	# MAP DOUBLING: three of the new east houses get driveway cars
 	# too. BISECT (v1.0.12): skipped in legacy mode — those houses
 	# don't exist there.
 	if not LEGACY_TOWN_ONLY:
 		data += [
-			["53 Maple Street", -1.0, -11.0, Color(0.35, 0.5, 0.8), "sedan"],
-			["89 Maple Street", 1.0, -11.0, Color(0.85, 0.6, 0.25), "hatchback"],
-			["82 Oak Avenue", 1.0, 15.0, Color(0.3, 0.6, 0.5), "sedan"],
+			[Vector3(146, 0, -30), -1.0, -11.0, Color(0.35, 0.5, 0.8), "sedan"],
+			[Vector3(290, 0, -30), 1.0, -11.0, Color(0.85, 0.6, 0.25), "hatchback"],
+			[Vector3(290, 0, 33), 1.0, 15.0, Color(0.3, 0.6, 0.5), "sedan"],
 		]
 	return data
 
@@ -4140,13 +4118,14 @@ func _driveway_data() -> Array:
 # _paved_spot) is planted long before the cars are parked.
 func _compute_driveway_pads() -> void:
 	driveway_pads.clear()
-	var by_addr: Dictionary = {}
+	var by_pos: Dictionary = {}
 	for hh in houses:
-		by_addr[str(hh["address"])] = hh
+		by_pos["%d,%d" % [int(hh["pos"].x), int(hh["pos"].z)]] = hh
 	for dd in _driveway_data():
-		if not by_addr.has(str(dd[0])):
+		var pk: String = "%d,%d" % [int((dd[0] as Vector3).x), int((dd[0] as Vector3).z)]
+		if not by_pos.has(pk):
 			continue
-		var dh: Dictionary = by_addr[str(dd[0])]
+		var dh: Dictionary = by_pos[pk]
 		var hp: Vector3 = dh["pos"]
 		var facing: float = float(dh["facing"])
 		var pad_near: float = hp.z + facing * 3.7
@@ -6299,10 +6278,22 @@ func _spawn_player() -> void:
 # validated against it — before this build, one inhabitant
 # spawned INSIDE 22 Willow Crescent and two town cats had their
 # homes inside house footprints, wedged from birth.
-func point_in_house_footprint(p: Vector3, pad: float = 0.0) -> bool:
+# v1.0.29: every building rect in town — the houses (canonical
+# ±4.4 x / ±3.9 z) plus the Meshy civic buildings and the bakery,
+# whose real footprints are registered as they are placed. Spawn
+# points, wander targets and cat homes validate against all of
+# them, so nobody can be wedged inside a civic building either.
+func _building_rects() -> Array:
+	var rects: Array = []
 	for h in houses:
-		var hp: Vector3 = h["pos"]
-		if absf(p.x - hp.x) < 4.4 + pad and absf(p.z - hp.z) < 3.9 + pad:
+		rects.append([h["pos"].x, h["pos"].z, 4.4, 3.9])
+	for fp in building_footprints:
+		rects.append([fp["pos"].x, fp["pos"].z, fp["hx"], fp["hz"]])
+	return rects
+
+func point_in_house_footprint(p: Vector3, pad: float = 0.0) -> bool:
+	for r in _building_rects():
+		if absf(p.x - float(r[0])) < float(r[2]) + pad and absf(p.z - float(r[1])) < float(r[3]) + pad:
 			return true
 	return false
 
@@ -6311,19 +6302,21 @@ func push_out_of_houses(p: Vector3, pad: float = 0.8) -> Vector3:
 	# axis penetrates least, repeat until clear (rows can overlap
 	# a pushed point into the next house).
 	var out := p
+	var rects: Array = _building_rects()
 	for pass_i in range(4):
 		var moved := false
-		for h in houses:
-			var hp: Vector3 = h["pos"]
-			var ex: float = 4.4 + pad
-			var ez: float = 3.9 + pad
-			var dx: float = out.x - hp.x
-			var dz: float = out.z - hp.z
+		for r in rects:
+			var cx: float = float(r[0])
+			var cz: float = float(r[1])
+			var ex: float = float(r[2]) + pad
+			var ez: float = float(r[3]) + pad
+			var dx: float = out.x - cx
+			var dz: float = out.z - cz
 			if absf(dx) < ex and absf(dz) < ez:
 				if ex - absf(dx) < ez - absf(dz):
-					out.x = hp.x + (ex if dx >= 0.0 else -ex)
+					out.x = cx + (ex if dx >= 0.0 else -ex)
 				else:
-					out.z = hp.z + (ez if dz >= 0.0 else -ez)
+					out.z = cz + (ez if dz >= 0.0 else -ez)
 				moved = true
 		if not moved:
 			break
@@ -6336,16 +6329,20 @@ func push_out_of_houses(p: Vector3, pad: float = 0.8) -> Vector3:
 # direction a pocket always leaves open. Elsewhere, the first
 # clear point on a 9 m ring around the spot.
 func escape_point_from_houses(p: Vector3) -> Vector3:
-	var best: Dictionary = {}
+	var best_c := Vector3.ZERO
 	var best_d := 1e18
+	var centres: Array = []
 	for h in houses:
-		var c: Vector3 = h["pos"]
+		centres.append(h["pos"])
+	for fp in building_footprints: # v1.0.29: civic buildings wedge NPCs the same way houses do
+		centres.append(fp["pos"])
+	for c in centres:
 		var d: float = Vector2(p.x - c.x, p.z - c.z).length()
 		if d < best_d:
 			best_d = d
-			best = h
-	if not best.is_empty() and best_d < 9.0:
-		var c2: Vector3 = best["pos"]
+			best_c = c
+	if best_d < 9.0:
+		var c2: Vector3 = best_c
 		var dir := Vector2(p.x - c2.x, p.z - c2.z)
 		if dir.length() < 0.1:
 			dir = Vector2(0.0, 1.0)
@@ -7220,7 +7217,7 @@ func _build_hud() -> void:
 	title_panel.add_child(start_btn)
 	# v1.0.10: subtle build tag so Michael can confirm which build
 	# he is running from the title screen itself.
-	var ver := _hud_label(title_panel, "v1.0.28", Vector2(706, 522), 16)
+	var ver := _hud_label(title_panel, "v1.0.29", Vector2(706, 522), 16)
 	ver.label_settings.font_color = Color(0.78, 0.83, 0.95)
 	win_panel = _make_panel(hud_layer, Vector2(290, 130), Vector2(700, 460), Color(0.12, 0.2, 0.12, 0.97))
 	win_panel.set_anchors_preset(Control.PRESET_CENTER)

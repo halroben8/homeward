@@ -302,12 +302,20 @@ func run_tests() -> void:
 			woman0 = n
 			break
 	check("npc model: structural geometry jump (>=55 meshes, v0.8 was 43)", woman0 != null and count_meshes(woman0) >= 55, str(count_meshes(woman0)) if woman0 else "none")
-	check("houses: 131 after the map doubling (was 41)", (main.get("houses") as Array).size() == 131, str((main.get("houses") as Array).size()))
+	# v1.0.29: town-composition expectations are mode-aware — the
+	# shipped town is the LEGACY town (LEGACY_TOWN_ONLY) with 11 of
+	# its 41 lots converted to civic buildings (30 houses left); the
+	# doubled town keeps the same 11 conversions (131 - 11 = 120).
+	var v1029_doubled: bool = false
+	for h1029 in main.get("houses"):
+		if (h1029 as Dictionary)["pos"].x > 120.0:
+			v1029_doubled = true
+	check("houses: 30 in the legacy town after 11 civic conversions (120 doubled)", (main.get("houses") as Array).size() == (120 if v1029_doubled else 30), str((main.get("houses") as Array).size()))
 	# street signs: text flat ON the board (item 3)
 	var sign_texts: Array = []
 	for s in main.get("street_signs"):
 		sign_texts.append(str(s["text"]))
-	check("26 street signs registered (13 streets x 2)", sign_texts.size() == 26, str(sign_texts.size()))
+	check("street signs registered (13 streets x 2 doubled, 8 x 2 legacy)", sign_texts.size() == (26 if v1029_doubled else 16), str(sign_texts.size()))
 	var labels: Array = []
 	collect_label3d(main, labels)
 	var sign_labels: Array = []
@@ -317,7 +325,7 @@ func run_tests() -> void:
 			sign_labels.append(l)
 			if (l as Label3D).billboard != BaseMaterial3D.BILLBOARD_DISABLED:
 				billboard_sign_labels += 1
-	check("sign text on both faces (52 flat labels)", sign_labels.size() == 52, str(sign_labels.size()))
+	check("sign text on both faces (52 flat labels doubled, 32 legacy)", sign_labels.size() == (52 if v1029_doubled else 32), str(sign_labels.size()))
 	check("sign text is NOT billboard (readable only face-on)", billboard_sign_labels == 0, str(billboard_sign_labels))
 	# scoreboard (item 9)
 	check("scoreboard font is big (30)", int((main.get("score_label") as Label).label_settings.font_size) == 30)
@@ -453,6 +461,20 @@ func run_tests() -> void:
 				vista_ok = false
 	check("houses: no footprint intrudes into any road corridor (+0.75 margin)", aabb_ok)
 	check("houses: no house blocks a cross-street vista (centre >10 from vertical centrelines)", vista_ok)
+	# v1.0.29: the Meshy civic buildings' real footprints get the
+	# same road-corridor audit — they sit on converted house lots
+	# but several are bigger than the houses they replaced.
+	var civic_ok: bool = true
+	for fp in main.get("building_footprints"):
+		var cp2: Vector3 = fp["pos"]
+		var crect := Rect2(cp2.x - float(fp["hx"]), cp2.z - float(fp["hz"]), float(fp["hx"]) * 2.0, float(fp["hz"]) * 2.0)
+		for rz in road_zs:
+			if crect.intersects(Rect2(-320.0, rz - 4.35, 760.0, 8.7)):
+				civic_ok = false
+		for rx in road_xs:
+			if crect.intersects(Rect2(rx - 4.35, -200.0, 8.7, 400.0)):
+				civic_ok = false
+	check("v1.0.29 civic buildings: no footprint intrudes into any road corridor (+0.75 margin)", civic_ok)
 	var streets: Dictionary = {}
 	for h in houses_arr:
 		var addr: String = str(h["address"])
@@ -487,7 +509,7 @@ func run_tests() -> void:
 	var cps: Array = main.get("content_points")
 	check("world content points plentiful (>= 170)", cps.size() >= 170, str(cps.size()))
 	var bad_cells: Array = []
-	for gx in range(-114, 368, 11): # MAP DOUBLING: audit grid covers the east district too
+	for gx in range(-114, 368 if v1029_doubled else 114, 11): # MAP DOUBLING: audit grid covers the east district too (legacy town: west grid only — the x=117 column is border vista, empty by design)
 		for gz in range(-88, 89, 11):
 			var cx: float = float(gx)
 			var cz: float = float(gz)
@@ -525,7 +547,7 @@ func run_tests() -> void:
 		for sub3 in ch3.get_children():
 			if sub3 is Label3D and (sub3 as Label3D).text.contains("hide"):
 				static_cars.append(ch3)
-	check("streets: all static cars present (16 driveways + 6 lot cars)", static_cars.size() == 22, str(static_cars.size()))
+	check("streets: all static cars present (13 driveways + 6 lot cars doubled; 10 + 4 legacy after 3 converted lots lost their cars)", static_cars.size() == (19 if v1029_doubled else 14), str(static_cars.size()))
 	var cars_on_road := 0
 	var cars_boxy := 0
 	for c3 in static_cars:
@@ -699,7 +721,7 @@ func run_tests() -> void:
 		total_mb_units += units5
 		if units5 != 1:
 			houses_wrong_mb += 1
-	check("clutter: EVERY house has exactly ONE mailbox (131 houses)", houses_wrong_mb == 0 and total_mb_units == house_groups.size(), "wrong=" + str(houses_wrong_mb) + " units=" + str(total_mb_units) + " houses=" + str(house_groups.size()))
+	check("clutter: EVERY house has exactly ONE mailbox", houses_wrong_mb == 0 and total_mb_units == house_groups.size(), "wrong=" + str(houses_wrong_mb) + " units=" + str(total_mb_units) + " houses=" + str(house_groups.size()))
 
 	# ---------- v1.3 CAMERA FRAMING (Michael's v1.0.5 playtest) ----------
 	# Measured BEFORE (tests/CamProbe.tscn, viewport fractions, y 0 =
@@ -2171,7 +2193,12 @@ func run_tests() -> void:
 				if cnt > v23_grp_meshes:
 					v23_grp_meshes = cnt
 					grp = ch as Node3D
-		if grp == null or v23_grp_meshes < 20:
+		if grp == null or v23_grp_meshes < 6:
+			# v1.0.29: the threshold was 20 when a house was ~40
+			# code-built parts; a Meshy house is ONE model mesh plus
+			# its board/plaque/path/mailbox/shrubs (9-24 meshes), so
+			# 6 identifies the group unambiguously (it sits exactly
+			# at the lot position).
 			v23_audit_bad.append(str(h["address"]) + ": group not found")
 			continue
 		v23_audit_houses += 1
@@ -2201,7 +2228,7 @@ func run_tests() -> void:
 				v23_audit_bad.append(str(h["address"]) + ": floating part at " + str(ctr) + " size " + str(ab.size))
 	check("v1.0.23 house audit: every house group found and audited", v23_audit_houses == (main.get("houses") as Array).size(), str(v23_audit_houses))
 	check("v1.0.23 house audit: NO detached or floating house parts in town", v23_audit_bad.is_empty(), str(v23_audit_bad.slice(0, 4)))
-	check("v1.0.23 house audit: the audit covered the whole town's parts", v23_audit_parts > 1500, str(v23_audit_parts))
+	check("v1.0.23 house audit: the audit covered the whole town's parts", v23_audit_parts > 400, str(v23_audit_parts)) # v1.0.29: was >1500 for ~40-part code-built houses; Meshy houses carry 9-24 parts each (30 houses)
 
 	# ---------- v1.0.23: grass blades are cones, not backface quads ----------
 	# The black spikes were the blade quads' back faces (flipped
@@ -2316,7 +2343,7 @@ func run_tests() -> void:
 				v23_start_ok = true
 			if tc is Label:
 				var lt: String = (tc as Label).text
-				if lt == "v1.0.28":
+				if lt == "v1.0.29":
 					v23_ver_ok = true
 				if lt.contains("Crescent") or lt.contains("Avenue") or lt.contains("Street") or lt.contains("Drive"):
 					v23_addr_leak = true
@@ -2341,7 +2368,7 @@ func run_tests() -> void:
 		if str(p).ends_with("start_btn.png"):
 			v23_has_pill = true
 	check("v1.0.23 title: START wears the gradient pill", v23_start_ok and v23_has_pill, str(v23_tex_paths))
-	check("v1.0.23 title: version tag reads v1.0.28 and NO address is shown", v23_ver_ok and not v23_addr_leak)
+	check("v1.0.23 title: version tag reads v1.0.29 and NO address is shown", v23_ver_ok and not v23_addr_leak)
 
 	# ---------- v1.0.24: ONE TAP = ONE COMBO STEP (Michael's v1.0.22 play report) ----------
 	# "I hit B once and multiple Bs were hit… then when I hit A it
@@ -2502,40 +2529,71 @@ func run_tests() -> void:
 			v25_uv_bad.append(vp)
 		vinst.free()
 	check("v1.0.25 vehicles: all 8 imported UV sets span the full atlas (no compression remap / camouflage paint)", v25_uv_bad.is_empty(), str(v25_uv_bad))
-	# ITEM 3: the gable audit — part presence per gable house,
-	# plus a raycast at the triangle from outside each gable:
-	# an open gable lets the ray cross the whole house.
-	var v25_gable_houses := 0
-	for h25g in main.get("houses"):
-		if (h25g as Dictionary).has("gable"):
-			v25_gable_houses += 1
-	var v25_infill_found := 0
-	var v25_gstack: Array = [main]
-	while not v25_gstack.is_empty():
-		var gcn: Node = v25_gstack.pop_back()
-		if gcn.name == "GableInfill":
-			v25_infill_found += 1
-		for gch in gcn.get_children():
-			v25_gstack.append(gch)
-	check("v1.0.25 gables: every gable-roofed house carries its gable infill", v25_gable_houses > 0 and v25_infill_found == v25_gable_houses, "houses=" + str(v25_gable_houses) + " infills=" + str(v25_infill_found))
+	# ITEM 3 (v1.0.29): the gable audit is retired with the
+	# code-built houses — a Meshy house is a single closed mesh,
+	# so there is no gable triangle left to leave open. Its
+	# replacement guards the new failure mode: every building in
+	# town (houses + civic + bakery) must be SOLID — a horizontal
+	# ray through the building's centre at chest height must hit
+	# collision within its footprint, on both axes.
 	var space25: PhysicsDirectSpaceState3D = (player as Node3D).get_world_3d().direct_space_state
-	var v25_ray_bad := 0
-	var v25_ray_n := 0
-	for h25r in main.get("houses"):
-		if not (h25r as Dictionary).has("gable"):
-			continue
-		var hp25: Vector3 = h25r["pos"]
-		var gd25: Dictionary = h25r["gable"]
-		var y25: float = float(gd25["eave"]) + (float(gd25["apex"]) - float(gd25["eave"])) * 0.55
-		for s25 in [-1.0, 1.0]:
-			for xo25 in [0.0, 0.8]:
-				v25_ray_n += 1
-				var from25 := Vector3(hp25.x + xo25, y25, hp25.z + s25 * (float(gd25["wd"]) * 0.5 + 2.5))
-				var q25 := PhysicsRayQueryParameters3D.create(from25, from25 + Vector3(0, 0, -s25 * 6.0))
-				var hit25: Dictionary = space25.intersect_ray(q25)
-				if hit25.is_empty() or from25.distance_to(hit25["position"]) > 3.4:
-					v25_ray_bad += 1
-	check("v1.0.25 gables: rays at every gable triangle hit the wall envelope (no see-through houses)", v25_ray_bad == 0, "bad=" + str(v25_ray_bad) + "/" + str(v25_ray_n))
+	var v29_solid_bad := 0
+	var v29_solid_n := 0
+	var v29_targets: Array = []
+	for h29 in main.get("houses"):
+		v29_targets.append([(h29 as Dictionary)["pos"], 4.4])
+	for fp29 in main.get("building_footprints"):
+		v29_targets.append([(fp29 as Dictionary)["pos"], float((fp29 as Dictionary)["hx"])])
+	for t29 in v29_targets:
+		var cp29: Vector3 = t29[0]
+		var hx29: float = t29[1]
+		for dir29 in [Vector3(1, 0, 0), Vector3(0, 0, 1)]:
+			v29_solid_n += 1
+			var from29: Vector3 = cp29 + Vector3(0, 1.6, 0) - dir29 * (hx29 + 3.0)
+			var q29 := PhysicsRayQueryParameters3D.create(from29, from29 + dir29 * (2.0 * hx29 + 6.0))
+			var hit29: Dictionary = space25.intersect_ray(q29)
+			if hit29.is_empty() or from29.distance_to(hit29["position"]) > hx29 + 3.6:
+				v29_solid_bad += 1
+	check("v1.0.29 buildings: every house + civic building is solid (rays through each centre hit within its footprint)", v29_solid_bad == 0, "bad=" + str(v29_solid_bad) + "/" + str(v29_solid_n))
+	# v1.0.29 PLACEMENT RULES (Michael, 2026-11-20): every civic /
+	# commercial model appears EXACTLY ONCE in town, and no two
+	# adjacent lots along a street share the same house model.
+	# Counted on the placed model pivots in the scene tree, so a
+	# duplicate placed anywhere is caught.
+	var v29_pivot_counts: Dictionary = {}
+	var v29_stack: Array = [main.get_node("World")]
+	while not v29_stack.is_empty():
+		var bn29: Node = v29_stack.pop_back()
+		if bn29.name.begins_with("Model_"):
+			var mn29: String = bn29.name.trim_prefix("Model_")
+			v29_pivot_counts[mn29] = int(v29_pivot_counts.get(mn29, 0)) + 1
+		for bch29 in bn29.get_children():
+			v29_stack.append(bch29)
+	var v29_civic_expected: Array = ["school", "elementary_school", "library", "police_station", "fire_station", "diner", "corner_store", "bistro", "corner_cafe", "corner_cafe_2", "apartment_block", "bakery"]
+	var v29_civic_ok: bool = true
+	for e29 in v29_civic_expected:
+		if int(v29_pivot_counts.get(e29, 0)) != 1:
+			v29_civic_ok = false
+	check("v1.0.29 placement: every civic/commercial model appears exactly once in town", v29_civic_ok, str(v29_pivot_counts))
+	var v29_rows: Dictionary = {}
+	for h29b in main.get("houses"):
+		var rk29: String = str((h29b as Dictionary)["street"]) + "|" + str(int((h29b as Dictionary)["facing"]))
+		if not v29_rows.has(rk29):
+			v29_rows[rk29] = []
+		v29_rows[rk29].append(h29b)
+	var v29_adj_bad: Array = []
+	var v29_seq_report: Array = []
+	for rk29b in v29_rows.keys():
+		var row29: Array = v29_rows[rk29b]
+		row29.sort_custom(func(a, b): return a["pos"].x < b["pos"].x)
+		var seq29: Array = []
+		for i29 in range(row29.size()):
+			seq29.append(str((row29[i29] as Dictionary)["model"]))
+			if i29 > 0 and str((row29[i29] as Dictionary)["model"]) == str((row29[i29 - 1] as Dictionary)["model"]):
+				v29_adj_bad.append(rk29b + "@" + str((row29[i29] as Dictionary)["pos"].x))
+		v29_seq_report.append(rk29b + ": " + ", ".join(seq29))
+	check("v1.0.29 placement: no two adjacent lots along a street share a house model", v29_adj_bad.is_empty(), str(v29_adj_bad))
+	print("V1029_AUDIT " + " | ".join(v29_seq_report))
 	# ITEM 7: the escape exterior — the street outside the rooms.
 	var ext25: Node = main.get_node_or_null("EscapeExterior")
 	check("v1.0.25 doorway: an exterior street scene stands outside the escape rooms", ext25 != null and ext25.get_child_count() >= 10, "children=" + (str(ext25.get_child_count()) if ext25 != null else "none"))
@@ -2729,7 +2787,7 @@ func run_tests() -> void:
 		for off27 in [Vector2(0, 0), Vector2(phx27, phz27), Vector2(-phx27, phz27), Vector2(phx27, -phz27), Vector2(-phx27, -phz27), Vector2(phx27, 0), Vector2(-phx27, 0), Vector2(0, phz27), Vector2(0, -phz27)]:
 			if not bool(main.call("_ground_spot_blocked", Vector3(pcx27 + off27.x, 0, pcz27 + off27.y))):
 				pad_open27 += 1
-	check("v1.0.27 ground scatter: every driveway pad is blocked ground (no tufts on driveways)", pad_open27 == 0 and pads27.size() >= 13, "open=" + str(pad_open27) + " pads=" + str(pads27.size()))
+	check("v1.0.27 ground scatter: every driveway pad is blocked ground (no tufts on driveways)", pad_open27 == 0 and pads27.size() >= (13 if v1029_doubled else 10), "open=" + str(pad_open27) + " pads=" + str(pads27.size())) # v1.0.29: 10 legacy pads (was 13 — three lots became civic buildings)
 
 	# ---------- v1.0.25 ITEM 6: the opening must survive the START tap ----------
 	# The real flow: start_game() (what the button calls), then the

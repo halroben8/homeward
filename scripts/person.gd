@@ -2180,6 +2180,20 @@ func _has_line_of_sight() -> bool:
 			continue
 		if _segment_hits_rect(a, b, rect):
 			return false
+	# v1.0.29: the Meshy civic buildings and the bakery block sight
+	# exactly like houses do (their real footprints, registered by
+	# main as they were placed).
+	var fps = main_ref.get("building_footprints")
+	if fps != null:
+		for fp in fps:
+			var cp: Vector3 = fp["pos"]
+			if Vector2(cp.x, cp.z).distance_to(a) > seg_len + 8.0:
+				continue
+			var crect := Rect2(cp.x - float(fp["hx"]), cp.z - float(fp["hz"]), float(fp["hx"]) * 2.0, float(fp["hz"]) * 2.0)
+			if crect.has_point(a) or crect.has_point(b):
+				continue
+			if _segment_hits_rect(a, b, crect):
+				return false
 	return true
 
 func _segment_hits_rect(a: Vector2, b: Vector2, r: Rect2) -> bool:
