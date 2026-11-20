@@ -1863,7 +1863,12 @@ func run_tests() -> void:
 	var vt: Array = []
 	for l in van_labels:
 		vt.append(str((l as Label3D).text))
-	check("pound van: POUND / ANIMAL CONTROL lettering printed on the body (both flanks)", vt.count("POUND") == 2 and vt.count("ANIMAL CONTROL") == 2, str(vt))
+	# v1.0.30: the code-added blue flank labels are gone (Michael:
+	# they floated over the body at a wrong scale) — the Meshy
+	# texture's own baked lettering is the only lettering now.
+	# (The one Label3D allowed in the subtree is the notice
+	# meter's eye label, text "" until the meter shows.)
+	check("pound van: NO code-added POUND / ANIMAL CONTROL lettering labels on the van (v1.0.30 removal; lettering is baked into the Meshy texture)", not vt.has("POUND") and not vt.has("ANIMAL CONTROL"), str(vt))
 	check("pound van: the worker carries his net (pole + hoop + bag on the arm)", pworker.get("net_root") != null and (pworker.get("net_root") as Node3D).get_child_count() >= 3)
 	# ---------- v1.0.21: Meshy vehicles + the light bar ----------
 	check("v1.0.21 vehicles: the pound van IS the Meshy Animal Control van", _subtree_vehicle_path(pvan) == "res://assets/models/van_animal_control.glb", _subtree_vehicle_path(pvan))
@@ -2343,7 +2348,7 @@ func run_tests() -> void:
 				v23_start_ok = true
 			if tc is Label:
 				var lt: String = (tc as Label).text
-				if lt == "v1.0.29":
+				if lt == "v1.0.30":
 					v23_ver_ok = true
 				if lt.contains("Crescent") or lt.contains("Avenue") or lt.contains("Street") or lt.contains("Drive"):
 					v23_addr_leak = true
@@ -2368,7 +2373,7 @@ func run_tests() -> void:
 		if str(p).ends_with("start_btn.png"):
 			v23_has_pill = true
 	check("v1.0.23 title: START wears the gradient pill", v23_start_ok and v23_has_pill, str(v23_tex_paths))
-	check("v1.0.23 title: version tag reads v1.0.29 and NO address is shown", v23_ver_ok and not v23_addr_leak)
+	check("v1.0.23 title: version tag reads v1.0.30 and NO address is shown", v23_ver_ok and not v23_addr_leak)
 
 	# ---------- v1.0.24: ONE TAP = ONE COMBO STEP (Michael's v1.0.22 play report) ----------
 	# "I hit B once and multiple Bs were hit… then when I hit A it

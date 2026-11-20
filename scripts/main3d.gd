@@ -7217,7 +7217,7 @@ func _build_hud() -> void:
 	title_panel.add_child(start_btn)
 	# v1.0.10: subtle build tag so Michael can confirm which build
 	# he is running from the title screen itself.
-	var ver := _hud_label(title_panel, "v1.0.29", Vector2(706, 522), 16)
+	var ver := _hud_label(title_panel, "v1.0.30", Vector2(706, 522), 16)
 	ver.label_settings.font_color = Color(0.78, 0.83, 0.95)
 	win_panel = _make_panel(hud_layer, Vector2(290, 130), Vector2(700, 460), Color(0.12, 0.2, 0.12, 0.97))
 	win_panel.set_anchors_preset(Control.PRESET_CENTER)
@@ -8138,16 +8138,14 @@ func _spawn_pound() -> void:
 	pound_van.name = "PoundVan"
 	pound_van_yaw = 0.0
 	pound_van.rotation.y = 0.0
-	# Lettering ON the body, both flanks — flat print that reads
-	# face-on as he passes, like the street signs. (The van is a
-	# traffic-system vehicle, so the static-prop roadway audits,
-	# which skip the Traffic subtree by design, are untouched.)
-	# v1.0.21: the body is the Meshy Animal Control van now (2.0 m
-	# wide — the labels ride just off its flanks at z = +/-1.02).
-	_label3d_flat(pound_van, "POUND", Vector3(-0.45, 0.60, 1.02), 120, Color(0.10, 0.30, 0.55), 0.0, 0.006)
-	_label3d_flat(pound_van, "ANIMAL CONTROL", Vector3(-0.45, 1.84, 1.02), 60, Color(0.10, 0.30, 0.55), 0.0, 0.006)
-	_label3d_flat(pound_van, "POUND", Vector3(-0.45, 0.60, -1.02), 120, Color(0.10, 0.30, 0.55), 180.0, 0.006)
-	_label3d_flat(pound_van, "ANIMAL CONTROL", Vector3(-0.45, 1.84, -1.02), 60, Color(0.10, 0.30, 0.55), 180.0, 0.006)
+	# v1.0.30: the code-added blue Label3D lettering on the van's
+	# flanks ("POUND" / "ANIMAL CONTROL", both sides) is REMOVED
+	# ENTIRELY (Michael, 2026-11-20, from his v1.0.29 play
+	# screenshot: the letters floated over/through the body at a
+	# wildly wrong scale). The Meshy van's own texture already
+	# carries ANIMAL CONTROL lettering and a paw print — the van
+	# needs no labels of ours. The depot's POUND header sign is a
+	# separate static and stays.
 	await _build_frame() # v1.0.11 chunking: van build and worker build are two chunks, not one ~112 ms stretch
 	# The worker: a person.gd "poundworker" (white uniform, cap,
 	# net in hand) with the grabber role, so his chase, grab and

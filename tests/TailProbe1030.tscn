@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://tests/tail_probe_1030.gd" id="1"]
+
+[node name="TailProbe1030" type="Node"]
+script = ExtResource("1")
