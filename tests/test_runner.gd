@@ -18,6 +18,12 @@ extends Node
 ## equipment removed and park-dweller kids playing there, and
 ## the frosted title panel (medallion instead of the collar tag,
 ## gradient START, no address),
+## the v1.0.31 set: the pound van CREEP (cat in the officer's
+## sight -> the patrol eases to a crawl; cat gone -> cruise
+## resumes), house numbers on MAILBOXES only (no address board
+## or number plaque anywhere; every mailbox shows its lot's
+## number), and the escape combination never lopsided (2000
+## sampled rolls, every one 5 steps with an A-count of 2 or 3),
 ## the v1.0.21 set: HOP while sprinting through the real
 ## three-finger touch path (momentum preserved, lands running),
 ## the escape combination as a randomly rolled A/B sequence
@@ -723,6 +729,42 @@ func run_tests() -> void:
 			houses_wrong_mb += 1
 	check("clutter: EVERY house has exactly ONE mailbox", houses_wrong_mb == 0 and total_mb_units == house_groups.size(), "wrong=" + str(houses_wrong_mb) + " units=" + str(total_mb_units) + " houses=" + str(house_groups.size()))
 
+	# ---------- v1.0.31: house numbers live on MAILBOXES only ----------
+	# Michael: the big "21 Maple Street" board over every house and
+	# the brass plaque beside the door ruin the look — both are
+	# GONE. The number is printed once, at mailbox size, on the
+	# mailbox out front. Audits: (a) no Label3D anywhere in a house
+	# group carries address text (full address or a bare number
+	# other than the mailbox's own), and no house group carries a
+	# board/plaque-sized box (the board was 5.6x1.05 / 5.4x0.92, the
+	# plaque 0.85x0.55x0.08); (b) every house's mailbox shows the
+	# lot's correct number.
+	var v31_board_bad: Array = []
+	var v31_mbnum_bad: Array = []
+	for g6 in house_groups.keys():
+		var want_num: String = str(house_groups[g6]).split(" ")[0]
+		var full_addr: String = str(house_groups[g6])
+		var mb_labels: Array = []
+		var gstack6: Array = [g6]
+		while not gstack6.is_empty():
+			var gn6: Node = gstack6.pop_back()
+			for gch6 in gn6.get_children():
+				gstack6.append(gch6)
+			if gn6 is Label3D:
+				var lt6: String = str((gn6 as Label3D).text)
+				if gn6.name == "MailboxNumber":
+					mb_labels.append(lt6)
+				elif lt6 == full_addr or lt6 == want_num:
+					v31_board_bad.append(full_addr + ": stray address/number label '" + lt6 + "' on " + gn6.name)
+			if gn6 is MeshInstance3D and (gn6 as MeshInstance3D).mesh is BoxMesh:
+				var bs6: Vector3 = ((gn6 as MeshInstance3D).mesh as BoxMesh).size
+				if (absf(bs6.x - 5.6) < 0.06 and absf(bs6.y - 1.05) < 0.06) or (absf(bs6.x - 5.4) < 0.06 and absf(bs6.y - 0.92) < 0.06) or (absf(bs6.x - 0.85) < 0.06 and absf(bs6.y - 0.55) < 0.06 and absf(bs6.z - 0.08) < 0.03):
+					v31_board_bad.append(full_addr + ": board/plaque-sized box remains " + str(bs6))
+		if mb_labels.size() != 1 or str(mb_labels[0]) != want_num:
+			v31_mbnum_bad.append(full_addr + ": mailbox labels=" + str(mb_labels))
+	check("v1.0.31: NO address board or number plaque remains on any house", v31_board_bad.is_empty(), str(v31_board_bad.slice(0, 4)))
+	check("v1.0.31: every house's mailbox shows its correct number (and only there)", v31_mbnum_bad.is_empty(), str(v31_mbnum_bad.slice(0, 4)))
+
 	# ---------- v1.3 CAMERA FRAMING (Michael's v1.0.5 playtest) ----------
 	# Measured BEFORE (tests/CamProbe.tscn, viewport fractions, y 0 =
 	# top edge): at the old camera (orbit 1.45, anchor 0.38, FOV 62,
@@ -1383,6 +1425,34 @@ func run_tests() -> void:
 		if rc.size() == 5:
 			rolls[" ".join(PackedStringArray(rc))] = true
 	check("v1.0.21: a fresh start re-rolls the combination", rolls.size() > 1, str(rolls.keys()))
+	# v1.0.31: the roll is never LOPSIDED (Michael: no more one A
+	# and four Bs) — every combo is 5 steps with an A-count of
+	# exactly 2 or 3. Sampled hard: 2000 rolls, both splits must
+	# show up in bulk (a degenerate roller that always emits one
+	# split fails the second check).
+	var v31_combo_bad := 0
+	var v31_split2 := 0
+	var v31_split3 := 0
+	for r31 in range(2000):
+		main.call("_roll_escape_combo")
+		var c31: Array = main.get("escape_combo")
+		if c31.size() != 5:
+			v31_combo_bad += 1
+			continue
+		var na31 := 0
+		for s31 in c31:
+			if str(s31) == "A":
+				na31 += 1
+			elif str(s31) != "B":
+				v31_combo_bad += 1
+		if na31 == 2:
+			v31_split2 += 1
+		elif na31 == 3:
+			v31_split3 += 1
+		else:
+			v31_combo_bad += 1
+	check("v1.0.31: EVERY rolled combo is 5 steps with 2 or 3 As (never lopsided)", v31_combo_bad == 0, "bad=" + str(v31_combo_bad) + " split2=" + str(v31_split2) + " split3=" + str(v31_split3))
+	check("v1.0.31: both balanced splits occur in bulk (the roll is genuinely mixed)", v31_split2 > 500 and v31_split3 > 500, "split2=" + str(v31_split2) + " split3=" + str(v31_split3))
 	var combo: Array = main.get("escape_combo")
 	main.call("escape_panel_input", str(combo[0]))
 	check("v1.0.21: a correct press lights the first step", int(main.get("combo_index")) == 1, str(main.get("combo_index")))
@@ -1942,6 +2012,43 @@ func run_tests() -> void:
 	check("v1.0.22: the patrolling pound van drives NOSE-first (nose along its motion)", patrol_disp.length() > 1.0 and (main.call("_car_nose_dir", pvan) as Vector3).dot(patrol_disp.normalized()) > 0.9, "nose=" + str(main.call("_car_nose_dir", pvan)) + " disp=" + str(patrol_disp))
 	check("pound van: the patrol stays on the road lane", absf(pvan.position.z - 16.8) < 1.5, str(pvan.position))
 	check("pound van: the worker rides inside (invisible, travelling with the van)", not pworker.visible and (pworker as Node3D).global_position.distance_to(pvan.position) < 1.0)
+	# ---------- v1.0.31: THE CREEP (Michael's direction) ----------
+	# "If you come anywhere near it, it slows to a crawl like it's
+	# watching you." With the cat inside the officer's sight (off
+	# the van's path, so the in-road stop doesn't fire) the patrol
+	# speed must ease down to crawl pace while the meter builds;
+	# with the cat gone it must ease back up to cruise. The meter
+	# is held below the pull-over by the harness so the section
+	# stays in "patrol" throughout.
+	pvan.position = Vector3(-60, 0, 16.8)
+	main.set("pound_van_yaw", 0.0)
+	main.set("pound_route_idx", 1)
+	main.set("pound_van_speed", 8.5)
+	main.set("pound_state", "patrol")
+	main.set("pound_notice", 0.0)
+	main.set("pound_creep", 0.0)
+	var creep_min_speed := 99.0
+	var creep_t := 0.0
+	while creep_t < 5.0:
+		main.set("pound_notice", 0.3) # hold the meter: watching, not yet pulling over
+		(player as Node3D).global_position = pvan.position + Vector3(6.0, 0.2, 2.5) # in sight, beside his line — never in the stop zone
+		player.set("velocity", Vector3.ZERO)
+		await wait_sec(0.25)
+		creep_t += 0.25
+		if str(main.get("pound_state")) == "patrol":
+			creep_min_speed = minf(creep_min_speed, float(main.get("pound_van_speed")))
+	check("v1.0.31 creep: with the cat in sight the van slows to a crawl (<= 2.2 m/s)", creep_min_speed <= 2.2, "min_speed=" + str(creep_min_speed))
+	check("v1.0.31 creep: the creep blend fully engages while the cat is watched", float(main.get("pound_creep")) > 0.9, "creep=" + str(main.get("pound_creep")))
+	(player as Node3D).global_position = Vector3(-100, 0.2, 80) # gone
+	main.set("pound_notice", 0.0)
+	var rec_max_speed := 0.0
+	creep_t = 0.0
+	while creep_t < 5.0:
+		await wait_sec(0.25)
+		creep_t += 0.25
+		rec_max_speed = maxf(rec_max_speed, float(main.get("pound_van_speed")))
+	check("v1.0.31 creep: cat gone, the van eases back up to patrol speed (>= 6.5 m/s)", rec_max_speed >= 6.5, "max_speed=" + str(rec_max_speed))
+	check("v1.0.31 creep: the creep blend releases when the cat is gone", float(main.get("pound_creep")) < 0.1, "creep=" + str(main.get("pound_creep")))
 	# v1.0.21 ROUTE AUDIT: three full patrol loops, stepped
 	# synchronously — the van's BODY (an oriented box, half extents
 	# 2.05 x 1.0) must never enter a house lot envelope or the
@@ -2201,7 +2308,7 @@ func run_tests() -> void:
 		if grp == null or v23_grp_meshes < 6:
 			# v1.0.29: the threshold was 20 when a house was ~40
 			# code-built parts; a Meshy house is ONE model mesh plus
-			# its board/plaque/path/mailbox/shrubs (9-24 meshes), so
+			# its path/mailbox/shrubs (v1.0.31: board+plaque gone), so
 			# 6 identifies the group unambiguously (it sits exactly
 			# at the lot position).
 			v23_audit_bad.append(str(h["address"]) + ": group not found")
@@ -2348,7 +2455,7 @@ func run_tests() -> void:
 				v23_start_ok = true
 			if tc is Label:
 				var lt: String = (tc as Label).text
-				if lt == "v1.0.30":
+				if lt == "v1.0.31":
 					v23_ver_ok = true
 				if lt.contains("Crescent") or lt.contains("Avenue") or lt.contains("Street") or lt.contains("Drive"):
 					v23_addr_leak = true
@@ -2373,7 +2480,7 @@ func run_tests() -> void:
 		if str(p).ends_with("start_btn.png"):
 			v23_has_pill = true
 	check("v1.0.23 title: START wears the gradient pill", v23_start_ok and v23_has_pill, str(v23_tex_paths))
-	check("v1.0.23 title: version tag reads v1.0.30 and NO address is shown", v23_ver_ok and not v23_addr_leak)
+	check("v1.0.23 title: version tag reads v1.0.31 and NO address is shown", v23_ver_ok and not v23_addr_leak)
 
 	# ---------- v1.0.24: ONE TAP = ONE COMBO STEP (Michael's v1.0.22 play report) ----------
 	# "I hit B once and multiple Bs were hit… then when I hit A it

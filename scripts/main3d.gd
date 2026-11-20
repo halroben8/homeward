@@ -322,7 +322,10 @@ const TRAFFIC_HIT_PENALTY := 5
 # sight of the van (or of the worker himself, on foot), the
 # being-noticed meter builds — since v1.0.21 exactly like a
 # grabber's (see _pound_update_notice) — and when it fills, the van
-# pulls over to the kerb, the worker (white uniform,
+# pulls over to the kerb. Since v1.0.31, while the cat is in that
+# sight the van also eases down to a CRAWL (the driver watching
+# him — the van hunts the player, not the other way round; see
+# pound_creep in _update_pound). The worker (white uniform,
 # net in hand — the same kind man from the story's opening) gets out
 # and comes after the cat. He is never a villain: he is trying to
 # get a lost cat home. A catch routes through the ORDINARY capture
@@ -340,6 +343,9 @@ var player_collared: bool = false
 var story: Node = null # STORY PART 1: the opening cutscene module (scripts/opening_cutscene.gd) — created in _ready; owns the title -> cutscene -> pound flow
 const POUND_SPOT_RADIUS := 12.0 # m — RETIRED in v1.0.21: the old instant-spot radius. Engagement is the notice meter now (his detect_radius, person.gd poundworker = 12.0, coincidentally the same reach); kept only so older notes resolve.
 const POUND_VAN_SPEED := 8.5 # patrol cruise, in line with traffic (7-10)
+const POUND_VAN_CREEP_SPEED := 1.3 # v1.0.31: the crawl — walking pace and then some slower; the van easing down to this while the cat is in sight IS the tell that the driver has seen him
+var pound_creep: float = 0.0 # v1.0.31: eased 0..1 blend between patrol cruise and the crawl (never a snap)
+var pound_cat_seen: bool = false # v1.0.31: last frame's verdict from _pound_update_notice — the cat is inside the officer's sight (the same sight that builds the meter) while he rides
 const POUND_RETURN_SPEED := 5.0 # his jog back to the van (brisk, not chase-fast)
 const POUND_CHASE_SPEED := 6.4 # set on the worker in person.gd (inside the locked 6.0-7.0 chaser band)
 var pound_van: Node3D = null
@@ -3880,13 +3886,18 @@ func _build_house(parent: Node, h: Dictionary, wall_col: Color, roof_col: Color)
 	# v1.0.29: the code-built shell is gone — each lot wears one of
 	# the seven Meshy house models (assigned per street row in
 	# _define_houses; never the same model on two adjacent lots).
-	# The address board, number plaque, path, mailbox, hedges,
-	# fences and yard prop carry over from the old builder, hung on
-	# the model's real front face, so the lot keeps its identity:
-	# same address, same plaque, same driveway, same seeded
-	# dressing every run. (wall_col / roof_col are unused now — the
-	# models bring their own colours — but the signature stays so
-	# the build loop above is untouched.)
+	# The path, mailbox, hedges, fences and yard prop carry over
+	# from the old builder, hung on the model's real front face, so
+	# the lot keeps its identity: same address, same driveway, same
+	# seeded dressing every run. (wall_col / roof_col are unused
+	# now — the models bring their own colours — but the signature
+	# stays so the build loop above is untouched.)
+	# v1.0.31: the address BOARD and the brass number PLAQUE are
+	# GONE (Michael: the big "21 Maple Street" board over every
+	# house ruins the look of the Meshy models). The lot's number
+	# now lives ONLY on its mailbox, at real mailbox size — you
+	# find the street from the street signs, then the house by
+	# reading mailboxes, like a real street.
 	var p: Vector3 = h["pos"]
 	var g := Node3D.new()
 	g.position = p
@@ -3896,27 +3907,17 @@ func _build_house(parent: Node, h: Dictionary, wall_col: Color, roof_col: Color)
 	hr.seed = absi(str(h["address"]).hash()) * 7919 + 13
 	var dims: Dictionary = _place_building_model(g, String(h["model"]), facing)
 	var fz: float = float(dims["d"]) * 0.5 # the placed model's front wall face
-	var hgt: float = float(dims["h"])
 	var door_x: float = 0.0 # the Meshy fronts carry their door at centre
 	await _build_tick() # v1.0.11 chunking
 	# Foundation shrubs against the front corners (v1.0 dressing).
 	for shx in [-float(dims["w"]) * 0.4, float(dims["w"]) * 0.4]:
 		var shrub := _sphere(g, Vector3(shx, 0.42, facing * (fz + 0.35)), Vector3(0.85, 0.62, 0.6), Color.WHITE)
 		shrub.material_override = _mat_tex(TEX_FOLIAGE, Color(0.8, 0.95, 0.75), Vector3(2, 2, 2))
-	# Address sign + brass number plaque (IDENTICAL system on every house:
-	# this is how you find home). The board rides the model's front
-	# wall, dropping on low houses so it stays on the wall face.
-	var board_y: float = clampf(hgt * 0.66, 2.45, 3.1)
-	_box(g, Vector3(0, board_y, facing * (fz + 0.18)), Vector3(5.6, 1.05, 0.1), Color(0.93, 0.92, 0.88))
-	_box(g, Vector3(0, board_y, facing * (fz + 0.24)), Vector3(5.4, 0.92, 0.1), Color(0.1, 0.1, 0.14))
+	# v1.0.31: NO address board, NO number plaque (see the header
+	# note above). The lot number is data here and print only on
+	# the mailbox below.
 	var addr_rot: float = 0.0 if facing > 0.0 else 180.0
-	var addr_ps: float = clampf(4.9 / (0.55 * float(h["address"].length()) * 88.0), 0.0035, 0.006)
-	_label3d_flat(g, h["address"], Vector3(0, board_y, facing * (fz + 0.32)), 88, Color(1.0, 0.95, 0.6), addr_rot, addr_ps)
-	var plaque_y: float = 1.7 if board_y > 2.9 else 1.3
-	var plaque_x: float = door_x + 1.15
-	_box(g, Vector3(plaque_x, plaque_y, facing * (fz + 0.12)), Vector3(0.85, 0.55, 0.08), Color(0.75, 0.6, 0.25))
-	_label3d_flat(g, h["address"].split(" ")[0], Vector3(plaque_x, plaque_y, facing * (fz + 0.18)), 72, Color(0.15, 0.12, 0.05), addr_rot, 0.005)
-	h["plaque"] = h["address"].split(" ")[0] # the number on the plaque == the address number
+	h["plaque"] = h["address"].split(" ")[0] # the lot's number == the address number (shown on the mailbox)
 	# Path: 0 = slab, 1 = stepping stones (leads to the door)
 	if hr.randi_range(0, 1) == 0:
 		_box(g, Vector3(door_x, 0.05, facing * 5.6), Vector3(1.6, 0.08, 2.4), Color(0.85, 0.83, 0.76))
@@ -3924,21 +3925,26 @@ func _build_house(parent: Node, h: Dictionary, wall_col: Color, roof_col: Color)
 		for stp in [4.9, 5.9, 6.9]:
 			_box(g, Vector3(door_x, 0.05, facing * stp), Vector3(0.95, 0.08, 0.7), Color(0.82, 0.8, 0.74))
 	# Mailbox: EXACTLY ONE per house (CLUTTER, Michael 2026-11-17:
-	# he found houses with three mailboxes and houses with none).
-	# Style 0 = red post box out by the path, 1 = black wall box
-	# by the door — never none, never two. Built in a group named
-	# "Mailbox" so the clutter audit can count one per house.
-	var mb_style: int = hr.randi_range(0, 1)
+	# he found houses with three mailboxes and houses with none) —
+	# never none, never two. Always the post box out front by the
+	# path, and since v1.0.31 it carries the house NUMBER on its
+	# street face at normal mailbox size: the ONLY place the
+	# number is printed now (the wall-box style is retired — a
+	# number hung by the door would defeat reading the number off
+	# mailboxes from the street). Built in a group named "Mailbox"
+	# so the audits can count one per house and read its number
+	# back (the label is named "MailboxNumber"; the group also
+	# carries the number as metadata).
 	var mb := Node3D.new()
 	mb.name = "Mailbox"
 	g.add_child(mb)
-	if mb_style == 0:
-		mb.position = Vector3(2.8, 0, facing * 6.4)
-		_cyl(mb, Vector3(0, 0.5, 0), 0.05, 0.05, 1.0, Color(0.4, 0.35, 0.3), true)
-		_box(mb, Vector3(0, 1.1, 0), Vector3(0.7, 0.45, 0.5), Color(0.6, 0.25, 0.22))
-	else:
-		mb.position = Vector3(door_x - 1.25, 0, facing * (fz + 0.14)) # wall box rides beside the door
-		_box(mb, Vector3(0, 1.5, 0), Vector3(0.6, 0.42, 0.22), Color(0.16, 0.16, 0.18))
+	mb.position = Vector3(2.8, 0, facing * 6.4)
+	_cyl(mb, Vector3(0, 0.5, 0), 0.05, 0.05, 1.0, Color(0.4, 0.35, 0.3), true)
+	_box(mb, Vector3(0, 1.1, 0), Vector3(0.7, 0.45, 0.5), Color(0.6, 0.25, 0.22))
+	var mb_num: String = h["address"].split(" ")[0]
+	mb.set_meta("number", mb_num)
+	var mb_label := _label3d_flat(mb, mb_num, Vector3(0, 1.1, facing * 0.27), 56, Color(1.0, 0.97, 0.9), addr_rot, 0.0022)
+	mb_label.name = "MailboxNumber"
 	# Front hedge (45%; the pair flanks the path)
 	if hr.randf() < 0.45:
 		for hx3 in [door_x - 3.4, door_x + 3.4]:
@@ -7217,7 +7223,7 @@ func _build_hud() -> void:
 	title_panel.add_child(start_btn)
 	# v1.0.10: subtle build tag so Michael can confirm which build
 	# he is running from the title screen itself.
-	var ver := _hud_label(title_panel, "v1.0.30", Vector2(706, 522), 16)
+	var ver := _hud_label(title_panel, "v1.0.31", Vector2(706, 522), 16)
 	ver.label_settings.font_color = Color(0.78, 0.83, 0.95)
 	win_panel = _make_panel(hud_layer, Vector2(290, 130), Vector2(700, 460), Color(0.12, 0.2, 0.12, 0.97))
 	win_panel.set_anchors_preset(Control.PRESET_CENTER)
@@ -8250,6 +8256,7 @@ func _pound_update_notice(delta: float) -> void:
 	# and on foot nothing built up at all.
 	if pound_worker == null or pound_van == null or player == null:
 		return
+	pound_cat_seen = false # v1.0.31: recomputed below; any state that can't spot him reads as unseen
 	if pound_state != "patrol" and pound_state != "return":
 		return
 	# His notice_cooldown is a real gate (a chase end sets 3 s of
@@ -8268,6 +8275,7 @@ func _pound_update_notice(delta: float) -> void:
 	var seen: bool = false
 	if gates and dist < sight and not bool(player.get("is_hidden")):
 		seen = bool(pound_worker.call("_has_line_of_sight")) # person.gd's LOS takes NO argument (it reads his own player_ref) — passing one makes call() fail and return null, which reads as "never seen"
+	pound_cat_seen = seen and pound_state == "patrol" # v1.0.31: the van creep watches this (on foot in "return" he walks his own pace — the creep is the VAN's behaviour)
 	if seen:
 		var closeness: float = clampf(1.0 - dist / sight, 0.0, 1.0)
 		var rate: float = float(pound_worker.get("fill_rate")) * (0.35 + closeness * 0.95)
@@ -8485,7 +8493,23 @@ func _update_pound(delta: float) -> void:
 				pound_path = [Vector3(-112, 0, 11.0), Vector3(-112, 0, 5.0), POUND_HOME_POS]
 				pound_path_idx = 0
 			else:
-				_pound_drive_route(delta, POUND_VAN_SPEED)
+				# v1.0.31 THE CREEP (Michael: "if you come anywhere
+				# near it, it slows to a crawl like it's watching
+				# you — the driver sees you"; the player should
+				# never have to chase the van down). While the cat
+				# is inside the officer's sight — the very sight
+				# that builds the notice meter above — the cruise
+				# eases down to a crawl; when the cat slips away it
+				# eases back up to patrol speed. The blend factor
+				# moves at a fixed rate (~1.1 s end to end) and
+				# _pound_drive_route eases the speed itself on top,
+				# so the change is a glide, never a snap. A full
+				# meter still starts the pull-over exactly as
+				# before.
+				var creep_target: float = 1.0 if pound_cat_seen else 0.0
+				pound_creep = move_toward(pound_creep, creep_target, delta / 1.1)
+				var cruise: float = lerpf(POUND_VAN_SPEED, POUND_VAN_CREEP_SPEED, pound_creep)
+				_pound_drive_route(delta, cruise)
 				_pound_pin_worker()
 		"pullover":
 			_pound_drive_pullover(delta)
@@ -9347,13 +9371,27 @@ func _on_escape_prompt_pressed() -> void:
 
 func _roll_escape_combo() -> void:
 	# v1.0.21: a fresh A/B combination for THIS start of the puzzle —
-	# five presses, each an even coin flip (Michael's example was
-	# "A B B A A"). Rolled on every panel opening, so an interrupted
-	# try (the captor notices, the panel closes) restarts against a
-	# NEW sequence, never the memorised old one.
+	# five presses (Michael's example was "A B B A A"). Rolled on
+	# every panel opening, so an interrupted try (the captor
+	# notices, the panel closes) restarts against a NEW sequence,
+	# never the memorised old one.
+	# v1.0.31: never LOPSIDED (Michael: "I don't want it to be like
+	# one A and four Bs — it's gotta be much more random, a little
+	# harder"). The A-count is rolled 2 or 3, so every combo is a
+	# 3-2 or 2-3 split, then the five letters are shuffled — all
+	# ten balanced sequences stay equally likely, the six lopsided
+	# ones (5-0, 4-1 either way) can never occur.
 	escape_combo.clear()
+	var a_count: int = rng.randi_range(2, ESCAPE_COMBO_LEN - 2)
+	var letters: Array = []
 	for i in range(ESCAPE_COMBO_LEN):
-		escape_combo.append("A" if rng.randi_range(0, 1) == 0 else "B")
+		letters.append("A" if i < a_count else "B")
+	for i in range(letters.size() - 1, 0, -1): # Fisher-Yates, game rng
+		var j: int = rng.randi_range(0, i)
+		var tmp: String = letters[i]
+		letters[i] = letters[j]
+		letters[j] = tmp
+	escape_combo = letters
 	if escape_panel:
 		escape_panel.set_combo_seq(escape_combo)
 
