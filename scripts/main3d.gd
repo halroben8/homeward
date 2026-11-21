@@ -388,6 +388,8 @@ const POUND_RETURN_SPEED := 5.0 # his jog back to the van (brisk, not chase-fast
 const POUND_CHASE_SPEED := 6.4 # set on the worker in person.gd (inside the locked 6.0-7.0 chaser band)
 var pound_van: Node3D = null
 var pound_worker: CharacterBody3D = null
+var danielle_npc: CharacterBody3D = null # v1.0.34: Danielle — unique named NPC (see _spawn_noah_danielle)
+var noah_npc: CharacterBody3D = null # v1.0.34: Noah — her toddler son, always with her
 var pound_state: String = "patrol" # patrol | pullover | exit | chase | away | return | depot_in | depot | depot_out (v1.0.21: the last three are the garage legs)
 var pound_route: Array = [] # patrol waypoints (Vector3, on the right-hand lanes)
 var pound_route_idx: int = 0
@@ -1483,6 +1485,7 @@ const WARMUP_MODEL_PATHS: Array = [
 	"res://assets/models/car_compact.glb", "res://assets/models/truck_pickup.glb",
 	"res://assets/models/car_police.glb", "res://assets/models/van_delivery.glb",
 	"res://assets/models/suv.glb", "res://assets/models/van_animal_control.glb",
+	"res://assets/models/danielle.glb", "res://assets/models/noah.glb", # v1.0.34: the unique pair
 ]
 var warmup_count: int = 0 # suite handle: how many distinct models were warmed
 
@@ -1607,6 +1610,7 @@ func _build_world_async() -> void:
 	await _set_boot_stage("People", 75)
 	await _spawn_npcs()
 	_spawn_town_cats()
+	_spawn_noah_danielle() # v1.0.34: the unique pair (outside the npcs pool — see the function)
 	await _build_frame()
 	_build_pound_depot() # v1.0.21: the pound's garage + office at the west end (before the van, so its home exists when it first returns)
 	await _spawn_pound()
@@ -7393,7 +7397,7 @@ func _build_hud() -> void:
 	title_panel.add_child(start_btn)
 	# v1.0.10: subtle build tag so Michael can confirm which build
 	# he is running from the title screen itself.
-	var ver := _hud_label(title_panel, "v1.0.34", Vector2(706, 522), 16)
+	var ver := _hud_label(title_panel, "v1.0.35", Vector2(706, 522), 16)
 	ver.label_settings.font_color = Color(0.78, 0.83, 0.95)
 	win_panel = _make_panel(hud_layer, Vector2(290, 130), Vector2(700, 460), Color(0.12, 0.2, 0.12, 0.97))
 	win_panel.set_anchors_preset(Control.PRESET_CENTER)
@@ -8004,6 +8008,11 @@ func _on_meow() -> void:
 		if npc.global_position.distance_to(player.global_position) < 8.0:
 			npc.call("react_to_attention")
 			heard = true
+	# v1.0.34: Danielle (unique, outside npcs) hears a meow too —
+	# she reacts like any friendly neighbour, Noah at her side.
+	if danielle_npc != null and danielle_npc.global_position.distance_to(player.global_position) < 8.0:
+		danielle_npc.call("react_to_attention")
+		heard = true
 	# v1.0.26 (Michael's ask): town cats in earshot MEOW BACK.
 	for tc in town_cats:
 		if (tc as Node3D).global_position.distance_to(player.global_position) < 6.5:
@@ -8034,6 +8043,12 @@ func _paw_action() -> void:
 		if d < best_d:
 			best_d = d
 			best = npc
+	# v1.0.34: Danielle can be pawed too (she is not in npcs).
+	if danielle_npc != null:
+		var dd: float = danielle_npc.global_position.distance_to(player.global_position)
+		if dd < best_d:
+			best_d = dd
+			best = danielle_npc
 	# v1.0.26 (Michael's ask): pawing AT a town cat starts a
 	# play session — the cat rolls over and plays; a completed
 	# session scores +3 once per cat per run (see town_cat.gd).
@@ -8283,6 +8298,46 @@ func _update_pound_van_bar() -> void:
 # bar stays as unlit model geometry. The proximity NOTICE METER
 # behaviour is unchanged — it just no longer lights or sounds
 # anything.
+
+func _spawn_noah_danielle() -> void:
+	# v1.0.34 (Michael, 2026-11-20): Danielle and her toddler son
+	# Noah — UNIQUE named neighbours. Exactly ONE pair exists:
+	# they are spawned here by hand, never added to the defs/roles
+	# pool, and kept OUT of the npcs array (so the 48-population
+	# and its 25% grabber split are untouched — the same treatment
+	# as the pound worker). They are always together: Danielle
+	# wanders the town like any friendly neighbour; Noah follows
+	# at her side (person.gd's follow behaviour), comes with her
+	# when she trots over to the cat, and stays beside her while
+	# she kneels. Danielle is ALWAYS friendly and always has a
+	# treat: role "friendly" + always_treat — no notice bar, no
+	# RUN tell, no chase, no capture, ever. Noah (half her
+	# height, body_h 0.85 against her 1.7) has no interaction
+	# behaviour of his own.
+	var spot: Vector3 = push_out_of_houses(Vector3(30, 0.2, -17), 0.8)
+	var d := CharacterBody3D.new()
+	d.set_script(PersonScript)
+	d.set("npc_type", "danielle")
+	d.set("role", "friendly")
+	d.set("always_treat", true)
+	d.set("wander_x_max", 112.0 if LEGACY_TOWN_ONLY else 366.0)
+	d.position = spot
+	add_child(d)
+	d.set("main_ref", self)
+	d.set("player_ref", player)
+	d.call("_pick_wander_target") # re-pick validated, now that main_ref exists (as in _spawn_npcs)
+	danielle_npc = d
+	var n := CharacterBody3D.new()
+	n.set_script(PersonScript)
+	n.set("npc_type", "noah")
+	n.set("role", "ignore")
+	n.set("wander_x_max", 112.0 if LEGACY_TOWN_ONLY else 366.0)
+	n.position = spot + Vector3(0.8, 0, 0.4)
+	add_child(n)
+	n.set("main_ref", self)
+	n.set("player_ref", player)
+	n.set("follow_target", d)
+	noah_npc = n
 
 func _spawn_pound() -> void:
 	# The patrol circuit: one right-hand loop around the whole

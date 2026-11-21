@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://pairprobe1035bscene"]
+
+[ext_resource type="Script" path="res://tests/pair_probe_1035b.gd" id="1"]
+
+[node name="PairProbe1035B" type="Node"]
+script = ExtResource("1")

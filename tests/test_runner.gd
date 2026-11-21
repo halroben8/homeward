@@ -191,6 +191,29 @@ func net_grip_dist(npc: Node, role: String) -> float:
 	var hp: Vector3 = skel.global_transform * skel.get_bone_global_pose(int(bones[role])).origin
 	return hp.distance_to(grip)
 
+func mesh_height(n: Node) -> float:
+	# v1.0.34: the visible height of a person's rendered model,
+	# from the union of its on-screen mesh AABBs (skinned meshes
+	# report their bind-pose bounds, so this is standing height).
+	var box: AABB
+	var first := true
+	var stack: Array = [n]
+	while not stack.is_empty():
+		var cur: Node = stack.pop_back()
+		if cur is MeshInstance3D and (cur as MeshInstance3D).is_visible_in_tree():
+			var ga: AABB = (cur as MeshInstance3D).global_transform * (cur as MeshInstance3D).get_aabb()
+			if first:
+				box = ga
+				first = false
+			else:
+				box = box.merge(ga)
+		for ch in cur.get_children():
+			stack.append(ch)
+	if first:
+		return 0.0
+	return box.size.y
+
+
 func collect_captor_texts(cap: Node) -> Array:
 	# v1.0.19: enter the escape room with `cap` as captor and gather
 	# every captor-referring line the game generates for them: the
@@ -2475,7 +2498,7 @@ func run_tests() -> void:
 				v23_start_ok = true
 			if tc is Label:
 				var lt: String = (tc as Label).text
-				if lt == "v1.0.34":
+				if lt == "v1.0.35":
 					v23_ver_ok = true
 				if lt.contains("Crescent") or lt.contains("Avenue") or lt.contains("Street") or lt.contains("Drive"):
 					v23_addr_leak = true
@@ -2500,7 +2523,7 @@ func run_tests() -> void:
 		if str(p).ends_with("start_btn.png"):
 			v23_has_pill = true
 	check("v1.0.23 title: START wears the gradient pill", v23_start_ok and v23_has_pill, str(v23_tex_paths))
-	check("v1.0.23 title: version tag reads v1.0.34 and NO address is shown", v23_ver_ok and not v23_addr_leak)
+	check("v1.0.23 title: version tag reads v1.0.35 and NO address is shown", v23_ver_ok and not v23_addr_leak)
 
 	# ---------- v1.0.24: ONE TAP = ONE COMBO STEP (Michael's v1.0.22 play report) ----------
 	# "I hit B once and multiple Bs were hit… then when I hit A it
@@ -3047,6 +3070,90 @@ func run_tests() -> void:
 	check("v1.0.34 districts: returning west restores the west bands", all_on34 and bool(districts34[0]["on"]), "on=" + str([districts34[0]["on"], districts34[1]["on"], districts34[2]["on"]]))
 	player34.global_position = saved_pos34
 	main.call("_update_districts", 1.0)
+
+	# ---------- v1.0.34: Noah & Danielle — the unique pair ----------
+	# Michael (2026-11-20): his son Noah and Noah's mother Danielle
+	# join the town as ONE named pair: exactly one instance, always
+	# together, Danielle always friendly with a treat, Noah half
+	# her height and smaller than the Excited Kid.
+	var dan34: Node = main.get("danielle_npc")
+	var noah34: Node = main.get("noah_npc")
+	check("v1.0.34: Danielle and Noah both spawned", dan34 != null and noah34 != null)
+	var dcount: int = 0
+	var ncount: int = 0
+	for n in get_tree().get_nodes_in_group("npc"):
+		if str(n.get("npc_type")) == "danielle":
+			dcount += 1
+		if str(n.get("npc_type")) == "noah":
+			ncount += 1
+	check("v1.0.34: exactly ONE Danielle and ONE Noah in the whole game", dcount == 1 and ncount == 1, "d=%d n=%d" % [dcount, ncount])
+	check("v1.0.34: the pair stays out of the town pool (48 + 25% split untouched)", not (main.get("npcs") as Array).has(dan34) and not (main.get("npcs") as Array).has(noah34) and (main.get("npcs") as Array).size() == 48)
+	# Heights, measured off the rendered meshes. The pair is
+	# staged on the z=-15 street first: wherever their wandering
+	# (and the earlier sections) left them, the measurements —
+	# and the follow test below — need a known, in-bounds,
+	# obstacle-free start, with the cat close enough that
+	# distance culling shows all three models.
+	print("v1.0.34 section start: danielle at ", (dan34 as Node3D).global_position, " noah at ", (noah34 as Node3D).global_position)
+	var kid34: Node = npc_by_type("kid")
+	(dan34 as Node3D).global_position = Vector3(24.0, 0.2, -15.0)
+	(noah34 as Node3D).global_position = Vector3(24.8, 0.2, -14.6)
+	(kid34 as Node3D).global_position = Vector3(25.6, 0.2, -15.0)
+	(player as Node3D).global_position = Vector3(24.4, 0.2, -12.0)
+	await wait_sec(0.6)
+	var dh: float = mesh_height(dan34)
+	var nh: float = mesh_height(noah34)
+	var kh: float = mesh_height(kid34)
+	check("v1.0.34: Danielle stands at adult height (~1.7 m)", dh > 1.60 and dh < 1.80, "h=%.3f" % dh)
+	check("v1.0.34: Noah is half Danielle's height (ratio 0.46-0.54)", dh > 0.0 and nh / dh > 0.46 and nh / dh < 0.54, "noah=%.3f danielle=%.3f" % [nh, dh])
+	check("v1.0.34: Noah is smaller than the Excited Kid", nh > 0.0 and kh > 0.0 and nh < kh, "noah=%.3f kid=%.3f" % [nh, kh])
+	check("v1.0.34: Danielle is friendly with a treat, never a grabber (and Noah never grabs)", str(dan34.get("role")) == "friendly" and bool(dan34.get("always_treat")) and str(noah34.get("role")) != "grabber")
+	# Follow: freeze Danielle 10 m down the street — Noah must
+	# toddle after her on his own and settle beside her. (The kid
+	# is parked away first so nothing body-blocks the toddler's
+	# straight line — the follow has no crowd-avoidance, same as
+	# every wanderer in town.)
+	(kid34 as Node3D).global_position = Vector3(-40.0, 0.2, -55.0)
+	dan34.set("active", false)
+	(dan34 as Node3D).global_position = Vector3(34.0, 0.2, -15.0)
+	(noah34 as Node3D).global_position = Vector3(24.0, 0.2, -15.0)
+	(player as Node3D).global_position = Vector3(29.0, 0.2, -11.0)
+	var caught: bool = false
+	var ft: float = 0.0
+	while ft < 12.0:
+		await wait_sec(0.25)
+		ft += 0.25
+		if (noah34 as Node3D).global_position.distance_to((dan34 as Node3D).global_position) < 1.6:
+			caught = true
+			break
+	check("v1.0.34: Noah follows Danielle and settles beside her", caught, "dist=%.2f" % (noah34 as Node3D).global_position.distance_to((dan34 as Node3D).global_position))
+	dan34.set("active", true)
+	# Treat: put the cat at her side and trigger the friendly
+	# reaction — she must run the TREAT act, and Noah stays close.
+	# (The town is parked far away first so nothing interrupts.)
+	for n in main.get("npcs"):
+		(n as Node3D).global_position = (dan34 as Node3D).global_position + Vector3(-60.0, 0, -60.0)
+		n.set("notice", 0.0)
+		n.set("mode", "wander")
+	(player as Node3D).global_position = (dan34 as Node3D).global_position + Vector3(1.6, 0, 0)
+	dan34.set("interact_cooldown", 0.0)
+	dan34.set("interact_state", "")
+	var treats_before: int = int(main.get("treats_count"))
+	var score_before34: int = int(main.get("score"))
+	dan34.call("react_to_attention")
+	var saw_treat: bool = false
+	var tt: float = 0.0
+	while tt < 9.0:
+		await wait_sec(0.2)
+		tt += 0.2
+		if str(dan34.get("interact_state")) == "treat":
+			saw_treat = true
+		if str(dan34.get("interact_state")) == "" and tt > 1.0:
+			break
+	check("v1.0.34: Danielle's interaction is the TREAT act (she always has a treat)", saw_treat)
+	check("v1.0.34: her treat pays +5", int(main.get("score")) - score_before34 == 5 and int(main.get("treats_count")) - treats_before == 1, "score %+d treats %+d" % [int(main.get("score")) - score_before34, int(main.get("treats_count")) - treats_before])
+	check("v1.0.34: Danielle never told, chased or grabbed through any of it", str(dan34.get("mode")) == "wander", str(dan34.get("mode")))
+	check("v1.0.34: Noah stayed with Danielle through her treat", (noah34 as Node3D).global_position.distance_to((dan34 as Node3D).global_position) < 2.6, "dist=%.2f" % (noah34 as Node3D).global_position.distance_to((dan34 as Node3D).global_position))
 
 	# ---------- v1.0.25 ITEM 6: the opening must survive the START tap ----------
 	# The real flow: start_game() (what the button calls), then the

@@ -113,6 +113,9 @@ var dog_bone: Dictionary = {} # fl/fr/rl/rr/tail -> bone index
 # "ignore" NPCs never notice the cat. Grabbers give a clear RUN tell
 # (crouch, arms wide, "!", "Here, kitty kitty!") before chasing.
 var role: String = "friendly"
+var always_treat: bool = false # v1.0.34 (Danielle): every friendly interaction she offers the treat
+var follow_target: Node3D = null # v1.0.34 (Noah): stay beside this person instead of wandering
+var follow_side: float = 1.0 # v1.0.34: which side of the follow target to toddle on
 var interact_cooldown: float = 0.0
 # --- v0.8 (item 5): friendly bend-down pet/treat ---------------------
 # Friendly people NO LONGER build notice from proximity at all — the
@@ -450,6 +453,24 @@ func _apply_type() -> void:
 			display_name = "Street Musician"
 			pron_subj = "he"; pron_obj = "him"; pron_poss = "his"; gendered = true
 			walk_speed = 2.2; chase_speed = 5.9; detect_radius = 6.5; fill_rate = 0.20
+		"danielle":
+			# v1.0.34: Danielle — Noah's mother. A UNIQUE named
+			# neighbour: main spawns exactly one of her, always
+			# with Noah, and she is never in the random pool.
+			# Always friendly, always with a treat (main sets
+			# always_treat) — she is never a grabber.
+			display_name = "Danielle"
+			pron_subj = "she"; pron_obj = "her"; pron_poss = "her"; gendered = true
+			walk_speed = 2.4; chase_speed = 6.0; detect_radius = 7.5; fill_rate = 0.22
+		"noah":
+			# v1.0.34: Noah — Danielle's toddler son. A UNIQUE
+			# named neighbour who stays beside his mother (main
+			# sets follow_target). Half Danielle's height
+			# (body_h 0.85 against her 1.7); he has no grab or
+			# chase behaviour of his own.
+			display_name = "Noah"
+			pron_subj = "he"; pron_obj = "him"; pron_poss = "his"; gendered = true
+			walk_speed = 2.7; chase_speed = 6.0; detect_radius = 6.0; fill_rate = 0.20; body_h = 0.85
 		"poundworker":
 			# POUND VAN (Michael, 2026-11-17): the animal-control
 			# worker from the white van. NOT a town NPC — main spawns
@@ -806,6 +827,12 @@ func _build_model() -> void:
 			top_col = Color(0.96, 0.96, 0.94) # white uniform shirt
 			leg_col = Color(0.92, 0.92, 0.90) # white uniform trousers
 			extra = "poundcap"
+		"danielle":
+			top_col = Color(0.93, 0.55, 0.65) # pink dress (ghost only — the Meshy model renders)
+			leg_col = Color(0.96, 0.76, 0.60)
+		"noah":
+			top_col = Color(0.25, 0.45, 0.85) # blue sweater (ghost only — the Meshy model renders)
+			leg_col = Color(0.16, 0.17, 0.22) # dark pants
 		_:
 			top_col = Color(0.5, 0.6, 0.75)
 			leg_col = Color(0.35, 0.35, 0.4)
@@ -1530,6 +1557,38 @@ func _physics_process(delta: float) -> void:
 	if interact_state != "":
 		_run_interaction(delta, dist, to_player)
 		return
+	# v1.0.34 NOAH: a follower doesn't wander — he toddles after
+	# his follow target (Danielle) and stands beside her. When
+	# she comes over to pet the cat, he comes with her and stays
+	# at her side through the interaction.
+	if follow_target != null and mode == "wander":
+		if not is_instance_valid(follow_target):
+			follow_target = null
+		else:
+			var anchor: Vector3 = follow_target.global_position + follow_target.global_transform.basis * Vector3(0.62 * follow_side, 0, 0.34)
+			var to_a: Vector3 = anchor - global_position
+			to_a.y = 0.0
+			var ad: float = to_a.length()
+			if ad > 0.5:
+				var sp: float = walk_speed * (1.8 if ad > 3.0 else 1.05) # hurry to catch up, toddle when close
+				var dirf: Vector3 = to_a / ad
+				velocity.x = dirf.x * sp
+				velocity.z = dirf.z * sp
+				rotation.y = lerp_angle(rotation.y, atan2(dirf.x, dirf.z), min(1.0, 8.0 * delta))
+			else:
+				velocity.x = 0.0
+				velocity.z = 0.0
+				rotation.y = lerp_angle(rotation.y, follow_target.rotation.y, min(1.0, 5.0 * delta))
+			if not is_on_floor():
+				velocity.y -= 24.0 * delta
+			else:
+				velocity.y = -0.5
+			_slide_banked()
+			global_position.x = clamp(global_position.x, -117.0, 369.0 if wide_bounds else 117.0)
+			global_position.z = clamp(global_position.z, -89.0, 89.0)
+			_animate(delta, Vector2(velocity.x, velocity.z).length())
+			_update_labels()
+			return
 	if notice_cooldown > 0.0:
 		notice_cooldown -= delta
 	if interact_cooldown > 0.0:
@@ -2448,7 +2507,7 @@ func react_to_attention() -> String:
 		if interact_state == "":
 			award_pending = interact_cooldown <= 0.0
 			award_fired = false
-			interact_kind = _roll_interact_kind(award_pending)
+			interact_kind = "treat" if always_treat else _roll_interact_kind(award_pending)
 			if award_pending:
 				interact_cooldown = 25.0
 				pending_award = interact_kind
@@ -2538,6 +2597,14 @@ func _meshy_scene_for_type() -> PackedScene:
 			return preload("res://assets/models/jogger.glb")
 		"musician":
 			return preload("res://assets/models/street_musician.glb")
+		# v1.0.34: the unique pair — Danielle and her son Noah
+		# (Meshy models rigged from Michael's reference photos,
+		# normalized to 1.7 in the file and scaled by body_h:
+		# Danielle 1.7 in game, Noah exactly half at 0.85).
+		"danielle":
+			return preload("res://assets/models/danielle.glb")
+		"noah":
+			return preload("res://assets/models/noah.glb")
 	return null
 
 func _attach_meshy() -> void:
