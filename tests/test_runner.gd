@@ -175,6 +175,22 @@ func npc_by_type(t: String) -> Node:
 			return n
 	return null
 
+func net_grip_dist(npc: Node, role: String) -> float:
+	# v1.0.34: world distance from the net's grip point (the pole
+	# spot the rig seats in the carry hand — the same measure as
+	# tests/net_grip_probe.gd) to the named hand bone. A detached,
+	# floating net reads > 1 m; a held net reads ~0.3 m.
+	var skel: Skeleton3D = npc.get("meshy_skel") as Skeleton3D
+	var bones: Dictionary = npc.get("meshy_bone")
+	var net: Node3D = npc.get("net_root") as Node3D
+	if skel == null or net == null or not bones.has(role):
+		return 999.0
+	var s: float = float(npc.get("mscale"))
+	var grip: Vector3 = net.global_transform * Vector3(0, -0.74 * s, 0.01)
+	skel.force_update_all_bone_transforms()
+	var hp: Vector3 = skel.global_transform * skel.get_bone_global_pose(int(bones[role])).origin
+	return hp.distance_to(grip)
+
 func collect_captor_texts(cap: Node) -> Array:
 	# v1.0.19: enter the escape room with `cap` as captor and gather
 	# every captor-referring line the game generates for them: the
@@ -2103,11 +2119,15 @@ func run_tests() -> void:
 	check("pound van: a FULL meter -> the van pulls over and the worker gets out", str(main.get("pound_state")) == "exit", str(main.get("pound_state")) + " after " + str(guard_p) + "s")
 	check("pound van: pulled over at the KERB, not blocking the road centre (offset >= 2.4 from the z=15 centreline)", absf(pvan.position.z - 15.0) >= 2.4, str(pvan.position))
 	check("pound van: the worker is out on foot beside the van, net in hand", pworker.visible and (pworker as Node3D).global_position.distance_to(pvan.position) > 1.0 and bool((pworker.get("net_root") as Node3D).visible), "vis=" + str(pworker.visible) + " dist=" + str((pworker as Node3D).global_position.distance_to(pvan.position)) + " netvis=" + str(bool((pworker.get("net_root") as Node3D).visible)))
+	await wait_sec(0.5)
+	check("v1.0.34 net: on foot, the net's grip sits IN his carry hand (never floating free beside him)", net_grip_dist(pworker, "hand_l") < 0.40, "d=" + str(snappedf(net_grip_dist(pworker, "hand_l"), 0.001)))
 	guard_p = 0.0
 	while str(pworker.get("mode")) != "chase" and guard_p < 8.0:
 		await wait_sec(0.25)
 		guard_p += 0.25
 	check("pound van: the worker chases — the game's own chase, determined (never angry) face", str(pworker.get("mode")) == "chase" and str(pworker.get("expression")) == "determined", str(pworker.get("mode")) + "/" + str(pworker.get("expression")))
+	await wait_sec(0.4)
+	check("v1.0.34 net: mid-chase the grip stays in his hands (two-handed IK, no detachment)", net_grip_dist(pworker, "hand_l") < 0.40 and net_grip_dist(pworker, "hand_r") < 0.55, "l=" + str(snappedf(net_grip_dist(pworker, "hand_l"), 0.001)) + " r=" + str(snappedf(net_grip_dist(pworker, "hand_r"), 0.001)))
 	check("pound van: his chase engages the chase camera like any chaser", bool(main.get("chase_cam_active")))
 	# capture: the still cat is caught and held -> the ordinary flow
 	guard_p = 0.0
@@ -2455,7 +2475,7 @@ func run_tests() -> void:
 				v23_start_ok = true
 			if tc is Label:
 				var lt: String = (tc as Label).text
-				if lt == "v1.0.31":
+				if lt == "v1.0.34":
 					v23_ver_ok = true
 				if lt.contains("Crescent") or lt.contains("Avenue") or lt.contains("Street") or lt.contains("Drive"):
 					v23_addr_leak = true
@@ -2480,7 +2500,7 @@ func run_tests() -> void:
 		if str(p).ends_with("start_btn.png"):
 			v23_has_pill = true
 	check("v1.0.23 title: START wears the gradient pill", v23_start_ok and v23_has_pill, str(v23_tex_paths))
-	check("v1.0.23 title: version tag reads v1.0.31 and NO address is shown", v23_ver_ok and not v23_addr_leak)
+	check("v1.0.23 title: version tag reads v1.0.34 and NO address is shown", v23_ver_ok and not v23_addr_leak)
 
 	# ---------- v1.0.24: ONE TAP = ONE COMBO STEP (Michael's v1.0.22 play report) ----------
 	# "I hit B once and multiple Bs were hit… then when I hit A it
@@ -2596,6 +2616,100 @@ func run_tests() -> void:
 	main.call("_process", 29.95)
 	main.call("_process", 0.1)
 	check("v1.0.24 panel: the post-escape pursuit is run out (cleanup for the next section)", not (main.get("pursuers") as Dictionary).has(woman), str(main.get("pursuers")))
+
+	# ---------- v1.0.34: THE OPEN DOOR HAS CONSEQUENCES ----------
+	# Michael's play report on v1.0.31: solve the combo, the door
+	# opens — and then NOTHING. The captor never notices, never
+	# closes it, never catches the cat; the player can sit there
+	# forever. Now the open door runs on the SAME clock as the
+	# knock-over distractions (the green countdown bar): at zero
+	# the captor comes to the door — a cat in grab reach at the
+	# doorway is caught (normal −20% capture penalty, escape
+	# restarts in the room), any other cat still inside loses the
+	# door: shut, re-bolted, FRESH combo, no score change.
+	main.set("captor", woman)
+	main.call("_enter_escape")
+	distract_captor()
+	(player as Node3D).global_position = Vector3(573.4, 0.3, 3.4)
+	main.call("_on_escape_prompt_pressed")
+	for inp in main.get("escape_combo"):
+		main.call("escape_panel_input", str(inp))
+	check("v1.0.34: the finished combo opens the door (setup)", bool(main.get("exit_open")) and str(main.get("exit_open_kind")) == "bolt", str(main.get("exit_open_kind")))
+	check("v1.0.34: opening the door starts the open-door countdown (the distraction clock, >= the 8s base window)", float(main.get("door_window_t")) >= 8.0, str(main.get("door_window_t")))
+	main.call("_update_distract_hud")
+	check("v1.0.34: the HUD counts the open door down on the green bar", str((main.get("distract_label") as Label).text).contains("shuts it") and (main.get("distract_bar_bg") as ColorRect).visible, str((main.get("distract_label") as Label).text))
+	check("v1.0.34 bolt remodel: the bolt is a multi-part assembly (bar + highlight + grip post + grip), not one thin box", (main.get("bolt_node") as Node3D).get_child_count() >= 4, str((main.get("bolt_node") as Node3D).get_child_count()))
+	var score_camp34: int = int(main.get("score"))
+	main.set("escape_combo", ["A", "A", "A", "A", "A"]) # sentinel: a genuine re-roll can never produce it (2-3 As only)
+	(player as Node3D).global_position = (main.get("escape_origin") as Vector3) + Vector3(0, 0.3, 6) # camp mid-room, away from the door
+	var saw_to_door34 := false
+	var camp_guard34 := 0
+	while bool(main.get("exit_open")) and camp_guard34 < 240:
+		main.call("_process_escape", 0.25)
+		if str(main.get("captor_room_state")) == "to_door":
+			saw_to_door34 = true
+		camp_guard34 += 1
+	check("v1.0.34: camping with the door open brings the captor to the door", saw_to_door34, str(main.get("captor_room_state")))
+	check("v1.0.34: the captor SHUTS the open door (no more waiting forever)", not bool(main.get("exit_open")), "guard=" + str(camp_guard34))
+	check("v1.0.34: the door is physically shut and the bolt slid home", absf(float((main.get("backdoor_pivot") as Node3D).rotation.y)) < 0.01 and absf(float((main.get("bolt_node") as Node3D).position.z) - float(main.get("bolt_base_z"))) < 0.001, "pivot=" + str((main.get("backdoor_pivot") as Node3D).rotation.y))
+	check("v1.0.34: the re-bolt rolls a FRESH combo (the old one never works twice)", (main.get("escape_combo") as Array) != ["A", "A", "A", "A", "A"] and int(main.get("combo_index")) == 0 and int(main.get("escape_prog")) == 0, str(main.get("escape_combo")))
+	check("v1.0.34: a plain door-close costs no score and the escape goes on", int(main.get("score")) == score_camp34 and str(main.get("state")) == "escape", str(main.get("score")) + "/" + str(main.get("state")))
+	# Prompt exit with the window live: unchanged contract.
+	distract_captor()
+	(player as Node3D).global_position = Vector3(573.4, 0.3, 3.4)
+	main.call("_on_escape_prompt_pressed")
+	for inp in main.get("escape_combo"):
+		main.call("escape_panel_input", str(inp))
+	var score_exit34: int = int(main.get("score"))
+	walk_cat_out()
+	check("v1.0.34: walking straight out still escapes (the window never traps a prompt exit)", str(main.get("state")) == "play" and int(main.get("score")) == score_exit34 + 3, str(main.get("state")) + "/" + str(main.get("score")))
+	main.call("_process", 30.1) # drain the pursuit
+	# Doorway grab: the cat waits IN the doorway (not across).
+	main.set("captor", woman)
+	main.call("_enter_escape")
+	main.set("score", 100)
+	distract_captor()
+	(player as Node3D).global_position = Vector3(573.4, 0.3, 3.4)
+	main.call("_on_escape_prompt_pressed")
+	for inp in main.get("escape_combo"):
+		main.call("escape_panel_input", str(inp))
+	(player as Node3D).global_position = (main.get("escape_origin") as Vector3) + Vector3(13.2, 0.3, 3.4)
+	var grab_guard34 := 0
+	while bool(main.get("exit_open")) and grab_guard34 < 240:
+		main.call("_process_escape", 0.25)
+		grab_guard34 += 1
+	check("v1.0.34: the captor reaches the doorway and the door ends up closed", not bool(main.get("exit_open")), "guard=" + str(grab_guard34))
+	check("v1.0.34: a cat in the doorway when the captor arrives is CAUGHT — the normal 20% capture penalty", int(main.get("score")) == 80, str(main.get("score")))
+	check("v1.0.34: the caught cat is back inside and the escape restarts in the same room", str(main.get("state")) == "escape" and (player as Node3D).global_position.distance_to((main.get("escape_origin") as Vector3) + Vector3(0, 0.3, 6)) < 2.5, str((player as Node3D).global_position))
+	# The pound ward runs the same rule with the officer.
+	var worker34: Node = main.get("pound_worker")
+	main.set("captor", worker34)
+	main.call("_enter_escape")
+	distract_captor()
+	(player as Node3D).global_position = Vector3(573.4, 0.3, 3.4)
+	main.call("_on_escape_prompt_pressed")
+	for inp in main.get("escape_combo"):
+		main.call("escape_panel_input", str(inp))
+	check("v1.0.34 POUND: the officer's ward door opens with the countdown running (setup)", bool(main.get("exit_open")) and float(main.get("door_window_t")) > 0.0, str(main.get("door_window_t")))
+	var score_pound34: int = int(main.get("score"))
+	(player as Node3D).global_position = (main.get("escape_origin") as Vector3) + Vector3(0, 0.3, 6)
+	var pound_guard34 := 0
+	while bool(main.get("exit_open")) and pound_guard34 < 240:
+		main.call("_process_escape", 0.25)
+		pound_guard34 += 1
+	check("v1.0.34 POUND: camping in the ward brings the OFFICER to shut the door too", not bool(main.get("exit_open")) and str(main.get("state")) == "escape" and int(main.get("score")) == score_pound34, "guard=" + str(pound_guard34) + " score=" + str(main.get("score")))
+	# Cleanup: leave the game in the same state the v1.0.24
+	# section handed over (town play, pursuit drained) — the
+	# sections below were written against that hand-off, and the
+	# district-streaming audits take their focus from the player.
+	distract_captor()
+	(player as Node3D).global_position = Vector3(573.4, 0.3, 3.4)
+	main.call("_on_escape_prompt_pressed")
+	for inp in main.get("escape_combo"):
+		main.call("escape_panel_input", str(inp))
+	walk_cat_out()
+	main.call("_process", 30.1)
+	check("v1.0.34: cleanup — the pound escape completes and the pursuit drains (hand-off state restored)", str(main.get("state")) == "play" and (main.get("pursuers") as Dictionary).is_empty(), str(main.get("state")))
 
 	# ---------- v1.0.25: the seven play-report fixes ----------
 	# ITEM 1/4 structural checks first (any state): nobody and no
@@ -2900,6 +3014,39 @@ func run_tests() -> void:
 			if not bool(main.call("_ground_spot_blocked", Vector3(pcx27 + off27.x, 0, pcz27 + off27.y))):
 				pad_open27 += 1
 	check("v1.0.27 ground scatter: every driveway pad is blocked ground (no tufts on driveways)", pad_open27 == 0 and pads27.size() >= (13 if v1029_doubled else 10), "open=" + str(pad_open27) + " pads=" + str(pads27.size())) # v1.0.29: 10 legacy pads (was 13 — three lots became civic buildings)
+
+	# ---------- v1.0.34: DISTRICT STREAMING on the doubled town ----------
+	# Bands partition the town's statics; far bands hide + park
+	# collision, near bands restore, with hysteresis. Driven through
+	# the real _update_districts with the player teleported.
+	# (Ported from the parked v1.0.29 block with ONE staging fix: the
+	# return teleport sits at x=0, not x=-60 — from -60 the middle
+	# band [80,180] is 140 m away, inside the 120/150 hysteresis gap,
+	# so it could never restore and the check could never pass; from
+	# x=0 it is 80 m away, inside the restore radius.)
+	var districts34: Array = main.get("districts")
+	check("v1.0.34 districts: built, five bands, every band populated", bool(main.get("districts_built")) and districts34.size() == 5 and (districts34[0]["nodes"] as Array).size() > 0 and (districts34[4]["nodes"] as Array).size() > 0, "bands=" + str(districts34.size()))
+	var player34: Node3D = main.get("player")
+	var saved_pos34: Vector3 = player34.global_position
+	player34.global_position = Vector3(340, 0.3, 0) # far east end
+	main.call("_update_districts", 1.0)
+	check("v1.0.34 districts: from the east end the two west bands are OFF and the east band is ON", not bool(districts34[0]["on"]) and not bool(districts34[1]["on"]) and bool(districts34[4]["on"]), "on=" + str([districts34[0]["on"], districts34[1]["on"], districts34[2]["on"], districts34[3]["on"], districts34[4]["on"]]))
+	var west_hidden34 := 0
+	var west_total34 := 0
+	for rec34 in districts34[0]["nodes"]:
+		west_total34 += 1
+		if not (rec34["n"] as Node3D).visible:
+			west_hidden34 += 1
+	check("v1.0.34 districts: an OFF band's nodes are actually hidden", west_total34 > 0 and west_hidden34 == west_total34, str(west_hidden34) + "/" + str(west_total34))
+	player34.global_position = Vector3(0, 0.3, 0) # back west (inside every west band's restore radius)
+	main.call("_update_districts", 1.0)
+	var all_on34 := true
+	for band34 in districts34:
+		if float(band34["x1"]) <= 180.0 and not bool(band34["on"]):
+			all_on34 = false
+	check("v1.0.34 districts: returning west restores the west bands", all_on34 and bool(districts34[0]["on"]), "on=" + str([districts34[0]["on"], districts34[1]["on"], districts34[2]["on"]]))
+	player34.global_position = saved_pos34
+	main.call("_update_districts", 1.0)
 
 	# ---------- v1.0.25 ITEM 6: the opening must survive the START tap ----------
 	# The real flow: start_game() (what the button calls), then the

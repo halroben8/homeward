@@ -175,6 +175,19 @@ const DISTRACT_WALK_SPEED := 2.3
 const ROOM_WALK_SPEED := 1.15
 const NOTICE_GRACE := 1.2 # seconds at the door, undistracted, before the captor notices
 const NOTICE_COOLDOWN := 2.5 # grace after an interrupt before the panel may reopen
+# v1.0.34 OPEN-DOOR WINDOW (Michael's play report: with the door
+# open the player could sit there forever — the captor never
+# noticed, never closed it, never caught the cat). The open door
+# now runs on the SAME clock as the knock-over distractions: the
+# green countdown bar. DOOR_WINDOW_SECONDS is the base window; a
+# longer distraction already running (or a fresh knock-over while
+# the door is open) extends it to the distraction clock, exactly
+# as distractions already work. At zero the captor comes to the
+# door: a cat within grab range at the doorway is caught (normal
+# capture consequences), otherwise the door is shut and re-bolted
+# with a FRESH combo rolled.
+const DOOR_WINDOW_SECONDS := 8.0
+const DOOR_GRAB_RANGE := 1.35 # the captor's grab reach at the doorway (his town grab range is 1.2 m)
 var distract_props: Array = [] # [{id, name, pivot, base, stand, toppled, anim_t, home_rot, topple_rot, bubble}]
 # SHELTER WARD (2026-11-18): the pound's cages and their animals.
 # Each entry: {name, gate_pivot, gate_blocker, gate_pos, open_yaw,
@@ -223,8 +236,16 @@ var sfx_crash: AudioStreamPlayer = null # notice.wav at a low pitch — the cras
 # openings are REAL gaps in the room walls (segmented at build time
 # with invisible blockers while closed) so the cat can physically walk
 # through; the opened way never closes, so he can't get soft-locked.
+# v1.0.34: the opened way CAN close again — but only because the
+# captor walks over and shuts it (see the open-door window above),
+# and closing it re-bolts with a fresh combo, so the cat is never
+# soft-locked: he can always work the new combo and try again.
 var exit_open: bool = false
 var exit_open_kind: String = ""
+var door_window_t: float = -1.0 # >=0: seconds left on the open-door countdown (the distraction clock)
+var door_window_total: float = 0.0 # window length the countdown started from (bar fraction)
+var door_close_pending: bool = false # countdown hit zero while the captor was busy righting a prop
+var door_trip_t: float = 0.0 # watchdog for the captor's walk to the door
 var window_blocker: StaticBody3D = null # covers the window gap while closed
 var petdoor_blocker: StaticBody3D = null # covers the pet-door gap while closed
 var petdoor_zone := Rect2(563, -11, 6, 3.5) # MAP DOUBLING: +360 with escape_origin
@@ -316,6 +337,23 @@ var traffic_timer: float = 2.5
 var traffic_hit_cd: float = 0.0
 var traffic_group: Node3D = null
 const TRAFFIC_HIT_PENALTY := 5
+# --- DISTRICT STREAMING (v1.0.34, the doubled town) -------------------
+# The town's static World children are partitioned into five x bands
+# at build end (see _build_districts). A band farther than
+# DISTRICT_OFF_M from the player is hidden and its collision is
+# parked (layer/mask zeroed); it restores inside DISTRICT_ON_M —
+# the 30 m gap is the hysteresis, so standing on a boundary never
+# flickers a district. Spanning infrastructure (ground, roads,
+# river, borders — AABB wider than a band) and pure-collision
+# bodies (no visuals: ground/shore/blockers) are never districted.
+# Actors (player, NPCs, cats, officer, van, traffic) are not World
+# statics and are never touched by this system.
+const DISTRICT_EDGES := [-126.0, -20.0, 80.0, 180.0, 280.0, 378.0]
+const DISTRICT_OFF_M := 150.0
+const DISTRICT_ON_M := 120.0
+var districts: Array = [] # {x0, x1, nodes: [{n, home}], bodies: [{o, layer, mask}], on}
+var districts_built: bool = false
+var _district_timer: float = 0.0
 # --- POUND VAN (Michael, 2026-11-17) ----------------------------------
 # Exactly ONE white ANIMAL CONTROL van patrols the town's roads on a
 # continuous loop, forever. If the cat comes within the worker's
@@ -482,7 +520,7 @@ const BOOT_MARKER_PATH := "user://boot_marker.txt"
 # 60 ms-chunked build, the boot readout, the staged reveal, the
 # crash marker and safe mode. Flip it back to false and the full
 # doubled town generates again, bit for bit as in v1.0.11.
-const LEGACY_TOWN_ONLY := true # v1.0.12 SHIPS WITH THE SWITCH ON (bisect build) — set false to restore the doubled town
+const LEGACY_TOWN_ONLY := false # v1.0.34: THE DOUBLED TOWN SHIPS (Michael gave the word 2026-11-20). The v1.0.12-era phone deaths were build-time memory explosion (every house part its own mesh/material); the v1.0.28 sharing pass (cached meshes/materials/collision shapes town-wide) removed that, and the Meshy buildings are shared GLBs on top — checkpoint measurement on the doubled town: peak static ~306 MB. District streaming (see _build_districts) bounds the live draw/physics cost. Set true to bisect back to the 41-house town.
 var _chunk_t0: int = 0
 # v1.0.11 build profiling: per-stage wall-clock duration, longest
 # unbroken synchronous stretch (main-thread work between presented
@@ -1578,6 +1616,7 @@ func _build_world_async() -> void:
 	await _staged_reveal()
 	await _set_boot_stage("Warming up the graphics", 97)
 	_audit_tree_clearance() # v1.0.27: every tree + parked car exists by now — enforce canopy clearance before play
+	_build_districts() # v1.0.34: partition the finished town into streaming bands (after the reveal + tree audit, so home visibility states are final)
 	await _warm_up_gpu() # v1.0.26: last pass — every unique scene presented in sun + shelter before play
 	_log_stage_profile()
 	_stage_name = ""
@@ -1586,6 +1625,137 @@ func _build_world_async() -> void:
 	if _splash_tap_queued and state == "splash":
 		_splash_tap_queued = false
 		dismiss_splash()
+
+## v1.0.34 DISTRICT STREAMING: partition World's static children
+## into x bands once the town is fully built. See the constants at
+## the traffic block for the rules. Runs in the build's final stage;
+## the per-node AABB walk is the same shape as the clutter pass and
+## ticks like it so the boot never stalls.
+func _district_world_aabb(root: Node) -> AABB:
+	var box := AABB()
+	var have := false
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n is MeshInstance3D:
+			var mi := n as MeshInstance3D
+			if mi.mesh != null:
+				var ga: AABB = mi.global_transform * mi.get_aabb()
+				box = ga if not have else box.merge(ga)
+				have = true
+		elif n is MultiMeshInstance3D:
+			var mm := n as MultiMeshInstance3D
+			var ga2: AABB = mm.global_transform * mm.custom_aabb
+			box = ga2 if not have else box.merge(ga2)
+			have = true
+		for c in n.get_children():
+			stack.append(c)
+	if not have:
+		var p := (root as Node3D).global_position
+		box = AABB(p, Vector3.ZERO)
+	return box
+
+func _district_collect(root: Node, bodies: Array, small_geo: Array) -> void:
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n is CollisionObject3D:
+			var co := n as CollisionObject3D
+			bodies.append({"o": co, "layer": co.collision_layer, "mask": co.collision_mask})
+		if n is GeometryInstance3D:
+			small_geo.append(n)
+		for c in n.get_children():
+			stack.append(c)
+
+func _build_districts() -> void:
+	districts.clear()
+	for i in range(DISTRICT_EDGES.size() - 1):
+		districts.append({"x0": DISTRICT_EDGES[i], "x1": DISTRICT_EDGES[i + 1], "nodes": [], "bodies": [], "on": true})
+	var world_node := get_node_or_null("World") as Node3D
+	if world_node == null:
+		districts_built = true
+		return
+	var shadow_bands: Array = [] # far-district small dressing (filled below)
+	for child in world_node.get_children():
+		var n3 := child as Node3D
+		if n3 == null or child == traffic_group:
+			continue
+		var aabb := _district_world_aabb(child)
+		var bodies: Array = []
+		var geos: Array = []
+		_district_collect(child, bodies, geos)
+		# Never district: spanning infrastructure (wider than a
+		# band), pure-collision bodies with no visuals (ground,
+		# shore walls, blockers — an NPC stands on those), and
+		# anything centred outside the town's x span (the escape
+		# rooms' diorama lives at x~560).
+		if aabb.size.x > 130.0:
+			continue
+		if bodies.size() > 0 and geos.is_empty():
+			continue
+		var cx := aabb.get_center().x
+		if cx < DISTRICT_EDGES[0] - 20.0 or cx > DISTRICT_EDGES[DISTRICT_EDGES.size() - 1] + 20.0:
+			continue
+		var bi := 0
+		for i in range(DISTRICT_EDGES.size() - 1):
+			if cx >= DISTRICT_EDGES[i]:
+				bi = i
+		var band: Dictionary = districts[bi]
+		(band["nodes"] as Array).append({"n": n3, "home": n3.visible})
+		for b in bodies:
+			(band["bodies"] as Array).append(b)
+		if float(band["x0"]) >= 180.0:
+			for g in geos:
+				shadow_bands.append(g)
+	# Far-district small dressing stops casting shadows (the
+	# v1.0.28 tuft trick, applied to the bush/flower/sphere class):
+	# anything whose own world AABB is under 2.5 m across in the
+	# two east bands. House parts are far bigger and keep theirs.
+	for g in shadow_bands:
+		var gi := g as GeometryInstance3D
+		var ga := _district_world_aabb(gi)
+		if ga.size.x <= 2.5 and ga.size.y <= 2.5 and ga.size.z <= 2.5:
+			gi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	districts_built = true
+	var counts: Array = []
+	for band2 in districts:
+		counts.append((band2["nodes"] as Array).size())
+	_boot_log("districts built: bands=%s" % str(counts))
+
+func _district_set_band(band: Dictionary, on: bool) -> void:
+	if bool(band["on"]) == on:
+		return
+	band["on"] = on
+	for rec in band["nodes"]:
+		var n := rec["n"] as Node3D
+		if is_instance_valid(n):
+			n.visible = bool(rec["home"]) if on else false
+	for rec in band["bodies"]:
+		var co := rec["o"] as CollisionObject3D
+		if is_instance_valid(co):
+			co.collision_layer = int(rec["layer"]) if on else 0
+			co.collision_mask = int(rec["mask"]) if on else 0
+
+func _update_districts(delta: float) -> void:
+	if not districts_built or player == null:
+		return
+	_district_timer -= delta
+	if _district_timer > 0.0:
+		return
+	_district_timer = 0.25
+	var ax: float = (player as Node3D).global_position.x
+	for band in districts:
+		var x0 := float(band["x0"])
+		var x1 := float(band["x1"])
+		var dx := 0.0
+		if ax < x0:
+			dx = x0 - ax
+		elif ax > x1:
+			dx = ax - x1
+		if bool(band["on"]) and dx > DISTRICT_OFF_M:
+			_district_set_band(band, false)
+		elif not bool(band["on"]) and dx < DISTRICT_ON_M:
+			_district_set_band(band, true)
 
 # v1.0.10 STAGED REVEAL: instead of World.visible flipping the whole
 # town on in one presented frame (~11.4k draw calls hitting the GPU
@@ -2896,33 +3066,24 @@ func _build_world() -> void:
 	river_cs.position = Vector3(town_cx, 0.7, -92.55)
 	river_shore.add_child(river_cs)
 	world.add_child(river_shore)
-	for hx in ([-100, -60, -20, 20, 60, 100] if LEGACY_TOWN_ONLY else [-100, -60, -20, 20, 60, 100, 140, 180, 220, 260, 300, 340]):
-		_box(world, Vector3(hx, 2.5, -124), Vector3(10, 5, 8), Color(0.82, 0.78, 0.72))
-		var sr1 := _box(world, Vector3(hx - 2.4, 5.6, -124), Vector3(6.4, 0.25, 9), Color(0.5, 0.42, 0.4))
-		sr1.rotation_degrees = Vector3(0, 0, 34)
-		var sr2 := _box(world, Vector3(hx + 2.4, 5.6, -124), Vector3(6.4, 0.25, 9), Color(0.5, 0.42, 0.4))
-		sr2.rotation_degrees = Vector3(0, 0, -34)
-		# v1.0.26: close this row's gable ends. These backdrop
-		# houses are plain boxes + two roof slabs on their own
-		# build path, so the triangle under the roof stood open
-		# (Michael's v1.0.25 screenshot: the white shore house
-		# hollow under its roof) — the v1.0.25 gable fix covered
-		# the town houses (_build_house) and the escape diorama,
-		# not this row. A wall-coloured prism fills the triangle:
-		# its slope (2.43 over a 3.6 half-span) matches the slabs'
-		# 34 degrees, its base tucks into the wall top and its
-		# edges under the slabs. (Named ShoreGableInfill, not
-		# GableInfill: the suite's gable audit counts nodes named
-		# GableInfill against the town houses one-for-one.)
-		var gable := MeshInstance3D.new()
-		var prism := PrismMesh.new()
-		prism.left_to_right = 0.5
-		prism.size = Vector3(7.2, 2.43, 7.96)
-		gable.mesh = prism
-		gable.position = Vector3(hx, 6.16, -124)
-		gable.material_override = _mat(Color(0.82, 0.78, 0.72))
-		gable.name = "ShoreGableInfill"
-		world.add_child(gable)
+	# v1.0.32 (Michael: "all the old buildings — anything that's
+	# not the mesh I want removed"): this row was the last plain
+	# box + roof-slab construction left in the world (the v1.0.26
+	# ShoreGableInfill prisms only patched its hollow gables).
+	# Each lot now wears one of the seven Meshy house models via
+	# the same _place_building_model path the town uses, fronts
+	# facing the river (+z), cycling the model list so no two
+	# adjacent lots share a model. Still pure scenery: the row
+	# stands behind the RiverShore wall and nothing reaches it.
+	var shore_hx: Array = [-100, -60, -20, 20, 60, 100] if LEGACY_TOWN_ONLY else [-100, -60, -20, 20, 60, 100, 140, 180, 220, 260, 300, 340]
+	var shore_models: Array = ["house_red", "house_blue", "house_beige", "house_white_tall", "house_blue_bungalow", "house_cream_balcony", "house_modern"]
+	for shi in range(shore_hx.size()):
+		var hx: float = float(shore_hx[shi])
+		var sg := Node3D.new()
+		sg.name = "ShoreHouse"
+		sg.position = Vector3(hx, 0, -124)
+		world.add_child(sg)
+		_place_building_model(sg, String(shore_models[shi % shore_models.size()]), 1.0)
 		_build_pine(world, Vector3(hx + 9, 0, -120), 1.1)
 		await _build_tick() # v1.0.11 chunking
 	var fxi: int = 0
@@ -4868,11 +5029,25 @@ func _build_house_room() -> void:
 	_box(bd_door, Vector3(-0.09, 0.6, 0), Vector3(0.05, 1.0, 1.3), Color(0.5, 0.36, 0.22)) # door panel inset
 	_box(bd_door, Vector3(-0.09, -0.75, 0), Vector3(0.05, 0.9, 1.3), Color(0.5, 0.36, 0.22))
 	_sphere(bd_door, Vector3(-0.14, -0.15, 0.78), Vector3(0.09, 0.09, 0.09), Color(0.8, 0.65, 0.3)) # knob
-	_box(room, bd_pos + Vector3(-0.2, 1.95, -0.82), Vector3(0.08, 0.22, 0.2), Color(0.4, 0.32, 0.16)) # bolt keeper
-	_box(room, bd_pos + Vector3(-0.2, 1.95, -0.18), Vector3(0.08, 0.22, 0.34), Color(0.4, 0.32, 0.16)) # bolt base plate
-	bolt_node = _box(bd_door, Vector3(-0.16, 0.45, -0.42), Vector3(0.09, 0.11, 0.66), Color(0.78, 0.62, 0.26))
-	bolt_node.material_override = _mat(Color(0.78, 0.62, 0.26), 0.3)
-	_sphere(bolt_node, Vector3(-0.06, 0, 0.22), Vector3(0.08, 0.08, 0.08), Color(0.85, 0.68, 0.3)) # bolt thumb knob
+	# v1.0.34 BOLT REMODEL (Michael: the old single thin brass bar
+	# "looks really chintzy"): a heavy iron bolt — a keeper housing
+	# with a dark slot on the frame, a mounting plate and two guide
+	# brackets on the door, a chunky steel bar, and a big brass
+	# grip hanging below it: the handle the cat visibly works.
+	# Bar + grip ride bolt_node, so the slide animation and the
+	# combo interaction are exactly as before.
+	_box(room, bd_pos + Vector3(-0.22, 1.95, -0.82), Vector3(0.12, 0.34, 0.26), Color(0.23, 0.23, 0.26)) # keeper housing
+	_box(room, bd_pos + Vector3(-0.28, 1.95, -0.82), Vector3(0.03, 0.19, 0.13), Color(0.07, 0.07, 0.08)) # keeper slot (dark mouth)
+	_box(bd_door, Vector3(-0.12, 0.45, -0.05), Vector3(0.05, 0.3, 1.2), Color(0.3, 0.3, 0.33)) # mounting plate
+	_box(bd_door, Vector3(-0.16, 0.45, -0.38), Vector3(0.11, 0.27, 0.09), Color(0.25, 0.25, 0.28)) # guide bracket A
+	_box(bd_door, Vector3(-0.16, 0.45, 0.3), Vector3(0.11, 0.27, 0.09), Color(0.25, 0.25, 0.28)) # guide bracket B
+	bolt_node = Node3D.new()
+	bolt_node.position = Vector3(-0.18, 0.45, -0.42)
+	bd_door.add_child(bolt_node)
+	_box(bolt_node, Vector3(0, 0, 0), Vector3(0.11, 0.15, 1.0), Color(0.52, 0.54, 0.58)) # the bar
+	_box(bolt_node, Vector3(0, 0.08, 0), Vector3(0.115, 0.025, 1.0), Color(0.7, 0.72, 0.76)) # bar top highlight
+	_box(bolt_node, Vector3(-0.04, -0.15, 0.2), Vector3(0.05, 0.16, 0.07), Color(0.28, 0.28, 0.31)) # grip post
+	_sphere(bolt_node, Vector3(-0.04, -0.29, 0.2), Vector3(0.13, 0.13, 0.13), Color(0.85, 0.65, 0.3)) # the grip the cat works
 	bolt_base_z = bolt_node.position.z
 	var bd_label := _label3d(room, "Back door — slide the bolt!", bd_pos + Vector3(-0.7, 3.55, 0), 50, Color(0.3, 0.22, 0.12))
 	bd_label.rotation_degrees = Vector3(0, -90, 0)
@@ -5084,37 +5259,21 @@ func _build_intake_card(room: Node3D, o: Vector3) -> void:
 	room.add_child(intake_card_label)
 	_refresh_intake_card()
 
-func _diorama_house(parent: Node, pos: Vector3, yaw_deg: float, wall_c: Color, roof_c: Color) -> void:
-	# A plain house front for the escape-room diorama (see
-	# _build_escape_exterior): town materials and proportions,
-	# lit windows, a gable roof WITH its infill — but registered
-	# nowhere (not a game house: no address, no win check).
+func _diorama_house(parent: Node, pos: Vector3, yaw_deg: float, model: String) -> void:
+	# A Meshy house front for the escape-room diorama (see
+	# _build_escape_exterior), placed by the town's own
+	# _place_building_model path — v1.0.32 removed the code-built
+	# box house that stood here (Michael: anything that's not
+	# the mesh goes). Registered nowhere (not a game house: no
+	# address, no win check). The group carries the lot's yaw;
+	# the model's front faces local +z, the street face, as the
+	# old built door face did.
 	var g := Node3D.new()
 	g.name = "DioramaHouse"
 	g.position = pos
 	g.rotation_degrees = Vector3(0, yaw_deg, 0)
 	parent.add_child(g)
-	var found := _box(g, Vector3(0, 0.15, 0), Vector3(8.6, 0.3, 7.6), Color.WHITE)
-	found.material_override = _mat_tex(TEX_BRICK, Color(0.85, 0.8, 0.78), Vector3(5, 1, 1))
-	var walls := _box(g, Vector3(0, 2.0, 0), Vector3(8.2, 3.7, 7.2), Color.WHITE, true)
-	walls.material_override = _mat_tex(TEX_SIDING, wall_c, Vector3(5, 2, 1))
-	var eave_d: float = 3.85
-	var slab_y_d: float = eave_d + 0.5 + 5.0 * 0.03
-	for s in [-1.0, 1.0]:
-		var slab := _box(g, Vector3(s * 8.2 * 0.25, slab_y_d, 0), Vector3(8.2 * 0.66, 0.22, 8.2), Color.WHITE)
-		slab.material_override = _mat_tex(TEX_ROOF, roof_c.lightened(0.25), Vector3(3, 5, 1))
-		slab.rotation_degrees = Vector3(0, 0, s * -35.0)
-	var prism := PrismMesh.new()
-	prism.left_to_right = 0.5
-	prism.size = Vector3(5.66, 2.06, 7.16)
-	var gable := MeshInstance3D.new()
-	gable.mesh = prism
-	gable.position = Vector3(0, eave_d + 0.97, 0)
-	gable.material_override = walls.material_override
-	g.add_child(gable)
-	_box(g, Vector3(0, 1.35, 3.68), Vector3(1.3, 2.7, 0.18), Color(0.45, 0.3, 0.17)) # door, street face
-	_glass(g, Vector3(-2.4, 2.0, 3.64), Vector3(1.4, 1.3, 0.08), Color(0.98, 0.87, 0.58), 0.42)
-	_glass(g, Vector3(2.4, 2.0, 3.64), Vector3(1.4, 1.3, 0.08), Color(0.98, 0.87, 0.58), 0.42)
+	_place_building_model(g, model, 1.0)
 
 func _build_escape_exterior() -> void:
 	# v1.0.25 (Michael: "the door opens onto black — I want to
@@ -5149,10 +5308,10 @@ func _build_escape_exterior() -> void:
 	var road_e := _box(ext, o + Vector3(23.5, 0.006, -4), Vector3(7.6, 0.04, 46), Color.WHITE)
 	road_e.material_override = _mat_tex(TEX_ASPHALT, Color(0.9, 0.9, 0.92), Vector3(2, 10, 1))
 	# House fronts across the road, street faces toward the room.
-	_diorama_house(ext, o + Vector3(-12, 0, -33.5), 0.0, Color(0.97, 0.92, 0.78), Color(0.72, 0.33, 0.28))
-	_diorama_house(ext, o + Vector3(2, 0, -33.5), 0.0, Color(0.62, 0.72, 0.55), Color(0.33, 0.47, 0.72))
-	_diorama_house(ext, o + Vector3(16, 0, -33.5), 0.0, Color(0.9, 0.7, 0.66), Color(0.42, 0.6, 0.38))
-	_diorama_house(ext, o + Vector3(33.5, 0, 4), -90.0, Color(0.55, 0.65, 0.78), Color(0.5, 0.35, 0.55))
+	_diorama_house(ext, o + Vector3(-12, 0, -33.5), 0.0, "house_red")
+	_diorama_house(ext, o + Vector3(2, 0, -33.5), 0.0, "house_blue")
+	_diorama_house(ext, o + Vector3(16, 0, -33.5), 0.0, "house_beige")
+	_diorama_house(ext, o + Vector3(33.5, 0, 4), -90.0, "house_white_tall")
 	# A parked Meshy car on the north road, street lamps, pines.
 	_build_car(ext, o + Vector3(-4, 0, -21.6), Color(0.7, 0.75, 0.8), true, "compact", true)
 	parked_car_spots.append(o + Vector3(-4, 0, -21.6)) # v1.0.27: static car (the flag above only skips the census) — the tree audit keeps canopies off it
@@ -5672,11 +5831,22 @@ func _build_escape_room() -> void:
 	_box(bd_door, Vector3(-0.09, 0.6, 0), Vector3(0.05, 1.0, 1.3), Color(0.52, 0.58, 0.54)) # door panel inset
 	_box(bd_door, Vector3(-0.09, -0.75, 0), Vector3(0.05, 0.9, 1.3), Color(0.52, 0.58, 0.54))
 	_sphere(bd_door, Vector3(-0.14, -0.15, 0.78), Vector3(0.09, 0.09, 0.09), Color(0.8, 0.65, 0.3)) # knob
-	_box(room, bd_pos + Vector3(-0.2, 1.95, -0.82), Vector3(0.08, 0.22, 0.2), Color(0.4, 0.32, 0.16)) # bolt keeper
-	_box(room, bd_pos + Vector3(-0.2, 1.95, -0.18), Vector3(0.08, 0.22, 0.34), Color(0.4, 0.32, 0.16)) # bolt base plate
-	bolt_node = _box(bd_door, Vector3(-0.16, 0.45, -0.42), Vector3(0.09, 0.11, 0.66), Color(0.78, 0.62, 0.26))
-	bolt_node.material_override = _mat(Color(0.78, 0.62, 0.26), 0.3)
-	_sphere(bolt_node, Vector3(-0.06, 0, 0.22), Vector3(0.08, 0.08, 0.08), Color(0.85, 0.68, 0.3)) # bolt thumb knob
+	# v1.0.34 BOLT REMODEL (same heavy iron bolt as the house room —
+	# see the note there): keeper housing + slot on the frame,
+	# mounting plate + guide brackets on the door, chunky bar and
+	# brass grip riding bolt_node (slide animation unchanged).
+	_box(room, bd_pos + Vector3(-0.22, 1.95, -0.82), Vector3(0.12, 0.34, 0.26), Color(0.23, 0.23, 0.26)) # keeper housing
+	_box(room, bd_pos + Vector3(-0.28, 1.95, -0.82), Vector3(0.03, 0.19, 0.13), Color(0.07, 0.07, 0.08)) # keeper slot (dark mouth)
+	_box(bd_door, Vector3(-0.12, 0.45, -0.05), Vector3(0.05, 0.3, 1.2), Color(0.3, 0.3, 0.33)) # mounting plate
+	_box(bd_door, Vector3(-0.16, 0.45, -0.38), Vector3(0.11, 0.27, 0.09), Color(0.25, 0.25, 0.28)) # guide bracket A
+	_box(bd_door, Vector3(-0.16, 0.45, 0.3), Vector3(0.11, 0.27, 0.09), Color(0.25, 0.25, 0.28)) # guide bracket B
+	bolt_node = Node3D.new()
+	bolt_node.position = Vector3(-0.18, 0.45, -0.42)
+	bd_door.add_child(bolt_node)
+	_box(bolt_node, Vector3(0, 0, 0), Vector3(0.11, 0.15, 1.0), Color(0.52, 0.54, 0.58)) # the bar
+	_box(bolt_node, Vector3(0, 0.08, 0), Vector3(0.115, 0.025, 1.0), Color(0.7, 0.72, 0.76)) # bar top highlight
+	_box(bolt_node, Vector3(-0.04, -0.15, 0.2), Vector3(0.05, 0.16, 0.07), Color(0.28, 0.28, 0.31)) # grip post
+	_sphere(bolt_node, Vector3(-0.04, -0.29, 0.2), Vector3(0.13, 0.13, 0.13), Color(0.85, 0.65, 0.3)) # the grip the cat works
 	bolt_base_z = bolt_node.position.z
 	var bd_label := _label3d(room, "Back door — slide the bolt!", bd_pos + Vector3(-0.7, 3.55, 0), 50, Color(0.3, 0.22, 0.12))
 	bd_label.rotation_degrees = Vector3(0, -90, 0)
@@ -7223,7 +7393,7 @@ func _build_hud() -> void:
 	title_panel.add_child(start_btn)
 	# v1.0.10: subtle build tag so Michael can confirm which build
 	# he is running from the title screen itself.
-	var ver := _hud_label(title_panel, "v1.0.31", Vector2(706, 522), 16)
+	var ver := _hud_label(title_panel, "v1.0.34", Vector2(706, 522), 16)
 	ver.label_settings.font_color = Color(0.78, 0.83, 0.95)
 	win_panel = _make_panel(hud_layer, Vector2(290, 130), Vector2(700, 460), Color(0.12, 0.2, 0.12, 0.97))
 	win_panel.set_anchors_preset(Control.PRESET_CENTER)
@@ -9115,6 +9285,10 @@ func _reset_escape_props() -> void:
 	shoo_t = -1.0
 	exit_open = false
 	exit_open_kind = ""
+	door_window_t = -1.0 # v1.0.34: open-door window state cleared
+	door_window_total = 0.0
+	door_close_pending = false
+	door_trip_t = 0.0
 	_set_blocker(window_blocker, true)
 	_set_blocker(petdoor_blocker, true)
 	for cl in crash_labels:
@@ -9507,6 +9681,123 @@ func _open_exit(kind: String) -> void:
 		escape_label.text = "🚪 The way is OPEN — walk out!"
 	if captor and not captor_distracted():
 		captor.call("show_bubble", "Oh my — how did you…? 😮", 2.2)
+	# v1.0.34: the open-door countdown starts NOW, on the same
+	# clock as the knock-over distractions: if the captor is
+	# already mid-errand, the window is his distraction clock
+	# (never shorter than the base window); otherwise the base
+	# window runs and he stands watching the open door.
+	door_window_total = maxf(DOOR_WINDOW_SECONDS, distraction_time_left())
+	door_window_t = door_window_total
+	door_close_pending = false
+	_update_distract_hud()
+
+# v1.0.34: where the captor stands to work the door — just inside
+# the room from the exit itself.
+func _door_stand_point(kind: String) -> Vector3:
+	var door: Vector3 = _escape_exit_pos(kind)
+	door.y = 0.0
+	var to_room: Vector3 = escape_origin - door
+	to_room.y = 0.0
+	if to_room.length() < 0.05:
+		return door
+	return door + to_room.normalized() * 1.1
+
+# v1.0.34: the countdown hit zero — the captor heads for the door.
+func _begin_door_close() -> void:
+	if captor == null or not exit_open:
+		return
+	captor_room_target = _door_stand_point(exit_open_kind)
+	captor_room_state = "to_door"
+	door_trip_t = 0.0
+	captor.call("show_bubble", "That door shouldn't be open… 😮", 2.0)
+	captor.call("set_expression", "worried")
+	captor.set("expr_timer", 2.0)
+	if sfx_notice:
+		sfx_notice.play()
+	_update_distract_hud()
+
+# v1.0.34: the captor reached the open door. A cat within grab
+# reach at the doorway is caught (normal capture consequences);
+# any other cat still inside just loses the open door — it is
+# shut and re-bolted with a FRESH combo, no score change.
+func _resolve_door_close() -> void:
+	if not exit_open:
+		captor_room_state = "return"
+		captor_room_target = _nearest_anchor()
+		return
+	var kind: String = exit_open_kind
+	if player and captor:
+		var door: Vector3 = _escape_exit_pos(kind)
+		var cd: Vector3 = player.global_position - (captor as Node3D).global_position
+		cd.y = 0.0
+		var dd: Vector3 = player.global_position - door
+		dd.y = 0.0
+		if cd.length() <= DOOR_GRAB_RANGE or dd.length() <= 1.1:
+			_doorway_capture(kind)
+			return
+	_close_exit(kind)
+	show_message("🚪 %s shut the door and bolted it again — work the new combo! 🐾" % _captor_ref(), 3.0)
+	if captor:
+		captor.call("show_bubble", "Nice try, little one! 💛", 2.2)
+		captor_room_state = "return"
+		captor_room_target = _nearest_anchor()
+
+# v1.0.34: caught AT the open doorway — the same consequence as
+# any capture by this captor (the −20% penalty via the shared
+# apply_capture_penalty), and he carries the cat back into the
+# room, which is where he was taking him anyway: the escape
+# restarts in the same room with the door re-bolted, fresh combo.
+func _doorway_capture(kind: String) -> void:
+	var lost_pts: int = apply_capture_penalty()
+	_close_exit(kind)
+	fade_in_t = 0.6 # the quick fade covers the carry back to the rug
+	if player:
+		player.global_position = escape_origin + Vector3(0, 0.3, 6)
+		player.set("frozen", false)
+		player.set("velocity", Vector3.ZERO)
+	if captor:
+		captor.call("show_bubble", "Got you! Back inside, little one 💛", 2.4)
+		captor_room_state = "return"
+		captor_room_target = _nearest_anchor()
+	if lost_pts > 0:
+		show_message("⭐ Caught at the door! You lost %d points (20%% of your score) — and the door is bolted again." % lost_pts, 3.4)
+	else:
+		show_message("⭐ Caught at the door! The door is bolted again — work the new combo!", 3.4)
+	if sfx_notice:
+		sfx_notice.play()
+
+# v1.0.34: shut the way out and re-bolt it — visuals reversed per
+# kind, blockers back, mechanism home, and a FRESH combo rolled
+# (the ≥2A/≥2B rule in _roll_escape_combo). Used by both the
+# plain close and the doorway capture.
+func _close_exit(kind: String) -> void:
+	exit_open = false
+	exit_open_kind = ""
+	door_window_t = -1.0
+	door_window_total = 0.0
+	door_close_pending = false
+	escape_step = 0
+	escape_prog = 0.0
+	combo_index = 0
+	match kind:
+		"latch", "winpush":
+			if sash_node:
+				sash_node.position.y = sash_base_y
+			if latch_pivot:
+				latch_pivot.rotation.z = 0.0
+				latch_pivot.position = latch_base_pos
+			_set_blocker(window_blocker, true)
+		"petdoor":
+			if flap_node:
+				flap_node.rotation.x = 0.0
+			_set_blocker(petdoor_blocker, true)
+		"bolt":
+			if backdoor_pivot:
+				backdoor_pivot.rotation.y = 0.0
+	_update_mechanism_visuals(kind) # escape_prog = 0: the bolt bar slides home
+	_roll_escape_combo()
+	_update_escape_label()
+	_update_distract_hud()
 
 # The escape completes when the cat actually crosses the threshold —
 # that's when the +3 and the 30 s pursuit begin (unchanged contract).
@@ -9614,6 +9905,13 @@ func _update_captor_room(delta: float) -> void:
 	if panel_open and captor_room_state != "to_prop" and captor_room_state != "righting" and captor_room_state != "shoo":
 		_room_face(player.global_position, delta)
 		return
+	# v1.0.34: door OPEN + countdown running + captor free = he
+	# stands and watches the open door — he has NOTICED it, and the
+	# player can see that he has. Errands (to_prop / righting)
+	# still own him; the trip to close it is the "to_door" state.
+	if exit_open and door_window_t > 0.0 and captor_room_state != "to_prop" and captor_room_state != "righting" and captor_room_state != "to_door" and captor_room_state != "shoo":
+		_room_face(_escape_exit_pos(exit_open_kind), delta)
+		return
 	match captor_room_state:
 		"idle":
 			captor_room_wait -= delta
@@ -9672,6 +9970,16 @@ func _update_captor_room(delta: float) -> void:
 				captor_room_target = _nearest_anchor()
 			else:
 				_room_move_toward(pp, DISTRACT_WALK_SPEED, delta)
+		"to_door":
+			# v1.0.34: the open-door countdown ran out — he comes to
+			# the door to shut it. Arrival (or the long-trip
+			# watchdog) resolves the open door: a cat in grab reach
+			# at the doorway is caught; otherwise the door is shut
+			# and re-bolted with a fresh combo.
+			door_trip_t += delta
+			if _room_move_toward(captor_room_target, DISTRACT_WALK_SPEED, delta) or door_trip_t > 10.0:
+				door_trip_t = 0.0
+				_resolve_door_close()
 
 func _nearest_standing_prop() -> Dictionary:
 	if player == null:
@@ -9717,13 +10025,31 @@ func topple_prop(p: Dictionary) -> void:
 		captor.call("show_bubble", str(p["bubble"]), 2.2)
 		captor.call("set_expression", "worried") # v1.4: the crash worries the captor
 		captor.set("expr_timer", 2.5)
-		if captor_room_state == "idle" or captor_room_state == "walk" or captor_room_state == "return" or captor_room_state == "shoo":
+		if captor_room_state == "to_door":
+			# v1.0.34: a crash while he is coming to shut the open
+			# door still pulls him away — distractions work the
+			# same whether the door is open or not.
+			captor_prop = p
+			captor_trip_t = 0.0
+			captor_room_state = "to_prop"
+		elif captor_room_state == "idle" or captor_room_state == "walk" or captor_room_state == "return" or captor_room_state == "shoo":
 			captor_prop = p
 			captor_trip_t = 0.0
 			captor_room_state = "to_prop"
 		else:
 			distract_queue.append(p) # the captor is already busy — this one queues
 	show_message("💥 You knocked over %s! %s distracted — quick, work the way out! 🐾" % [str(p["name"]), _captor_is()], 2.8)
+	# v1.0.34: knocking something over while the door is open
+	# extends the open-door window to the distraction clock — the
+	# same rule the latch-panel countdown already lives by. (Also
+	# covers the to_door diversion above: the window re-arms on
+	# his new errand.)
+	if exit_open and (captor_room_state == "to_prop" or captor_room_state == "righting"):
+		var busy_left: float = distraction_time_left()
+		if door_window_t < busy_left:
+			door_window_t = busy_left
+			door_window_total = maxf(door_window_total, busy_left)
+		door_close_pending = false
 
 func _on_prop_prompt_pressed() -> void:
 	if state == "escape":
@@ -9807,6 +10133,21 @@ func _update_escape_room(delta: float) -> void:
 				(node as Node).queue_free()
 			crash_labels.remove_at(i)
 	_update_captor_room(delta)
+	# v1.0.34 OPEN-DOOR WINDOW: the countdown runs while the way
+	# is open; at zero the captor comes to close the door — or, if
+	# he is still busy righting a prop, the close lands the moment
+	# his errand ends (door_close_pending).
+	if exit_open and door_window_t > 0.0:
+		door_window_t -= delta
+		if door_window_t <= 0.0:
+			door_window_t = -1.0
+			if captor_distracted():
+				door_close_pending = true
+			else:
+				_begin_door_close()
+	if exit_open and door_close_pending and not captor_distracted() and captor_room_state != "to_door":
+		door_close_pending = false
+		_begin_door_close()
 	# The notice clock: only an UNDISTRACTED panel visit counts down.
 	var panel_open: bool = escape_panel != null and escape_panel.visible
 	if panel_open:
@@ -9849,8 +10190,21 @@ func _update_distract_hud() -> void:
 		distract_bar_bg.visible = false
 		return
 	if exit_open:
-		distract_label.text = "🚪 The way out is OPEN — walk out, quickly!"
-		distract_bar_bg.visible = false
+		if captor_room_state == "to_door":
+			distract_label.text = "🚪 %s coming to shut the door — RUN!" % _captor_ref()
+			distract_bar_bg.visible = false
+		elif door_window_t > 0.0:
+			# v1.0.34: the open door runs on the distraction clock —
+			# same green bar, same scale as the knock-over timer.
+			distract_label.text = "🚪 The way out is OPEN — out before %s shuts it! (%.0fs)" % [_captor_ref_lower(), ceil(door_window_t)]
+			distract_bar_bg.visible = true
+			distract_bar_fill.visible = true
+			distract_bar_fill.color = Color(0.45, 0.9, 0.45, 0.95)
+			distract_bar_fill.position = Vector2(2, 2)
+			distract_bar_fill.size = Vector2(516.0 * clampf(door_window_t / 12.0, 0.0, 1.0), 8)
+		else:
+			distract_label.text = "🚪 The way out is OPEN — walk out, quickly!"
+			distract_bar_bg.visible = false
 	elif captor_distracted():
 		var left: float = distraction_time_left()
 		var what: String = str(captor_prop.get("name", "the mess")) if not captor_prop.is_empty() else "the mess"
@@ -10076,6 +10430,11 @@ func _complete_escape() -> void:
 	# below re-aims her at the town exactly as before).
 	captor_room_state = "off"
 	exit_open = false
+	exit_open_kind = "" # v1.0.34: open-door window state cleared
+	door_window_t = -1.0
+	door_window_total = 0.0
+	door_close_pending = false
+	door_trip_t = 0.0
 	if distract_label:
 		distract_label.visible = false
 	if distract_bar_bg:
@@ -10152,6 +10511,7 @@ func _process(delta: float) -> void:
 			_boot_write_marker("complete")
 			_boot_log("Ready (title stable)")
 	_apply_joystick()
+	_update_districts(delta) # v1.0.34: district streaming (throttled inside)
 	_process_traffic(delta)
 	_update_pound(delta) # POUND VAN: patrol / pull-over / return-to-van (engagement only in "play")
 	# Splash song: replay while the player lingers on the splash.

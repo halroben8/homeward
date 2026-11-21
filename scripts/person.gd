@@ -60,7 +60,29 @@ var has_los_now: bool = true
 var active: bool = true
 var wide_bounds: bool = false # POUND VAN: the patrol worker roams the DOUBLED map (x to 369); town NPCs keep the historic ±117 position clamp below
 var wander_x_max: float = 366.0 # BISECT (v1.0.12): east edge for wander targets — main sets 112.0 in LEGACY_TOWN_ONLY mode so nobody wanders into the ungenerated east district
-var net_root: Node3D = null # POUND VAN: the catch net (poundworker only), parented to the right arm
+var net_root: Node3D = null # POUND VAN: the catch net (poundworker only); built on the ghost's right arm, re-hung on `model` by the Meshy swap and re-seated in the VISIBLE hand every frame (v1.0.33, _update_net_placement)
+# --- v1.0.33 NET GRIP (Michael's v1.0.32 play report: "the net
+# is not in his hand... his hands have no relation to each other
+# and it's very strange"). Measured root cause: the net rode a
+# BoneAttachment3D on the skeleton hand with a rigid offset
+# computed from the GHOST body's proportions (shoulder 1.48,
+# arm 0.68) — but the visible skeleton's shoulder sits at 1.11
+# with a 0.37 arm, so the rubber grip landed 0.74 m from the
+# visible hand (past the pole's butt, in empty air), the pole
+# direction was slaved to the wrist bone's orientation, and the
+# two-handed chase grip aimed the invisible ghost's other arm
+# (the visible second hand measured 0.55-0.63 m OFF the pole).
+# The fix: the net is placed from the visible skeleton itself —
+# grip centre in the carry hand's palm, pole on a deliberate
+# model-space carry direction — and on the chase both visible
+# arms are two-bone-IK'd onto that same pole line.
+var net_on_skeleton: bool = false # true once _attach_meshy re-hangs the net for per-frame placement
+var net_dir_cur: Vector3 = Vector3(0.450, 0.771, 0.450) # smoothed pole direction (model space, grip -> head)
+const NET_DIR_CARRY := Vector3(0.450, 0.771, 0.450) # on foot: raised at his side, head high and clear of his face
+const NET_DIR_CHASE := Vector3(-0.678, 0.678, 0.283) # chase: swung up across his chest, two-handed
+const NET_GRIP1 := Vector3(0.24, 0.94, 0.10) # chase carry-hand WRIST target (model space, solved from the skeleton's real reaches: 0.375 / 0.366)
+const NET_GRIP_SPACING := 0.32 # chase: second hand this far up the pole from the first hand's palm
+const NET_PALM_OFF := 0.03 # grip centre sits this far past the wrist bone, in the palm
 # --- v1.0.15 MESHY NPC SWAP (see the block at the end of this file) --
 var meshy_root: Node3D = null # the imported model, child of `model`
 var meshy_skel: Skeleton3D = null
@@ -1130,11 +1152,13 @@ func _build_model() -> void:
 # ("a stick and a circle and a circle of white") and a round
 # hoop with a spiral web that read face-on as a satellite
 # dish. This one is rectangular, angled, deep and dark, like
-# the photo. He holds it TWO-HANDED on the chase (see
-# update_net_grip). Everything hangs off a root on arm_r, so
-# the net swings as he walks and aims with the arm. Main hides
-# it while he carries the cat / hosts the escape room
-# (set_net_visible).
+# the photo. He holds it TWO-HANDED on the chase (v1.0.33:
+# both visible arms are IK'd onto the pole — see _net_grip_ik;
+# the net itself is re-seated in his visible hand every frame
+# by _update_net_placement). Everything is built on a root
+# under the ghost's arm_r; the Meshy swap re-hangs that root
+# on `model`. Main hides it while he carries the cat / hosts
+# the escape room (set_net_visible).
 func _build_net(s: float) -> void:
 	net_root = Node3D.new()
 	arm_r.add_child(net_root)
@@ -1292,12 +1316,13 @@ func _net_bag_mesh(s: float, ring: Array) -> ArrayMesh:
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	return mesh
 
-# POUND VAN: TWO HANDS on the pole. The right hand grips at
-# the butt (the net root rides arm_r); this slides the LEFT
-# hand up the shaft to the pole point that sits one arm's
-# reach from the left shoulder — a real two-handed landing-net
-# carry. Called every frame while he chases with the net out,
-# and by the splash harness for the cover pose.
+# POUND VAN: TWO HANDS on the pole — the GHOST version. This
+# aimed the invisible code-built body's left arm at the pole;
+# on the visible Meshy skeleton it never landed (v1.0.33
+# measured the visible hand 0.55-0.63 m off the pole), so the
+# live chase grip is _net_grip_ik on the skeleton itself.
+# Kept only because the splash harness still calls it for the
+# cover pose; the game no longer depends on it.
 func update_net_grip() -> void:
 	if net_root == null or arm_l == null or arm_r == null or model == null:
 		return
@@ -2472,9 +2497,11 @@ func stop_pursuit() -> void:
 #     capture scoop / cradle, the RUN tell, the phone pose, the
 #     dog walker's leash hand, and the chase reach (arms only —
 #     the legs keep the Running clip through a chase).
-# The officer's net moves onto his skeleton hand via a
-# BoneAttachment3D, so set_net_visible / update_net_grip keep
-# working untouched. Left/right are matched by POSITION, as with
+# The officer's net is re-hung on `model` and re-seated in
+# his visible hand every frame by _update_net_placement
+# (v1.0.33 — the old BoneAttachment3D offset was computed from
+# the ghost's proportions and left the grip floating 0.74 m
+# from the visible hand). Left/right are matched by POSITION, as with
 # the cat: the ghost's "l" pivots sit at model -X, which is the
 # skeleton's Right chain. Types without a model (pedestrian)
 # skip all of this — zero behaviour change. To light up a future
@@ -2588,31 +2615,27 @@ func _attach_meshy() -> void:
 				meshy_arm_chain[bi] = true
 				break
 			p2 = meshy_skel.get_bone_parent(p2)
-	# The officer's net: re-hang it on the skeleton's left hand
-	# (ghost arm_r's side, position-matched) so it follows the
-	# VISIBLE hand through clips and mirror alike.
+	# The officer's net: re-hang it on `model` (NOT on a bone —
+	# v1.0.33). _update_net_placement re-seats it every frame
+	# from the skeleton's actual hand pose, so the grip is in
+	# the visible hand by construction, through clips and
+	# mirror alike. (The BoneAttachment3D this replaces baked
+	# the ghost's shoulder/arm proportions into a rigid offset
+	# and left the net floating beside his head.)
 	if net_root != null and meshy_bone.has("hand_l"):
-		var hand_bi: int = int(meshy_bone["hand_l"])
-		var att := BoneAttachment3D.new()
-		att.bone_name = meshy_skel.get_bone_name(hand_bi)
-		meshy_skel.add_child(att)
 		var old_parent: Node = net_root.get_parent()
 		if old_parent != null:
 			old_parent.remove_child(net_root)
-		att.add_child(net_root)
-		# Offset chosen so that, at rest, the net sits exactly
-		# where the ghost arm put it: ghost arm_r rests at design
-		# (0.36, 1.48, 0) with identity basis (design units —
-		# meshy_root's scale converts). The net's geometry was
-		# authored in model units, so counter-scale it back.
-		var g_rest := Transform3D(Basis.IDENTITY, Vector3(0.36, 1.48, 0))
-		att.transform = (meshy_rest[hand_bi] as Transform3D).affine_inverse() * g_rest
-		net_root.transform = Transform3D(Basis.IDENTITY.scaled(Vector3.ONE / mscale), Vector3.ZERO)
+		model.add_child(net_root)
+		net_root.transform = Transform3D.IDENTITY
+		net_on_skeleton = true
 	# Hide the code-built body (the ghost nodes/pivots stay live).
 	_hide_ghost_meshes(model)
 	_attach_dog_meshy()
 
 func _meshy_keep_visible(mi: MeshInstance3D) -> bool:
+	if net_root != null and net_root.is_ancestor_of(mi):
+		return true # v1.0.33: the net rides `model` now — never ghost-hide its meshes
 	if treat_mi != null and (mi == treat_mi or treat_mi.is_ancestor_of(mi)):
 		return true # the biscuit (and its chips) ride the ghost hand as before
 	return phone_mis.has(mi)
@@ -2753,9 +2776,11 @@ func _update_meshy(delta: float, speed2d: float) -> void:
 			for bi in range(meshy_skel.get_bone_count()):
 				meshy_skel.set_bone_global_pose_override(bi, Transform3D(), 0.0, false)
 			meshy_overrides_on = false
+		_update_net_placement(delta) # v1.0.33: clip-driven frames still seat the net
 		return
 	_meshy_compose()
 	meshy_overrides_on = true
+	_update_net_placement(delta) # v1.0.33: seat the net in the visible hand
 
 func _meshy_drv(drv: Dictionary, role: String, b: Basis) -> void:
 	var bi: int = int(meshy_bone.get(role, -1))
@@ -2822,8 +2847,16 @@ func _meshy_compose() -> void:
 	# mirrors the ghost pivot's basis.
 	var aim_r: bool = ((interact_state == "pet" or interact_state == "treat") and bend_a > 0.25) or (scoop_reach_a > 0.01 and scoop_cradle_a < 0.6)
 	var aim_l: bool = scoop_reach_a > 0.01 and scoop_cradle_a < 0.6
-	_meshy_arm(drv, "l", arm_r, aim_r) # ghost arm_r (+X) -> skeleton Left chain
-	_meshy_arm(drv, "r", arm_l, aim_l) # ghost arm_l (-X) -> skeleton Right chain
+	# v1.0.33 NET GRIP: while the officer chases / pursues with
+	# the net out, BOTH visible arms are solved onto the pole
+	# (two-bone IK, _net_grip_ik) instead of mirroring the
+	# ghost's chase reach — the ghost's proportions are not the
+	# model's, so the mirrored hands never landed on the net.
+	if net_on_skeleton and net_root != null and net_root.visible and (mode == "chase" or mode == "pursue") and scoop_reach_a < 0.01 and scoop_cradle_a < 0.01 and interact_state == "":
+		_net_grip_ik(drv)
+	else:
+		_meshy_arm(drv, "l", arm_r, aim_r) # ghost arm_r (+X) -> skeleton Left chain
+		_meshy_arm(drv, "r", arm_l, aim_l) # ghost arm_l (-X) -> skeleton Right chain
 	# Compose parent-first from rest, fold the drivers in, and
 	# apply with the per-chain weights.
 	var desired: Array = []
@@ -2840,6 +2873,125 @@ func _meshy_compose() -> void:
 		desired[bi] = g
 		var w: float = meshy_w_arms if bool(meshy_arm_chain[bi]) else meshy_w_body
 		meshy_skel.set_bone_global_pose_override(bi, g, w, true)
+
+# v1.0.33: two-bone IK for one skeleton arm chain, in skeleton
+# space. Returns the global-rotation drivers for the arm and
+# forearm bones (the same premultiply style as _meshy_arm's
+# aimed path — exact while the chain's parents sit at rest,
+# which they do in a chase: no spine/hip drivers are active)
+# plus the solved fore->hand direction. The elbow is placed in
+# the plane spanned by the shoulder->target line and the
+# (model-space) elbow pole direction.
+func _ik_solve(side: String, target_in: Vector3, pole_model: Vector3, m2s: Transform3D) -> Dictionary:
+	var arm_bi: int = int(meshy_bone["arm_" + side])
+	var fore_bi: int = int(meshy_bone["fore_" + side])
+	var hand_bi: int = int(meshy_bone["hand_" + side])
+	var S: Vector3 = (meshy_rest[arm_bi] as Transform3D).origin
+	var E_rest: Vector3 = (meshy_rest[fore_bi] as Transform3D).origin
+	var H_rest: Vector3 = (meshy_rest[hand_bi] as Transform3D).origin
+	var L1: float = S.distance_to(E_rest)
+	var L2: float = E_rest.distance_to(H_rest)
+	var to_t: Vector3 = target_in - S
+	var d: float = clampf(to_t.length(), 0.05, (L1 + L2) * 0.999)
+	var dir_st: Vector3 = to_t.normalized() if to_t.length() > 0.001 else Vector3(0, -1, 0)
+	var target: Vector3 = S + dir_st * d
+	var pole_s: Vector3 = (m2s.basis * pole_model).normalized()
+	var perp: Vector3 = pole_s - dir_st * pole_s.dot(dir_st)
+	if perp.length() < 0.05:
+		perp = Vector3(0, -1, 0) - dir_st * Vector3(0, -1, 0).dot(dir_st)
+	perp = perp.normalized()
+	var cos_a: float = clampf((L1 * L1 + d * d - L2 * L2) / (2.0 * L1 * d), -1.0, 1.0)
+	var sin_a: float = sqrt(maxf(0.0, 1.0 - cos_a * cos_a))
+	var upper_dir: Vector3 = dir_st * cos_a + perp * sin_a
+	var E: Vector3 = S + upper_dir * L1
+	var fore_dir: Vector3 = (target - E).normalized()
+	var rest_upper: Vector3 = (E_rest - S).normalized()
+	var rest_fore: Vector3 = (H_rest - E_rest).normalized()
+	var arm_drv := Basis(Quaternion(rest_upper, upper_dir))
+	# Once the arm driver turns the upper arm, the forearm's
+	# rest direction lands on arm_drv * rest_fore; rotate that
+	# onto the solved direction so the hand ends on target.
+	var fore_drv := Basis(Quaternion(arm_drv * rest_fore, fore_dir))
+	return {"arm_drv": arm_drv, "fore_drv": fore_drv, "hdir": fore_dir}
+
+# v1.0.33: the officer's two-handed chase grip, solved on the
+# VISIBLE skeleton. The carry hand goes to a fixed wrist
+# target; its solved palm fixes the pole line (the same line
+# _update_net_placement draws the net on, via net_dir_cur);
+# the second hand's wrist is placed so its palm lands on that
+# line, NET_GRIP_SPACING up the pole. Elbows point down and
+# out, like a man actually carrying a landing net at a run.
+func _net_grip_ik(drv: Dictionary) -> void:
+	if model == null or meshy_skel == null:
+		return
+	var m2s: Transform3D = meshy_skel.global_transform.affine_inverse() * model.global_transform
+	var dir_s: Vector3 = (m2s.basis * net_dir_cur).normalized()
+	var w1: Vector3 = m2s * NET_GRIP1
+	var sol1: Dictionary = _ik_solve("l", w1, Vector3(0.75, -0.55, -0.25), m2s)
+	var palm1: Vector3 = w1 + (sol1["hdir"] as Vector3) * NET_PALM_OFF
+	var line2: Vector3 = palm1 + dir_s * NET_GRIP_SPACING
+	var sol2a: Dictionary = _ik_solve("r", line2, Vector3(-0.75, -0.55, -0.1), m2s)
+	var w2: Vector3 = line2 - (sol2a["hdir"] as Vector3) * NET_PALM_OFF
+	var sol2: Dictionary = _ik_solve("r", w2, Vector3(-0.75, -0.55, -0.1), m2s)
+	drv[int(meshy_bone["arm_l"])] = sol1["arm_drv"]
+	drv[int(meshy_bone["fore_l"])] = sol1["fore_drv"]
+	drv[int(meshy_bone["arm_r"])] = sol2["arm_drv"]
+	drv[int(meshy_bone["fore_r"])] = sol2["fore_drv"]
+
+# v1.0.33: seat the net in the officer's VISIBLE carry hand.
+# The grip centre goes in his palm (wrist bone + a small offset
+# along the forearm->hand line), and the pole takes the
+# smoothed model-space carry direction — raised at his side on
+# foot, swung up across his chest on the chase (where
+# _net_grip_ik holds both hands on this same line). The frame
+# is rolled around the pole so its open face looks forward as
+# far as the pole direction allows. Runs every frame from
+# _update_meshy, for clip-driven and mirrored poses alike.
+func _update_net_placement(delta: float) -> void:
+	if not net_on_skeleton or net_root == null or meshy_skel == null or model == null:
+		return
+	var want: Vector3 = NET_DIR_CHASE if (mode == "chase" or mode == "pursue" or mode == "tell") else NET_DIR_CARRY
+	if net_dir_cur.dot(want) < 0.9995:
+		net_dir_cur = net_dir_cur.slerp(want, clampf(delta * 7.0, 0.0, 1.0)).normalized()
+	else:
+		net_dir_cur = want
+	if not net_root.visible:
+		return
+	var hand_bi: int = int(meshy_bone.get("hand_l", -1))
+	var fore_bi: int = int(meshy_bone.get("fore_l", -1))
+	if hand_bi < 0 or fore_bi < 0:
+		return
+	meshy_skel.force_update_all_bone_transforms()
+	var skel_gt: Transform3D = meshy_skel.global_transform
+	var inv_model: Transform3D = model.global_transform.affine_inverse()
+	var hand_m: Vector3 = inv_model * (skel_gt * meshy_skel.get_bone_global_pose(hand_bi).origin)
+	var fore_m: Vector3 = inv_model * (skel_gt * meshy_skel.get_bone_global_pose(fore_bi).origin)
+	var hdir: Vector3 = hand_m - fore_m
+	if hdir.length() < 0.01:
+		return
+	hdir = hdir.normalized()
+	var grip_m: Vector3 = hand_m + hdir * NET_PALM_OFF
+	# Basis: local -Y runs grip -> head along the pole.
+	var yb: Vector3 = -net_dir_cur
+	var zb: Vector3 = Vector3(0, 0, 1) - yb * yb.z
+	if zb.length() < 0.05:
+		zb = Vector3(0, 1, 0) - yb * yb.y
+	zb = zb.normalized()
+	var xb: Vector3 = yb.cross(zb).normalized()
+	var basis := Basis(xb, yb, zb)
+	# Roll around the pole so the frame's open face (net-space
+	# normal ~(0, 0.90, 0.44) after the head's 26-degree tilt)
+	# faces forward (+Z model) as far as the pole allows.
+	var n0: Vector3 = (basis * Vector3(0, 0.90, 0.44)).normalized()
+	var pn: Vector3 = n0 - yb * n0.dot(yb)
+	var pf: Vector3 = Vector3(0, 0, 1) - yb * yb.z
+	if pn.length() > 0.05 and pf.length() > 0.05:
+		pn = pn.normalized()
+		pf = pf.normalized()
+		var roll: float = atan2(pn.cross(pf).dot(yb), clampf(pn.dot(pf), -1.0, 1.0))
+		basis = Basis(yb, roll) * basis
+	var origin_m: Vector3 = grip_m - basis * Vector3(0, -0.74 * mscale, 0.01)
+	net_root.transform = Transform3D(basis, origin_m)
 
 func _update_dog_meshy(speed2d: float) -> void:
 	if dog_skel == null or dog_meshy_root == null:

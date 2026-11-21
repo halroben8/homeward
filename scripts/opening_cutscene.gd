@@ -294,6 +294,16 @@ func _tick_line(delta: float) -> void:
 			line_step = 1
 			line_t = 0.0
 	else:
+		# v1.0.34: keep posing him while he delivers the line.
+		# Before this, NOTHING called _animate for the whole 3.8 s
+		# stand: his AnimationPlayer froze mid-stride (mirror blend
+		# stuck at ~0.36) and the net kept whatever seat the last
+		# walking frame left — the stiff, "net hovering beside an
+		# empty-handed man" read Michael photographed. Posing him
+		# every frame settles him into the standing carry (mirror
+		# blend to full) and re-seats the net in his hand
+		# continuously, like every other main-driven beat.
+		worker.call("_animate", delta, 0.0)
 		line_t += delta
 		if line_t >= 3.8:
 			_trigger_scoop()

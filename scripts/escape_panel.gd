@@ -339,14 +339,54 @@ func _draw_bolt(pic: Rect2, prog: float) -> void:
 	draw_rect(Rect2(door.position + Vector2(18.0, 26.0), door.size - Vector2(36.0, 52.0)), WOOD.darkened(0.18))
 	draw_rect(post, Color(0.92, 0.9, 0.84))
 	var mid_y: float = pic.position.y + pic.size.y * 0.5
-	# Keeper on the post; the bolt bar retracts out of it as you work.
-	draw_rect(Rect2(post.position + Vector2(-8.0, -22.0) + Vector2(0, mid_y - post.position.y), Vector2(70.0, 44.0)), BRASS_DARK)
-	var slide: float = prog * 110.0
-	var bar := Rect2(door.position + Vector2(-58.0 + slide, mid_y - door.position.y - 13.0), Vector2(210.0, 26.0))
-	draw_rect(bar, BRASS)
-	draw_rect(Rect2(bar.position + Vector2(0, -8.0), Vector2(bar.size.x, 8.0)), BRASS_DARK) # mounting plate edge
-	draw_circle(bar.position + Vector2(52.0, 2.0), 13.0, BRASS.lightened(0.2)) # thumb knob
-	draw_circle(bar.position + Vector2(52.0, 2.0), 6.0, BRASS_DARK)
+	# v1.0.34 BOLT REMODEL (Michael: the old bolt "looks really
+	# chintzy" — a thin brass strip that never even reached its
+	# keeper). Now a heavy iron bolt whose parts actually meet: a
+	# keeper housing with a dark slot on the post, a screwed-down
+	# mounting plate and two guide brackets on the door, a chunky
+	# steel bar that shoots into the keeper, and a big brass grip
+	# hanging below the bar — the handle the cat works. As prog
+	# advances the bar retracts out of the keeper, as before.
+	var steel := Color(0.52, 0.54, 0.58)
+	var steel_dark := Color(0.27, 0.27, 0.3)
+	var steel_light := Color(0.72, 0.74, 0.78)
+	# Keeper housing on the post, with the slot the bar shoots into.
+	var keeper := Rect2(post.position + Vector2(-10.0, mid_y - post.position.y - 34.0), Vector2(74.0, 68.0))
+	draw_rect(keeper, steel_dark)
+	draw_rect(Rect2(keeper.position + Vector2(6.0, 6.0), keeper.size - Vector2(12.0, 12.0)), Color(0.38, 0.39, 0.43))
+	draw_rect(Rect2(keeper.position + Vector2(58.0, 20.0), Vector2(16.0, 28.0)), Color(0.07, 0.07, 0.08)) # the slot
+	draw_circle(keeper.position + Vector2(16.0, 14.0), 4.5, steel_dark)
+	draw_circle(keeper.position + Vector2(16.0, 54.0), 4.5, steel_dark)
+	# Mounting plate on the door, screwed at the corners.
+	var plate := Rect2(door.position + Vector2(24.0, mid_y - door.position.y - 48.0), Vector2(door.size.x - 70.0, 96.0))
+	draw_rect(plate, steel_dark)
+	draw_rect(Rect2(plate.position + Vector2(5.0, 5.0), plate.size - Vector2(10.0, 10.0)), Color(0.4, 0.41, 0.45))
+	for sx in [14.0, plate.size.x - 14.0]:
+		for sy in [14.0, plate.size.y - 14.0]:
+			draw_circle(plate.position + Vector2(sx, sy), 5.0, steel_dark)
+			draw_circle(plate.position + Vector2(sx, sy), 2.2, steel_light)
+	# The bar: its left end starts inside the keeper and retracts
+	# to the right as the combo is worked.
+	var bar_right: float = door.position.x + 330.0
+	var bar_left: float = post.position.x + 30.0 + prog * 165.0
+	var bar := Rect2(Vector2(bar_left, mid_y - 17.0), Vector2(bar_right - bar_left, 34.0))
+	draw_rect(bar, steel)
+	draw_rect(Rect2(bar.position, Vector2(bar.size.x, 9.0)), steel_light) # top highlight
+	draw_rect(Rect2(bar.position + Vector2(0, bar.size.y - 9.0), Vector2(bar.size.x, 9.0)), steel_dark.lightened(0.25)) # bottom shade
+	draw_circle(bar.position + Vector2(0, 17.0), 17.0, steel) # rounded nose
+	# Guide brackets: collars standing proud of the plate, the bar
+	# sliding through them.
+	for bx in [door.position.x + 105.0, door.position.x + 245.0]:
+		draw_rect(Rect2(Vector2(bx, mid_y - 29.0), Vector2(28.0, 58.0)), steel_dark)
+		draw_rect(Rect2(Vector2(bx + 4.0, mid_y - 25.0), Vector2(20.0, 50.0)), Color(0.42, 0.44, 0.48))
+		draw_rect(Rect2(Vector2(bx, mid_y - 17.0), Vector2(28.0, 34.0)), steel_dark) # collar over the bar
+	# The grip: a post dropping from the bar to a big brass knob —
+	# the handle the cat visibly works. It rides with the bar.
+	var grip_x: float = bar_right - 78.0
+	draw_rect(Rect2(Vector2(grip_x, mid_y + 17.0), Vector2(15.0, 36.0)), steel_dark)
+	draw_circle(Vector2(grip_x + 7.5, mid_y + 68.0), 17.0, BRASS)
+	draw_circle(Vector2(grip_x + 7.5, mid_y + 68.0), 10.0, BRASS.lightened(0.25))
+	draw_circle(Vector2(grip_x + 3.5, mid_y + 63.0), 3.5, BRASS.lightened(0.55))
 
 func _draw_carrier(pic: Rect2, prog: float) -> void:
 	var shake := Vector2.ZERO
